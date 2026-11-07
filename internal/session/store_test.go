@@ -3,16 +3,16 @@ package session
 import (
 	"testing"
 
-	"clara-core/agent"
-	"clara-core/agent/id"
-	"clara-core/models"
+	"clara-code/pkg/core"
+	"clara-code/pkg/models"
+	"clara-code/pkg/util/id"
 )
 
 func TestNewRunAfterIncompleteFinalCheckpoint(t *testing.T) {
 	store := New(t.TempDir(), Meta{Project: "/project"})
 	defer store.Close()
 	sessionID := id.New("session")
-	state := agent.State{ID: sessionID, Revision: 1}
+	state := core.State{ID: sessionID, Revision: 1}
 	if err := store.Save(t.Context(), state); err != nil {
 		t.Fatal(err)
 	}

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"clara-core/agent"
-	"clara-core/models"
+	"clara-code/pkg/core"
+	"clara-code/pkg/models"
 
 	"clara-code/internal/coding"
 	"clara-code/internal/session"
@@ -97,7 +97,7 @@ func TestComposerCursorSurvivesActivityMenuAndStreaming(t *testing.T) {
 	a := testApp(t)
 	var output bytes.Buffer
 	a.view.output = &output
-	a.run = &agent.Run{ID: "cursor-test"}
+	a.run = &core.Run{ID: "cursor-test"}
 	a.activity.start(time.Now())
 	a.editor.replace("ni hao")
 	tool := session.NewToolActivity(models.ToolCallContent{ToolCallID: "call", ToolName: "read", Input: `{"path":"file.go"}`}, time.Now())

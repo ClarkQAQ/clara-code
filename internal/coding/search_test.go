@@ -8,14 +8,14 @@ import (
 	"strings"
 	"testing"
 
-	"clara-core/models"
-	"clara-core/tools"
-	corefs "clara-core/tools/fs"
+	"clara-code/pkg/models"
+	"clara-code/pkg/tools"
+	corefs "clara-code/pkg/tools/fs"
 )
 
 func searchGit(t *testing.T, root string, args ...string) {
 	t.Helper()
-	command := exec.Command("git", append([]string{"-C", root}, args...)...)
+	command := exec.CommandContext(t.Context(), "git", append([]string{"-C", root}, args...)...)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v %s", args, err, output)
 	}
@@ -125,7 +125,7 @@ func TestSearchPolicyEmptyNonGitAndGitFailure(t *testing.T) {
 	}
 	t.Setenv("PATH", t.TempDir())
 	result = runSearchTool(t, space.files().Grep(), `{"query":"needle"}`)
-	if !result.IsError || !strings.Contains(result.Content, "Git search enumeration failed") {
+	if !result.IsError || !strings.Contains(result.Content, "git search enumeration failed") {
 		t.Fatal("silently expanded Git scope: " + result.Content)
 	}
 }

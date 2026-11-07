@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"clara-core/models"
+	"clara-code/pkg/models"
 )
 
 type pathTool struct {

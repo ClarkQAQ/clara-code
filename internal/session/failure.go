@@ -7,7 +7,7 @@ import (
 	"net"
 	"strings"
 
-	"clara-core/models"
+	"clara-code/pkg/models"
 )
 
 type Failure struct {

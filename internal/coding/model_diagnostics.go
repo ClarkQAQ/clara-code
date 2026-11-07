@@ -6,7 +6,7 @@ import (
 	"iter"
 	"strings"
 
-	"clara-core/models"
+	"clara-code/pkg/models"
 )
 
 type diagnosticModel struct {
@@ -61,7 +61,7 @@ func (m diagnosticModel) Stream(ctx context.Context, call models.Call) (models.S
 	if stream == nil {
 		return nil, nil
 	}
-	next, stop := iter.Pull(iter.Seq[models.StreamPart](stream))
+	next, stop := iter.Pull(stream)
 	var prefix []models.StreamPart
 	for {
 		part, ok := next()

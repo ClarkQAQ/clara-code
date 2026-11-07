@@ -9,9 +9,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"clara-core/models"
-	"clara-core/tools"
-	corefs "clara-core/tools/fs"
+	"clara-code/pkg/models"
+	"clara-code/pkg/tools"
+	corefs "clara-code/pkg/tools/fs"
 )
 
 func (w Workspace) reviewTool() models.AgentTool {

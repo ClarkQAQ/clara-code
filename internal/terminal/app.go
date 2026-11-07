@@ -11,10 +11,10 @@ import (
 	"syscall"
 	"time"
 
-	"clara-core/agent"
-	"clara-core/agent/prompt"
-	"clara-core/models"
-	"clara-core/tools"
+	"clara-code/pkg/core"
+	"clara-code/pkg/core/prompt"
+	"clara-code/pkg/models"
+	"clara-code/pkg/tools"
 	"golang.org/x/term"
 
 	"clara-code/internal/coding"
@@ -42,7 +42,7 @@ type app struct {
 	ask                 *coding.Questions
 	editor              editor
 	mode                prompt.Mode
-	run                 *agent.Run
+	run                 *core.Run
 	events              <-chan runEvent
 	stopRun             context.CancelFunc
 	op                  <-chan operationResult
@@ -80,7 +80,7 @@ type app struct {
 type runEvent struct {
 	gap      bool
 	snapshot *session.Turn
-	event    agent.Event
+	event    core.Event
 	err      error
 	done     bool
 }
@@ -411,7 +411,7 @@ func (a *app) start(text string, review bool) {
 	go watch(ctx, conversation, a.conv.Store, run, cursor, events)
 }
 
-func watch(ctx context.Context, conversation *agent.Session, store *session.Store, run *agent.Run, cursor uint64, out chan<- runEvent) {
+func watch(ctx context.Context, conversation *core.Session, store *session.Store, run *core.Run, cursor uint64, out chan<- runEvent) {
 	send := func(event runEvent) bool {
 		select {
 		case out <- event:
@@ -422,7 +422,7 @@ func watch(ctx context.Context, conversation *agent.Session, store *session.Stor
 	}
 	for {
 		event, err := conversation.NextEvent(ctx, cursor)
-		var gap *agent.GapError
+		var gap *core.GapError
 		switch {
 		case errors.As(err, &gap):
 			cursor = gap.Earliest - 1

@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"clara-core/agent/prompt"
-	"clara-core/models"
-	"clara-core/tools"
+	"clara-code/pkg/core/prompt"
+	"clara-code/pkg/models"
+	"clara-code/pkg/tools"
 
 	"clara-code/internal/session"
 )

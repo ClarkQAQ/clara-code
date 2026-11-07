@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clara Core Web 示例</title>
+<style>
+body {font: 16px system-ui; max-width: 65rem; margin: 2rem auto; padding: 0 1rem}
+pre {white-space: pre-wrap; overflow-wrap: anywhere; min-height: 10rem; border: 1px solid #aaa; padding: 1rem}
+textarea {box-sizing: border-box; width: 100%; min-height: 5rem}
+button, input {margin: .3rem 0}
+</style>
+<h1>Clara Core Web 示例</h1>
+<label>会话 ID <input id="session" placeholder="留空以新建会话"></label>
+<button id="open">打开会话</button>
+<pre id="transcript" aria-live="polite"></pre>
+<label for="input">消息或答案</label>
+<textarea id="input"></textarea>
+<label><input type="checkbox" id="plan">Plan Mode</label>
+<div>
+<button data-action="message">发送</button>
+<button data-action="follow">追加</button>
+<button data-action="cancel">中断</button>
+<button data-action="answer">提交 JSON 答案</button>
+<button data-action="goal">启动 Goal</button>
+<button data-action="pause">暂停 Goal</button>
+<button data-action="resume">继续 Goal</button>
+</div>
+<script>
+const byId = id => document.getElementById(id);
+let stream, current;
+const append = text => byId("transcript").append(document.createTextNode(text));
+async function post(path, body) {
+  const response = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  if (!response.ok) throw new Error(await response.text());
+  return response.json();
+}
+byId("open").onclick = async () => {
+  try {
+    const result = await post("/sessions", {id: byId("session").value.trim()});
+    current = result.id;
+    byId("session").value = current;
+    if (stream) stream.close();
+    byId("transcript").textContent = "";
+    stream = new EventSource("/sessions/" + current + "/events");
+    stream.onmessage = ({data}) => {
+      const event = JSON.parse(data);
+      if (event.kind === "text_delta") append(event.data.delta);
+      else if (event.kind === "run.started" && Array.isArray(event.data)) {
+        for (const message of event.data) {
+          for (const part of message.content || []) {
+            if (part.type === "text") append("\n> " + part.data.text + "\n");
+          }
+        }
+      }
+      else if (/^(run|task|plan|goal|input|tool)\./.test(event.kind)) append("\n[" + event.kind + "] " + JSON.stringify(event.data) + "\n");
+    };
+    stream.addEventListener("replay-error", event => { append("\n" + JSON.parse(event.data)); stream.close(); });
+  } catch (err) { append("\n" + err.message); }
+};
+for (const button of document.querySelectorAll("button[data-action]")) {
+  button.onclick = async () => {
+    if (!current) { append("\n请先打开会话。"); return; }
+    const action = button.dataset.action, text = byId("input").value;
+    try {
+      await post("/sessions/" + current + "/action", {action, text, plan: byId("plan").checked,
+        answers: action === "answer" ? JSON.parse(text) : undefined});
+      byId("input").value = "";
+    } catch (err) { append("\n" + err.message); }
+  };
+}
+</script>

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"clara-core/models"
+	"clara-code/pkg/models"
 )
 
 type ToolActivity struct {

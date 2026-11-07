@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"clara-code/internal/session"
-	"clara-core/models"
-	"clara-core/tools"
+	"clara-code/pkg/models"
+	"clara-code/pkg/tools"
 )
 
 type activityLog struct {

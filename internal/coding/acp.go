@@ -8,9 +8,9 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"clara-core/agent"
-	"clara-core/agent/prompt"
-	"clara-core/tools/mcp"
+	"clara-code/pkg/core"
+	"clara-code/pkg/core/prompt"
+	"clara-code/pkg/tools/mcp"
 	acpsdk "github.com/coder/acp-go-sdk"
 	"golang.org/x/sys/unix"
 
@@ -18,19 +18,19 @@ import (
 )
 
 func (h Host) ServeACP(ctx context.Context, input io.Reader, output io.Writer, version string) error {
-	server, err := agent.NewACPServer(agent.ACPServerConfig{
+	server, err := core.NewACPServer(core.ACPServerConfig{
 		Name: "clara-code", Version: version, LoadSession: true, Images: true, MCPHTTP: true,
-		Open: func(ctx context.Context, id, cwd string, servers []acpsdk.McpServer) (agent.ACPBinding, error) {
+		Open: func(ctx context.Context, id, cwd string, servers []acpsdk.McpServer) (core.ACPBinding, error) {
 			if !filepath.IsAbs(cwd) {
-				return agent.ACPBinding{}, errors.New("ACP cwd must be absolute")
+				return core.ACPBinding{}, errors.New("ACP cwd must be absolute")
 			}
 			workspace, err := ResolveWorkspace(cwd)
 			if err != nil {
-				return agent.ACPBinding{}, err
+				return core.ACPBinding{}, err
 			}
 			extra, err := acpServers(servers, workspace.Cwd)
 			if err != nil {
-				return agent.ACPBinding{}, err
+				return core.ACPBinding{}, err
 			}
 			var store *session.Store
 			if id == "" {
@@ -40,20 +40,20 @@ func (h Host) ServeACP(ctx context.Context, input io.Reader, output io.Writer, v
 			} else {
 				store, err = session.Open(h.Config.Home, id, workspace.Root)
 				if err != nil {
-					return agent.ACPBinding{}, err
+					return core.ACPBinding{}, err
 				}
 				workspace, err = ResolveWorkspace(store.Meta().Cwd)
 				if err != nil || workspace.Root != store.Meta().Project {
-					return agent.ACPBinding{}, errors.Join(err, errors.New("the session's project directory changed"), store.Close())
+					return core.ACPBinding{}, errors.Join(err, errors.New("the session's project directory changed"), store.Close())
 				}
 			}
 			conversation, err := h.Open(ctx, workspace, store, nil, extra)
 			if err != nil {
-				return agent.ACPBinding{}, err
+				return core.ACPBinding{}, err
 			}
-			return agent.ACPBinding{
+			return core.ACPBinding{
 				Session: conversation.Session, Close: func(context.Context) error { return conversation.Close() },
-				Configure: func(context.Context) agent.AgentStreamCall {
+				Configure: func(context.Context) core.AgentStreamCall {
 					return conversation.Call(prompt.Execute, false)
 				},
 			}, nil

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"clara-core/agent"
-	"clara-core/models"
+	"clara-code/pkg/core"
+	"clara-code/pkg/models"
 )
 
 func Text(message models.Message) string {
@@ -20,7 +20,7 @@ func Text(message models.Message) string {
 	return out.String()
 }
 
-func (t *Turn) collect(events []agent.Event) {
+func (t *Turn) collect(events []core.Event) {
 	var partial strings.Builder
 	partial.WriteString(t.Partial)
 	for _, event := range events {

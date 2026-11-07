@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"clara-core/agent/prompt"
+	"clara-code/pkg/core/prompt"
 )
 
 func TestSearchContractAndCorrectionThroughProtocols(t *testing.T) {

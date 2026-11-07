@@ -13,12 +13,12 @@ import (
 	"strings"
 	"time"
 
-	"clara-core/models"
-	"clara-core/tools"
-	corefs "clara-core/tools/fs"
-	"clara-core/tools/fs/host"
-	"clara-core/tools/fs/local"
-	"clara-core/tools/fs/mount"
+	"clara-code/pkg/models"
+	"clara-code/pkg/tools"
+	corefs "clara-code/pkg/tools/fs"
+	"clara-code/pkg/tools/fs/host"
+	"clara-code/pkg/tools/fs/local"
+	"clara-code/pkg/tools/fs/mount"
 	"github.com/pelletier/go-toml/v2"
 	"go.yaml.in/yaml/v3"
 )

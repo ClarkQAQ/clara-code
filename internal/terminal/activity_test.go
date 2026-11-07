@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"clara-core/agent"
-	"clara-core/models"
+	"clara-code/pkg/core"
+	"clara-code/pkg/models"
 
 	"clara-code/internal/session"
 )
@@ -58,7 +58,7 @@ func TestToolGroupUpdatesInPlaceAndCommitsOnce(t *testing.T) {
 
 func TestIndependentActivityClockRetryAndPublicSummary(t *testing.T) {
 	a := testApp(t)
-	a.run = &agent.Run{ID: "run"}
+	a.run = &core.Run{ID: "run"}
 	now := time.Now()
 	a.activity.start(now.Add(-65 * time.Second))
 	a.activity.header = "Proofing"
@@ -68,14 +68,14 @@ func TestIndependentActivityClockRetryAndPublicSummary(t *testing.T) {
 	}
 	retry := session.RetryStatus{Attempt: 2, Limit: 3, DelayMS: 3000, Kind: "server", Message: "HTTP 503"}
 	body, _ := json.Marshal(retry)
-	a.onRunEvent(runEvent{event: agent.Event{Kind: "model.retry", Data: body}})
+	a.onRunEvent(runEvent{event: core.Event{Kind: "model.retry", Data: body}})
 	rows = strings.Join(a.activityRows(now), "\n")
 	if !strings.Contains(rows, "Reconnecting… 2/3") || !strings.Contains(rows, "HTTP 503") {
 		t.Fatalf("retry activity %q", rows)
 	}
 	summary := models.StreamPart{ID: "reasoning", ProviderMetadata: models.ProviderMetadata{ReasoningSummary: []string{"**Inspecting the workspace**\nCheck the project layout."}}}
 	body, _ = json.Marshal(summary)
-	a.onRunEvent(runEvent{event: agent.Event{Kind: "reasoning_delta", Data: body}})
+	a.onRunEvent(runEvent{event: core.Event{Kind: "reasoning_delta", Data: body}})
 	rows = strings.Join(a.activityRows(now), "\n")
 	if a.activity.retry != nil || !strings.Contains(rows, "Inspecting the workspace") {
 		t.Fatalf("summary did not restore activity: %q", rows)
@@ -99,17 +99,17 @@ func TestRetryClearsOnResponseAndFinalFailurePreservesDraft(t *testing.T) {
 	for _, draft := range []string{"", "My next instruction"} {
 		t.Run(draft, func(t *testing.T) {
 			a := testApp(t)
-			a.run = &agent.Run{ID: "failed"}
+			a.run = &core.Run{ID: "failed"}
 			a.stopRun = func() {}
 			a.submitted = "Retry this prompt"
 			a.editor.replace(draft)
 			a.activity.start(time.Now())
 			a.activity.retry = &session.RetryStatus{Attempt: 1, Limit: 3}
-			a.onRunEvent(runEvent{event: agent.Event{Kind: "model.responding"}})
+			a.onRunEvent(runEvent{event: core.Event{Kind: "model.responding"}})
 			if a.activity.retry != nil {
 				t.Fatal("reconnect message remained after a response")
 			}
-			a.onRunEvent(runEvent{event: agent.Event{Kind: "run.failed"}, done: true, err: errTest("request failed")})
+			a.onRunEvent(runEvent{event: core.Event{Kind: "run.failed"}, done: true, err: errTest("request failed")})
 			want := draft
 			if want == "" {
 				want = "Retry this prompt"
@@ -125,7 +125,7 @@ func TestModelMessageBoundariesAndInterruptedText(t *testing.T) {
 	a := testApp(t)
 	send := func(kind string, part models.StreamPart) {
 		body, _ := json.Marshal(part)
-		a.onRunEvent(runEvent{event: agent.Event{Kind: kind, Data: body}})
+		a.onRunEvent(runEvent{event: core.Event{Kind: kind, Data: body}})
 	}
 	for _, text := range []string{"I will inspect the project.", "I found the failing command."} {
 		send("text_start", models.StreamPart{ID: text})

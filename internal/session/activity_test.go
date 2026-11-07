@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"clara-core/agent"
-	"clara-core/models"
+	"clara-code/pkg/core"
+	"clara-code/pkg/models"
 )
 
 func TestToolSnapshotReplacesCallAndSurvivesSerialization(t *testing.T) {
@@ -15,7 +15,7 @@ func TestToolSnapshotReplacesCallAndSurvivesSerialization(t *testing.T) {
 	state := Turn{ID: "run"}
 	emit := func(sequence uint64, activity ToolActivity) {
 		body, _ := json.Marshal(activity)
-		state.collect([]agent.Event{{Sequence: sequence, RunID: "run", Kind: "tool.activity", Data: body}})
+		state.collect([]core.Event{{Sequence: sequence, RunID: "run", Kind: "tool.activity", Data: body}})
 	}
 	emit(1, tool)
 	exit := 7
@@ -65,7 +65,7 @@ func TestToolPreviewKeepsHeadAndTailAndEmptyPollKeepsOutput(t *testing.T) {
 func TestTextBoundariesDoNotDuplicateAtCheckpoint(t *testing.T) {
 	turn := Turn{ID: "run"}
 	data := func(value any) json.RawMessage { body, _ := json.Marshal(value); return body }
-	turn.collect([]agent.Event{
+	turn.collect([]core.Event{
 		{Sequence: 1, RunID: "run", Kind: "text_delta", Data: data(models.StreamPart{Delta: "First progress."})},
 		{Sequence: 2, RunID: "run", Kind: "text_end", Data: data(models.StreamPart{})},
 		{Sequence: 3, RunID: "run", Kind: "text_delta", Data: data(models.StreamPart{Delta: "Second progress."})},

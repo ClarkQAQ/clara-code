@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"clara-core/models"
-	"clara-core/tools"
+	"clara-code/pkg/models"
+	"clara-code/pkg/tools"
 )
 
 type QuestionOption struct {

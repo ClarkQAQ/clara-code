@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"clara-core/agent/prompt"
-	"clara-core/models"
-	"clara-core/tools"
+	"clara-code/pkg/core/prompt"
+	"clara-code/pkg/models"
+	"clara-code/pkg/tools"
 
 	"clara-code/internal/session"
 )
@@ -157,7 +157,7 @@ func TestRelativeFilesStartAtCwdAndLegacySessionsMigrate(t *testing.T) {
 	if err := c.Close(); err != nil {
 		t.Fatal(err)
 	}
-	manifest := filepath.Join(host.Config.Home, "sessions", string(id)+".json")
+	manifest := filepath.Join(host.Config.Home, "sessions", id+".json")
 	raw, err := os.ReadFile(manifest)
 	if err != nil {
 		t.Fatal(err)

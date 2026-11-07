@@ -16,14 +16,14 @@ import (
 	"sync"
 	"time"
 
-	"clara-core/agent"
-	"clara-core/agent/errs"
-	"clara-core/agent/id"
-	"clara-core/models"
+	"clara-code/pkg/core"
+	"clara-code/pkg/models"
+	"clara-code/pkg/util/errs"
+	"clara-code/pkg/util/id"
 	"golang.org/x/sys/unix"
 )
 
-const maxManifest = agent.MaxStateBytes + 12<<20
+const maxManifest = core.MaxStateBytes + 12<<20
 
 var safeID = regexp.MustCompile(`^(session|run)_[a-zA-Z0-9_.-]{1,96}$`)
 
@@ -60,7 +60,7 @@ type manifest struct {
 	Commands map[string]ToolActivity `json:",omitempty"`
 	Version  int
 	Meta     Meta
-	State    agent.State
+	State    core.State
 	Turns    []string
 	Active   *Turn
 }
@@ -142,19 +142,19 @@ func (s *Store) Meta() Meta {
 	return s.data.Meta
 }
 
-func (s *Store) Load(ctx context.Context, sessionID string) (agent.State, error) {
+func (s *Store) Load(ctx context.Context, sessionID string) (core.State, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := ctx.Err(); err != nil {
-		return agent.State{}, err
+		return core.State{}, err
 	}
 	if s.lock == nil || sessionID != s.data.Meta.ID {
-		return agent.State{}, errs.ErrNotFound
+		return core.State{}, errs.ErrNotFound
 	}
 	return cloneState(s.data.State), nil
 }
 
-func (s *Store) Save(ctx context.Context, state agent.State) error {
+func (s *Store) Save(ctx context.Context, state core.State) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -208,7 +208,7 @@ func (s *Store) Save(ctx context.Context, state agent.State) error {
 		if len(state.Messages) >= inputCount {
 			before = state.Messages[:len(state.Messages)-inputCount]
 		}
-		if err := write(s.object(state.ActiveRun, "-before"), before, agent.MaxStateBytes); err != nil {
+		if err := write(s.object(state.ActiveRun, "-before"), before, core.MaxStateBytes); err != nil {
 			return err
 		}
 		next.Active = &Turn{ID: state.ActiveRun}
@@ -263,7 +263,7 @@ func (s *Store) Save(ctx context.Context, state agent.State) error {
 	return s.commit(next)
 }
 
-func collectUsage(meta *Meta, events []agent.Event) {
+func collectUsage(meta *Meta, events []core.Event) {
 	if meta.UsageCursor == 0 && len(events) > 0 && events[0].Sequence > 1 {
 		meta.UsageIncomplete = true
 	}
@@ -296,7 +296,7 @@ func collectUsage(meta *Meta, events []agent.Event) {
 	}
 }
 
-func cloneState(state agent.State) agent.State {
+func cloneState(state core.State) core.State {
 	state.Messages = slices.Clone(state.Messages)
 	state.Events = slices.Clone(state.Events)
 	state.Pending = slices.Clone(state.Pending)
@@ -417,7 +417,7 @@ func (s *Store) Fork(ctx context.Context, index int) (*Store, error) {
 			return nil, errors.New("invalid rewind position")
 		}
 		messages = nil
-		if err := read(s.object(turns[index], "-before"), agent.MaxStateBytes, &messages); err != nil {
+		if err := read(s.object(turns[index], "-before"), core.MaxStateBytes, &messages); err != nil {
 			return nil, err
 		}
 		turns = turns[:index]
@@ -445,7 +445,7 @@ func (s *Store) Fork(ctx context.Context, index int) (*Store, error) {
 			child.data.Commands[key] = interruptedCommand(value, "Terminal not resumed in this branch")
 		}
 	}
-	if err := child.Save(ctx, agent.State{ID: id.New("session"), Revision: 1, Messages: messages}); err != nil {
+	if err := child.Save(ctx, core.State{ID: id.New("session"), Revision: 1, Messages: messages}); err != nil {
 		return nil, errors.Join(err, child.Close())
 	}
 	return child, nil

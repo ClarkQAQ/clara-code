@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"clara-core/agent/prompt"
-	"clara-core/models"
+	"clara-code/pkg/core/prompt"
+	"clara-code/pkg/models"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"clara-code/internal/session"

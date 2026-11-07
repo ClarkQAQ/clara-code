@@ -5,8 +5,10 @@ import (
 	"math"
 	"path/filepath"
 	"strings"
+	"time"
 
-	"clara-core/agent/prompt"
+	"clara-code/internal/localtime"
+	"clara-code/pkg/core/prompt"
 )
 
 func tokenCount(count int64) string {
@@ -111,6 +113,7 @@ func (a *app) statusLine() string {
 }
 
 func (a *app) showStatus() {
+	now := time.Now()
 	meta := a.conv.Store.Meta()
 	total := "unknown"
 	if meta.TotalUsage.TotalTokens > 0 {
@@ -125,6 +128,7 @@ func (a *app) showStatus() {
 	}
 	a.view.message("notice", strings.Join([]string{
 		"Session  " + meta.ID, "Directory  " + a.space.Cwd, "Project  " + a.space.Root,
+		"Local time  " + localtime.DateTime(now), "Time zone  " + localtime.Zone(now),
 		"Model  " + modelLabel(meta), "Mode  " + mode, "Context  " + a.contextLabel(), "Total usage  " + total + " tokens",
 		fmt.Sprintf("MCP  %d configured servers", len(a.conv.MCPStatuses())),
 	}, "\n"))

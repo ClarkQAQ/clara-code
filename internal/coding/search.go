@@ -3,6 +3,7 @@ package coding
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"clara-core/agent/errs"
-	"clara-core/tools"
-	corefs "clara-core/tools/fs"
+	"clara-code/pkg/tools"
+	corefs "clara-code/pkg/tools/fs"
+	"clara-code/pkg/util/errs"
 )
 
 func (w Workspace) files() *tools.Files {
@@ -64,7 +65,7 @@ type searchBuffer struct{ bytes.Buffer }
 func (b *searchBuffer) Write(p []byte) (int, error) {
 	const limit = 8 << 20
 	if len(p) > limit-b.Len() {
-		return 0, fmt.Errorf("Git search enumeration exceeded 8 MiB; narrow path")
+		return 0, fmt.Errorf("git search enumeration exceeded 8 MiB; narrow path")
 	}
 	return b.Buffer.Write(p)
 }
@@ -84,7 +85,7 @@ func (w Workspace) gitSearch(ctx context.Context, root corefs.Path, args ...stri
 	var output, stderr searchBuffer
 	command.Stdout, command.Stderr = &output, &stderr
 	if err := command.Run(); err != nil {
-		return nil, fmt.Errorf("Git search enumeration failed: %w: %s", err, strings.TrimSpace(stderr.String()))
+		return nil, fmt.Errorf("git search enumeration failed: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	return output.Bytes(), nil
 }
@@ -134,7 +135,7 @@ func (w Workspace) searchSource(ctx context.Context, root corefs.Path, includeIg
 		}
 		count++
 		if count > 20000 {
-			return nil, fmt.Errorf("Git search enumeration exceeded 20000 files; narrow path")
+			return nil, fmt.Errorf("git search enumeration exceeded 20000 files; narrow path")
 		}
 		name := filepath.ToSlash(filepath.Join(w.Root, string(raw)))
 		for p := corefs.Path(name); p != "/"; p = p.Dir() {
@@ -174,10 +175,11 @@ func (w Workspace) gitIgnored(ctx context.Context, root corefs.Path) (bool, erro
 	if err == nil {
 		return true, nil
 	}
-	if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 1 {
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
 		return false, nil
 	}
-	return false, fmt.Errorf("Git ignore check failed: %w: %s", err, strings.TrimSpace(stderr.String()))
+	return false, fmt.Errorf("git ignore check failed: %w: %s", err, strings.TrimSpace(stderr.String()))
 }
 
 func searchGitCommand(ctx context.Context, args ...string) *exec.Cmd {

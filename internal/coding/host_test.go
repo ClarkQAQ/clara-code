@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"clara-core/agent"
-	"clara-core/agent/prompt"
-	"clara-core/models"
-	"clara-core/tools"
+	"clara-code/pkg/core"
+	"clara-code/pkg/core/prompt"
+	"clara-code/pkg/models"
+	"clara-code/pkg/tools"
 
 	"clara-code/internal/session"
 	"clara-code/internal/settings"
@@ -45,7 +45,7 @@ func testHost(t *testing.T, cwd string, model models.LanguageModel) (*Conversati
 	return c, host
 }
 
-func finish(t *testing.T, c *Conversation, mode prompt.Mode, input string) *agent.AgentResult {
+func finish(t *testing.T, c *Conversation, mode prompt.Mode, input string) *core.AgentResult {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 	defer cancel()
@@ -304,7 +304,7 @@ func writeTestFile(t *testing.T, root, name, text string) {
 
 func gitTest(t *testing.T, cwd string, args ...string) {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := exec.CommandContext(t.Context(), "git", args...)
 	cmd.Dir = cwd
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v %s", args, err, output)
@@ -317,7 +317,7 @@ func TestAutomaticCompactionKeepsVisibleTurns(t *testing.T) {
 	}}
 	c, _ := testHost(t, t.TempDir(), model)
 	prepare := c.Call(prompt.Execute, false).PrepareStep
-	_, prepared, err := prepare(t.Context(), agent.PrepareStepFunctionOptions{})
+	_, prepared, err := prepare(t.Context(), core.PrepareStepFunctionOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

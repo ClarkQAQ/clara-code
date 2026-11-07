@@ -11,9 +11,9 @@ import (
 	"strconv"
 	"strings"
 
-	"clara-core/models"
-	"clara-core/models/provider"
-	"clara-core/tools/mcp"
+	"clara-code/pkg/models"
+	"clara-code/pkg/models/provider"
+	"clara-code/pkg/tools/mcp"
 	"github.com/pelletier/go-toml/v2"
 )
 

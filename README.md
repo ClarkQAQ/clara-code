@@ -4,14 +4,47 @@ Clara Code 是基于 Clara Core 的终端编码助手。它使用终端主屏幕
 
 ## 启动
 
-需要 Go 1.27 和相邻目录里的 `clara-core` 工作树。
+需要 Go 1.27。CLI 与可复用的 Agent、模型及工具包均在当前仓库中。
 
 ```sh
-go run ./cmd/clara-code --demo
-go build -o clara-code ./cmd/clara-code
+go run . --demo
+go build -o clara-code .
 ./clara-code --cwd /path/to/project
 ./clara-code resume --cwd /path/to/project
 ```
+
+## 项目结构与库引用
+
+根目录 `main.go` 提供命令行入口，启动实现与终端、配置、会话存储等应用功能位于 `internal`。可复用机制位于 `pkg/core`、`pkg/models`、`pkg/tools` 和 `pkg/util`。`pkg` 不依赖 Clara 的应用层。示例位于 `examples`；更多装配说明见[公共 Go 包](docs/core.md)。
+
+其他本地项目可配置：
+
+```sh
+go mod edit -require=clara-code@v0.0.0
+go mod edit -replace=clara-code=/absolute/path/to/clara-code
+go mod tidy
+```
+
+```go
+import (
+    "clara-code/pkg/core"
+    "clara-code/pkg/models"
+    "clara-code/pkg/tools"
+)
+```
+
+旧导入路径按以下映射迁移，包内类型及功能保持原有行为，不提供旧模块兼容层：
+
+| 旧路径 | 新路径 |
+| --- | --- |
+| `clara-core/agent`（包名 `agent`） | `clara-code/pkg/core`（包名 `core`） |
+| `clara-core/agent/prompt` | `clara-code/pkg/core/prompt` |
+| `clara-core/agent/errs` | `clara-code/pkg/util/errs` |
+| `clara-core/agent/id` | `clara-code/pkg/util/id` |
+| `clara-core/models/...` | `clara-code/pkg/models/...` |
+| `clara-core/tools/...` | `clara-code/pkg/tools/...` |
+
+合并后无需相邻 Clara Core 工作树。现有配置、环境变量、会话及协议格式不变；原示例继续使用其 `CLARA_CORE_*` 配置。`make check` 统一运行格式检查、测试、race、vet、lint、CLI 与示例构建。`make build` 生成根目录的 `clara-code`；版本可用 `go build -ldflags '-X main.version=VERSION' .` 注入。英文[开发约定](AGENTS.md)说明新增功能的放置边界和检查要求。原框架的许可证、归属说明和提示词来源均已保留。
 
 真实模型可用环境变量配置。
 
@@ -101,7 +134,11 @@ args = ["acp"]
 
 交互问题包含编号选项和说明。上下键或数字选择，Tab 编辑备注，左右键切换问题，Enter 提交，Esc 中断。技能选择会把 `$技能名` 插入输入框，模型可通过 `read_skill` 和 `read_skill_resource` 读取技能及其附属文本文件。
 
-文件工具与 Shell 使用真实主机路径：相对路径以当前工作目录为基准，`..` 可访问相邻目录，绝对路径按系统原义解析，`/` 是系统根目录，`~/` 展开为当前用户主目录。文件工具的返回路径和 Hashline 头为真实绝对路径。Shell 的 `workdir` 使用相同语义，支持项目外目录。会话列表的时间统一显示为本地时间 `YYYY-MM-DD HH:mm`。
+文件工具与 Shell 使用真实主机路径：相对路径以当前工作目录为基准，`..` 可访问相邻目录，绝对路径按系统原义解析，`/` 是系统根目录，`~/` 展开为当前用户主目录。文件工具的返回路径和 Hashline 头为真实绝对路径。Shell 的 `workdir` 使用相同语义，支持项目外目录。
+
+界面中的完整日期时间按本地 `time.DateTime` 显示为 `YYYY-MM-DD HH:mm:ss`，日期使用 `YYYY-MM-DD`。`/status` 显示当前本地时间和时区；时区遵循进程的系统设置及 `TZ`，无法获得明确地区名称时显示 UTC 偏移，不根据 CST 等缩写猜测地区。主 Agent、子 Agent、Plan、Review 和 ACP 在每次模型步骤中取得新的当前日期、时间、RFC3339 时间戳及偏移，跨日、恢复和压缩后均刷新。这些时钟快照仅属于当前请求，不写入对话上下文；压缩保留历史日期和时区的原意。
+
+会话、事件和后台终端元数据继续使用带 `Z` 或明确偏移的 RFC3339 JSON 时间，保留原有小数秒精度，不改写旧记录。`stat.modified` 使用 RFC3339Nano，ACP 的诊断日志同样带时区且只写到标准错误。会话及终端 ID 为兼容保留，不能用其中的时间片段判断当前日期；模型时间基准以当前步骤的时钟快照为准。耗时与超时继续使用持续时间计算。PDF 等文件的专用时间字段遵循其格式规范。
 
 `glob` 与 `grep` 默认通过 Git 搜索跟踪文件及未被忽略的未跟踪文件，包含被忽略但已跟踪的文件。设置 `include_ignored=true` 可包含忽略文件；默认递归遍历跳过 Git 元数据和子模块，明确指定其中的目录为搜索根时允许进入。跨项目搜索使用目标仓库的 Git 规则，直接 `read` 不受过滤影响。非 Git 项目搜索完整目录树。每次搜索刷新 Git 规则；Git 枚举失败会明确报错，超过 20,000 个候选文件或 8 MiB 枚举输出时需缩小搜索路径。
 

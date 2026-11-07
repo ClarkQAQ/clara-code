@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"clara-core/agent/prompt"
-	"clara-core/models"
+	"clara-code/pkg/core/prompt"
+	"clara-code/pkg/models"
 
 	"clara-code/internal/coding"
 	"clara-code/internal/session"

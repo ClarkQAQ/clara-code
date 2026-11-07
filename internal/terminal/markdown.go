@@ -9,7 +9,7 @@ import (
 
 type span struct{ text, style string }
 
-var ansiStyle = regexp.MustCompile("\\x1b\\[[0-9;]*m")
+var ansiStyle = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 var inlineMarkdown = regexp.MustCompile("(`[^`\n]+`|\\*\\*[^*\n]+\\*\\*|\\*[^*\n]+\\*|\\[[^]\\n]+\\]\\([^ )\\n]+\\))")
 

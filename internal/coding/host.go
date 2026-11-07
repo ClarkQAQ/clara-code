@@ -13,11 +13,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"clara-core/agent"
-	"clara-core/agent/prompt"
-	"clara-core/models"
-	"clara-core/tools"
-	"clara-core/tools/mcp"
+	"clara-code/pkg/core"
+	"clara-code/pkg/core/prompt"
+	"clara-code/pkg/models"
+	"clara-code/pkg/tools"
+	"clara-code/pkg/tools/mcp"
 
 	"clara-code/internal/session"
 	"clara-code/internal/settings"
@@ -26,13 +26,14 @@ import (
 type Host struct {
 	Config settings.Config
 	Models func(context.Context, string) (models.LanguageModel, error)
+	now    func() time.Time
 }
 
 type Conversation struct {
 	Host      Host
 	Workspace Workspace
 	Store     *session.Store
-	Session   *agent.Session
+	Session   *core.Session
 	Goal      *tools.Goal
 	Questions *Questions
 	sessionMu sync.RWMutex
@@ -112,7 +113,7 @@ func (h Host) Open(ctx context.Context, workspace Workspace, store *session.Stor
 	})
 	var backend tools.TaskBackend = c.tasks
 	if len(h.Config.ACP) > 0 {
-		configs := make(map[string]agent.ACPExternalConfig, len(h.Config.ACP))
+		configs := make(map[string]core.ACPExternalConfig, len(h.Config.ACP))
 		executable, err := os.Executable()
 		if err != nil {
 			return cleanup(err)
@@ -122,7 +123,7 @@ func (h Host) Open(ctx context.Context, workspace Workspace, store *session.Stor
 				return cleanup(errors.New("external ACP agent needs a name and command"))
 			}
 			args := append([]string{"__acp_exec", config.Command}, config.Args...)
-			configs[name] = agent.ACPExternalConfig{Command: executable, Args: args, Cwd: workspace.Cwd, Env: config.Env}
+			configs[name] = core.ACPExternalConfig{Command: executable, Args: args, Cwd: workspace.Cwd, Env: config.Env}
 		}
 		c.external = tools.NewACPTaskBackend(configs, 2)
 		backend = &taskRouter{local: c.tasks, external: c.external}
@@ -137,11 +138,11 @@ func (h Host) Open(ctx context.Context, workspace Workspace, store *session.Stor
 		return c.publishActivity(activity)
 	})
 	c.items = append(c.items, taskTools(backend)...)
-	engine := agent.NewAgent(model)
+	engine := core.NewAgent(model)
 	if meta.ID == "" {
-		c.Session, err = agent.NewSession(ctx, engine, store)
+		c.Session, err = core.NewSession(ctx, engine, store)
 	} else {
-		c.Session, err = agent.OpenSession(ctx, engine, store, meta.ID)
+		c.Session, err = core.OpenSession(ctx, engine, store, meta.ID)
 	}
 	if err != nil {
 		return cleanup(err)
@@ -209,12 +210,12 @@ func (c *Conversation) ChangeModel(ctx context.Context, name, effort string) err
 	return nil
 }
 
-func (c *Conversation) Call(mode prompt.Mode, review bool) agent.AgentStreamCall {
+func (c *Conversation) Call(mode prompt.Mode, review bool) core.AgentStreamCall {
 	role := ""
 	if review {
 		mode, role = prompt.Plan, "reviewer"
 	}
-	call := agent.AgentStreamCall{PrepareStep: c.prepare(mode, role, c.model, c.items, c.plan, true)}
+	call := core.AgentStreamCall{PrepareStep: c.prepare(mode, role, c.model, c.items, c.plan, true)}
 	const retries = 3
 	call.MaxRetries = new(retries)
 	attempt := 0
@@ -237,7 +238,7 @@ func (c *Conversation) Call(mode prompt.Mode, review bool) agent.AgentStreamCall
 		}
 		return nil
 	}
-	call.OnRetry = func(err *agent.ProviderError, delay time.Duration) {
+	call.OnRetry = func(err *core.ProviderError, delay time.Duration) {
 		attempt++
 		failure := session.Failure{Kind: "connection", Message: "Connection interrupted"}
 		if err != nil {
@@ -261,7 +262,7 @@ func (c *Conversation) Call(mode prompt.Mode, review bool) agent.AgentStreamCall
 		failure.Message = c.Host.Config.Redact(failure.Message)
 		_ = c.Session.Emit(context.Background(), "model.error", failure)
 	}
-	call.OnAgentFinish = func(*agent.AgentResult) error {
+	call.OnAgentFinish = func(*core.AgentResult) error {
 		c.activities.finish(nil)
 		return nil
 	}
@@ -302,7 +303,7 @@ func (c *Conversation) Call(mode prompt.Mode, review bool) agent.AgentStreamCall
 	return call
 }
 
-func (c *Conversation) Start(ctx context.Context, mode prompt.Mode, text string, review bool) (*agent.Run, error) {
+func (c *Conversation) Start(ctx context.Context, mode prompt.Mode, text string, review bool) (*core.Run, error) {
 	if review && !c.Workspace.Git {
 		return nil, errors.New("/review requires a Git working tree")
 	}
@@ -311,17 +312,17 @@ func (c *Conversation) Start(ctx context.Context, mode prompt.Mode, text string,
 	return c.Session.Start(ctx, call)
 }
 
-func (c *Conversation) prepare(mode prompt.Mode, role string, model models.LanguageModel, registered []models.AgentTool, plan *tools.MemoryPlan, foreground bool) agent.PrepareStepFunction {
+func (c *Conversation) prepare(mode prompt.Mode, role string, model models.LanguageModel, registered []models.AgentTool, plan *tools.MemoryPlan, foreground bool) core.PrepareStepFunction {
 	var inputs *promptInputs
-	return func(ctx context.Context, step agent.PrepareStepFunctionOptions) (context.Context, agent.PrepareStepResult, error) {
+	return func(ctx context.Context, step core.PrepareStepFunctionOptions) (context.Context, core.PrepareStepResult, error) {
 		if inputs == nil || step.StepNumber == 0 {
 			rules, err := c.Workspace.rules(ctx, c.Host.Config.Home)
 			if err != nil {
-				return ctx, agent.PrepareStepResult{}, err
+				return ctx, core.PrepareStepResult{}, err
 			}
 			skills, skillTool, err := c.Workspace.skills(ctx, c.Host.Config.Home)
 			if err != nil {
-				return ctx, agent.PrepareStepResult{}, err
+				return ctx, core.PrepareStepResult{}, err
 			}
 			inputs = &promptInputs{rules, skills, skillTool}
 		}
@@ -352,12 +353,13 @@ func (c *Conversation) prepare(mode prompt.Mode, role string, model models.Langu
 			items = tools.PlanTools(items)
 		}
 		overrides["base"] = prompt.Default("base") + "\n\nBefore substantial tool work, give a short natural-language update describing your next action. After important findings or tool failures, briefly explain what changed and what you will do next. Keep these updates concise and separate from the final result."
+		overrides["base"] += "\n" + timeInstructions
 		system := prompt.System(prompt.Config{Mode: mode, Role: role, Tools: items, Overrides: overrides})
 		state := prompt.Context{Workspace: c.Workspace.Cwd, Rules: inputs.rules}
 		if plan != nil {
 			list, err := plan.GetPlan(ctx)
 			if err != nil {
-				return ctx, agent.PrepareStepResult{}, err
+				return ctx, core.PrepareStepResult{}, err
 			}
 			if len(list.Steps) > 0 {
 				state.Plan = jsonText(list)
@@ -376,6 +378,7 @@ func (c *Conversation) prepare(mode prompt.Mode, role string, model models.Langu
 		}
 		dynamic := state.Message()
 		body := session.Text(dynamic)
+		body += timeContext(c.Host.currentTime())
 		body += "\nBackground terminals in this process (old session IDs cannot be resumed after restart):\n" + jsonText(c.terminalSummaries())
 		body += "\nSearch tools follow the target repository Git ignore rules by default. Use include_ignored=true to include ignored files. Default recursive searches skip Git metadata and submodules; an explicit root inside them is allowed. Omitted search paths mean the current working directory.\nProject root: " + c.Workspace.Root + "\nFile tools and Shell use real host paths with current-user OS permissions. Relative paths and workdir start at the current working directory; absolute paths are native; / is the system root; ~/ expands to home. Use the real absolute headers returned by anchored reads for Hashline edits."
 		if c.Store.Meta().LegacyPathContext {
@@ -398,19 +401,19 @@ func (c *Conversation) prepare(mode prompt.Mode, role string, model models.Langu
 		if budget := c.Host.Config.ContextBytes; budget > 0 {
 			budget -= len(jsonText(dynamic))
 			if budget <= 0 {
-				return ctx, agent.PrepareStepResult{}, errors.New("workspace context exceeds the context budget")
+				return ctx, core.PrepareStepResult{}, errors.New("workspace context exceeds the context budget")
 			}
 			var err error
 			compacted, err = (prompt.Compactor{BudgetBytes: budget}).Fit(ctx, model, system, history, items)
 			if err != nil {
-				return ctx, agent.PrepareStepResult{}, err
+				return ctx, core.PrepareStepResult{}, err
 			}
 			if compacted != nil {
 				history = compacted
 			}
 		}
 		request := append(slices.Clone(history), dynamic)
-		return ctx, agent.PrepareStepResult{Model: model, System: &system, Tools: items, Messages: request, History: compacted}, nil
+		return ctx, core.PrepareStepResult{Model: model, System: &system, Tools: items, Messages: request, History: compacted}, nil
 	}
 }
 
@@ -467,7 +470,7 @@ func (c *Conversation) Compact(ctx context.Context) error {
 	if err := c.Store.ReplaceHistory(ctx, summary); err != nil {
 		return err
 	}
-	next, err := agent.OpenSession(context.WithoutCancel(ctx), agent.NewAgent(c.model), c.Store, old.ID())
+	next, err := core.OpenSession(context.WithoutCancel(ctx), core.NewAgent(c.model), c.Store, old.ID())
 	if err != nil {
 		return err
 	}
@@ -508,7 +511,7 @@ func (c *Conversation) ProjectLabel() string {
 	return filepath.Base(c.Workspace.Root)
 }
 
-func (c *Conversation) QueueInput(ctx context.Context, run *agent.Run, text string, follow bool) (bool, error) {
+func (c *Conversation) QueueInput(ctx context.Context, run *core.Run, text string, follow bool) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}

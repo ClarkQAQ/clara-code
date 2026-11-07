@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"clara-core/models"
-	"clara-core/tools"
+	"clara-code/pkg/models"
+	"clara-code/pkg/tools"
 
 	"clara-code/internal/session"
 )

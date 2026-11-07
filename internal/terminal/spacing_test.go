@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"clara-core/agent"
-	"clara-core/models"
+	"clara-code/pkg/core"
+	"clara-code/pkg/models"
 	"github.com/rivo/uniseg"
 )
 
@@ -148,12 +148,12 @@ func TestStreamingFramesKeepExactlyOneComposerGap(t *testing.T) {
 	screen := newScreen(70, 24)
 	a.view.output = screen
 	a.view.width, a.view.height = 70, 24
-	a.run = &agent.Run{ID: "spacing"}
+	a.run = &core.Run{ID: "spacing"}
 	a.stopRun = func() {}
 	a.activity.start(time.Now())
 	emit := func(kind string, value any) {
 		data, _ := json.Marshal(value)
-		a.onRunEvent(runEvent{event: agent.Event{Kind: kind, Data: data}})
+		a.onRunEvent(runEvent{event: core.Event{Kind: kind, Data: data}})
 	}
 	frame := func() {
 		t.Helper()
@@ -187,7 +187,7 @@ func TestStreamingFramesKeepExactlyOneComposerGap(t *testing.T) {
 	if screen.y != before {
 		t.Fatal("step completion temporarily showed an activity row")
 	}
-	a.onRunEvent(runEvent{done: true, event: agent.Event{Kind: "run.completed"}})
+	a.onRunEvent(runEvent{done: true, event: core.Event{Kind: "run.completed"}})
 	frame()
 	if screen.y != before {
 		t.Fatal("turn completion shifted composer")
@@ -196,7 +196,7 @@ func TestStreamingFramesKeepExactlyOneComposerGap(t *testing.T) {
 
 func TestLongStreamGapSurvivesResizeToolAndInterruption(t *testing.T) {
 	a := testApp(t)
-	a.run = &agent.Run{ID: "long"}
+	a.run = &core.Run{ID: "long"}
 	a.stopRun = func() {}
 	a.activity.start(time.Now())
 	a.activity.quiet = true
@@ -229,7 +229,7 @@ func TestLongStreamGapSurvivesResizeToolAndInterruption(t *testing.T) {
 	if screen.lines()[screen.y-2] != "" {
 		t.Fatal("tool activity lost separator")
 	}
-	a.onRunEvent(runEvent{done: true, event: agent.Event{Kind: "run.cancelled"}, err: context.Canceled})
+	a.onRunEvent(runEvent{done: true, event: core.Event{Kind: "run.cancelled"}, err: context.Canceled})
 	if err := a.draw(); err != nil {
 		t.Fatal(err)
 	}

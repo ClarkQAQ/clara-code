@@ -8,9 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"clara-core/agent/prompt"
-	"clara-core/tools"
+	"clara-code/pkg/core/prompt"
+	"clara-code/pkg/tools"
 
+	"clara-code/internal/localtime"
 	"clara-code/internal/session"
 )
 
@@ -335,7 +336,7 @@ func (a *app) openResume(startup bool) {
 		if text == "" {
 			text = "Empty conversation"
 		}
-		p.items = append(p.items, choice{id: item.ID, label: item.Updated.Local().Format("2006-01-02 15:04") + " · " + text + " · " + item.ID})
+		p.items = append(p.items, choice{id: item.ID, label: localtime.DateTime(item.Updated) + " · " + text + " · " + item.ID})
 	}
 	if len(p.items) == 0 {
 		if !startup {
