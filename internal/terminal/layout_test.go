@@ -122,7 +122,7 @@ func TestComposerCursorSurvivesActivityMenuAndStreaming(t *testing.T) {
 		t.Fatal(err)
 	}
 	view = a.pane()
-	if a.view.cursorRow != view.cursor.row+1 {
+	if a.view.cursorRow != view.cursor.row+2 {
 		t.Fatalf("stream tail did not offset real cursor: %d, composer %+v", a.view.cursorRow, view.cursor)
 	}
 	a.picker = &picker{kind: "model", title: "Select model", items: []choice{{label: "demo"}}}

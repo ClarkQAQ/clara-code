@@ -31,25 +31,28 @@ type Options struct {
 }
 
 type app struct {
-	runHistoryStart int
-	resyncNeeded    bool
-	ctx             context.Context
-	options         Options
-	view            painter
-	host            coding.Host
-	space           coding.Workspace
-	conv            *coding.Conversation
-	ask             *coding.Questions
-	editor          editor
-	mode            prompt.Mode
-	run             *agent.Run
-	events          <-chan runEvent
-	stopRun         context.CancelFunc
-	op              <-chan operationResult
-	stopOp          context.CancelFunc
-	opLabel         string
-	picker          *picker
-	question        *questionForm
+	runHistoryStart     int
+	resyncNeeded        bool
+	ctx                 context.Context
+	options             Options
+	view                painter
+	host                coding.Host
+	space               coding.Workspace
+	conv                *coding.Conversation
+	ask                 *coding.Questions
+	editor              editor
+	mode                prompt.Mode
+	run                 *agent.Run
+	events              <-chan runEvent
+	stopRun             context.CancelFunc
+	op                  <-chan operationResult
+	stopOp              context.CancelFunc
+	opLabel             string
+	picker              *picker
+	question            *questionForm
+	backgroundEvents    <-chan struct{}
+	stopTerminalResults chan error
+	stoppingTerminals   bool
 
 	prompts        []string
 	historyAt      int
@@ -180,6 +183,20 @@ func Run(ctx context.Context, options Options) (err error) {
 			a.activity.pause(time.Now())
 			a.picker = nil
 			a.dirty = true
+		case <-a.backgroundEvents:
+			a.syncBackground()
+			a.dirty = true
+		case err := <-a.stopTerminalResults:
+			a.stopTerminalResults = nil
+			a.stoppingTerminals = false
+			if err != nil {
+				a.notice(err)
+			} else {
+				a.flushStream()
+				a.view.message("notice", "Background terminal stop completed")
+			}
+			a.syncBackground()
+			a.dirty = true
 		case event := <-a.events:
 			a.onRunEvent(event)
 			a.dirty = true
@@ -210,7 +227,7 @@ func Run(ctx context.Context, options Options) (err error) {
 			}
 			a.dirty = true
 		case <-ticks.C:
-			if (a.run != nil || a.op != nil) && a.question == nil && time.Since(a.lastAnimation) >= 100*time.Millisecond {
+			if (a.run != nil || a.op != nil || len(a.toolGroup) > 0) && a.question == nil && time.Since(a.lastAnimation) >= 100*time.Millisecond {
 				a.lastAnimation = time.Now()
 				a.dirty = true
 			}
@@ -293,6 +310,10 @@ func (a *app) install(result operationResult) error {
 		a.view.resetHistory()
 	}
 	a.conv, a.space = result.conv, result.conv.Workspace
+	a.backgroundEvents = a.conv.BackgroundUpdates()
+	a.stopTerminalResults = nil
+	a.stoppingTerminals = false
+	a.toolGroup = nil
 	a.branch = a.space.Branch(a.ctx)
 	a.historyAt = -1
 	a.hint, a.primed = "", false
@@ -302,6 +323,9 @@ func (a *app) install(result operationResult) error {
 	a.editor.replace(result.draft)
 	a.view.welcome(a.options.Version, modelLabel(a.conv.Store.Meta()), a.space.Cwd)
 	a.prompts = nil
+	if a.conv.Store.Meta().LegacyPathContext {
+		a.view.message("notice", "Paths now refer to the real filesystem. Older /foo paths referred to the project root; read the intended target again before editing.")
+	}
 	for i := 0; i < a.conv.Store.TurnCount(); i++ {
 		if err := a.ctx.Err(); err != nil {
 			return err
@@ -330,6 +354,7 @@ func (a *app) install(result operationResult) error {
 	} else if result.label != "" && result.label != "Cleared conversation" {
 		a.view.message("notice", result.label+" · "+a.conv.Store.Meta().ID)
 	}
+	a.syncBackground()
 	a.editor.insert(a.operationDraft.text)
 	a.operationDraft.replace("")
 	return nil
@@ -491,11 +516,13 @@ func (a *app) onRunEvent(update runEvent) {
 	case "model.responding":
 		a.activity.retry = nil
 	case "model.started":
+		a.activity.quiet = false
 		a.streamID = ""
 		a.activity.header = workingVerbs[rand.IntN(len(workingVerbs))]
 		a.activity.retry = nil
 		a.activity.failure = nil
 	case "text_start":
+		a.activity.quiet = true
 		var part models.StreamPart
 		if json.Unmarshal(event.Data, &part) == nil {
 			if a.streamID != "" && a.streamID != part.ID {
@@ -505,6 +532,7 @@ func (a *app) onRunEvent(update runEvent) {
 			a.activity.retry = nil
 		}
 	case "text_delta":
+		a.activity.quiet = true
 		var chunk models.StreamPart
 		if json.Unmarshal(event.Data, &chunk) == nil {
 			if a.streamID != "" && a.streamID != chunk.ID {
@@ -615,9 +643,6 @@ func (a *app) draw() error {
 	pane = pane.slice(0, p.height)
 	if a.stream != "" {
 		rows := p.messageRows("assistant", a.stream)
-		if len(rows) > 0 {
-			rows = rows[:len(rows)-1]
-		}
 		live := max(1, min(5, p.height-len(pane.rows)))
 		commitTo := max(0, len(rows)-live)
 		if commitTo < a.streamRows {
@@ -663,11 +688,17 @@ func (a *app) pane() layout {
 		footer = []string{a.statusLine()}
 	}
 	var lines []string
+	hasActivity := false
 	if a.stream == "" {
 		for _, tool := range a.toolGroup {
 			lines = append(lines, p.toolRows(tool, time.Now())...)
 		}
-		lines = append(lines, a.activityRows(time.Now())...)
+		activity := a.activityRows(time.Now())
+		hasActivity = len(activity) > 0
+		lines = append(lines, activity...)
+	}
+	if summary := a.backgroundSummary(); summary != "" && !hasActivity {
+		lines = append(lines, p.style(dim, truncate("  "+summary, p.width)), "")
 	}
 	borderRows := min(2, max(0, p.height-1))
 	if maxRows := max(0, p.height-borderRows-len(input.rows)-len(footer)); len(lines) > maxRows {

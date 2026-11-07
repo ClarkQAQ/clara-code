@@ -10,6 +10,7 @@ import (
 )
 
 type activityState struct {
+	quiet      bool
 	started    time.Time
 	paused     time.Time
 	header     string
@@ -60,7 +61,7 @@ func summaryTitle(text string) string {
 }
 
 func (a *app) activityRows(now time.Time) []string {
-	if a.run == nil && a.op == nil {
+	if (a.run == nil && a.op == nil) || (a.op == nil && a.activity.quiet && a.activity.retry == nil && a.activity.failure == nil) {
 		return nil
 	}
 	p := &a.view
@@ -86,6 +87,9 @@ func (a *app) activityRows(now time.Time) []string {
 		for _, tool := range a.toolGroup {
 			if tool.Active() {
 				header = "Running " + tool.Title
+				if tool.Interaction != "" {
+					header = tool.Title
+				}
 				break
 			}
 		}
@@ -122,6 +126,14 @@ func (a *app) activityRows(now time.Time) []string {
 			if i == 1 {
 				break
 			}
+		}
+	}
+	if summary := a.backgroundSummary(); summary != "" {
+		combined := label + " · " + summary
+		if widthOf(prefix+combined) <= p.width {
+			rows[0] = p.style(style, prefix+combined)
+		} else {
+			rows = append(rows, p.style(dim, truncate("  "+summary, p.width)))
 		}
 	}
 	return append(rows, "")

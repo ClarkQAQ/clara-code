@@ -53,6 +53,27 @@ func (p *painter) toolRows(activity session.ToolActivity, now time.Time) []strin
 		title = activity.Name
 	}
 	title = singleLine(title)
+	if activity.Interaction != "" {
+		title = singleLine(activity.Title)
+		header := "• " + title
+		if activity.Active() {
+			header = indicator(now) + " " + title
+		}
+		if activity.Detail != "" {
+			header += " · " + singleLine(activity.Detail)
+		}
+		var lines []string
+		for _, row := range wrap(header, max(1, p.width)) {
+			lines = append(lines, p.style(dim, row.text))
+		}
+		if activity.Input != "" {
+			lines = append(lines, p.style(dim, truncate("  └ "+singleLine(activity.Input), p.width)))
+		}
+		if activity.Error != "" {
+			lines = append(lines, p.style(dim, truncate("  └ "+singleLine(activity.Error), p.width)))
+		}
+		return append(lines, "")
+	}
 	var heading []span
 	heading = append(heading, span{text: title, style: bold})
 	if activity.Detail != "" {
@@ -127,7 +148,16 @@ func (a *app) onToolActivity(activity session.ToolActivity) {
 	if activity.CallID == "" {
 		return
 	}
+	if a.conv != nil {
+		for _, latest := range a.conv.Store.Commands() {
+			if latest.Key() == activity.Key() {
+				activity = latest
+				break
+			}
+		}
+	}
 	a.flushStream()
+	a.activity.quiet = false
 	for i, cell := range a.view.history {
 		if cell.Tool != nil && cell.Tool.Key() == activity.Key() {
 			snapshot := activity

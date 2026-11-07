@@ -10,24 +10,30 @@ import (
 )
 
 type ToolActivity struct {
-	ID         string    `json:"id,omitempty"`
-	CallID     string    `json:"call_id"`
-	Name       string    `json:"name"`
-	Arguments  string    `json:"arguments,omitempty"`
-	Title      string    `json:"title"`
-	Detail     string    `json:"detail,omitempty"`
-	Status     string    `json:"status"`
-	Started    time.Time `json:"started"`
-	Finished   time.Time `json:"finished,omitempty"`
-	SessionID  string    `json:"session_id,omitempty"`
-	ExitCode   *int      `json:"exit_code,omitempty"`
-	DurationMS int64     `json:"duration_ms,omitempty"`
-	Output     string    `json:"output,omitempty"`
-	Omitted    int       `json:"omitted,omitempty"`
-	Error      string    `json:"error,omitempty"`
+	Owner           string    `json:"owner,omitempty"`
+	Interaction     string    `json:"interaction,omitempty"`
+	Input           string    `json:"input,omitempty"`
+	CommandRevision uint64    `json:"command_revision,omitempty"`
+	ID              string    `json:"id,omitempty"`
+	CallID          string    `json:"call_id"`
+	Name            string    `json:"name"`
+	Arguments       string    `json:"arguments,omitempty"`
+	Title           string    `json:"title"`
+	Detail          string    `json:"detail,omitempty"`
+	Status          string    `json:"status"`
+	Started         time.Time `json:"started"`
+	Finished        time.Time `json:"finished,omitempty"`
+	SessionID       string    `json:"session_id,omitempty"`
+	ExitCode        *int      `json:"exit_code,omitempty"`
+	DurationMS      int64     `json:"duration_ms,omitempty"`
+	Output          string    `json:"output,omitempty"`
+	Omitted         int       `json:"omitted,omitempty"`
+	Error           string    `json:"error,omitempty"`
 }
 
 type CommandOutcome struct {
+	Snapshot   bool   `json:"snapshot,omitempty"`
+	Revision   uint64 `json:"revision,omitempty"`
 	Output     string `json:"output,omitempty"`
 	Running    bool   `json:"running"`
 	ExitCode   *int   `json:"exit_code,omitempty"`
@@ -95,7 +101,7 @@ func (t ToolActivity) Key() string {
 }
 
 func (t ToolActivity) DisplayBytes() int {
-	return len(t.Arguments) + len(t.Detail) + len(t.Output) + len(t.Error)
+	return len(t.Arguments) + len(t.Detail) + len(t.Output) + len(t.Error) + len(t.Input)
 }
 
 func (t ToolActivity) Active() bool {
@@ -173,7 +179,7 @@ func (t ToolActivity) WithResult(result models.ToolResultContent, now time.Time)
 			t.Error = "Command stopped"
 		}
 		addition, omitted := PreviewOutput(command.Output, 16<<10)
-		if t.Output != "" {
+		if t.Output != "" && !command.Snapshot {
 			if addition == "" {
 				addition = t.Output
 			} else {
@@ -183,6 +189,11 @@ func (t ToolActivity) WithResult(result models.ToolResultContent, now time.Time)
 		oldOmitted := t.Omitted
 		t.Output, t.Omitted = PreviewOutput(addition, 16<<10)
 		t.Omitted += oldOmitted + command.Omitted + omitted
+		if command.Snapshot {
+			t.Output, t.Omitted = PreviewOutput(command.Output, 16<<10)
+			t.Omitted += command.Omitted
+			t.CommandRevision = command.Revision
+		}
 		return t
 	}
 	t.Output, t.Omitted = PreviewOutput(output, 16<<10)
@@ -194,9 +205,10 @@ func (t ToolActivity) Bounded(limit int) ToolActivity {
 		return t
 	}
 	t.Arguments = excerpt(t.Arguments, max(0, limit/4))
+	t.Input = excerpt(t.Input, max(0, limit/8))
 	t.Detail = excerpt(t.Detail, min(1000, max(0, limit/8)))
 	t.Error = excerpt(t.Error, min(1000, max(0, limit/8)))
-	outputLimit := max(0, limit-len(t.Arguments)-len(t.Detail)-len(t.Error))
+	outputLimit := max(0, limit-len(t.Arguments)-len(t.Detail)-len(t.Error)-len(t.Input))
 	if outputLimit > 100 {
 		var omitted int
 		t.Output, omitted = PreviewOutput(t.Output, outputLimit)

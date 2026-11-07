@@ -28,6 +28,8 @@ const maxManifest = agent.MaxStateBytes + 12<<20
 var safeID = regexp.MustCompile(`^(session|run)_[a-zA-Z0-9_.-]{1,96}$`)
 
 type Meta struct {
+	PathMode                              int  `json:",omitempty"`
+	LegacyPathContext                     bool `json:",omitempty"`
 	ID, Project, Cwd, Parent, FirstPrompt string
 	Model, Effort                         string
 	Updated                               time.Time
@@ -55,11 +57,12 @@ type Turn struct {
 }
 
 type manifest struct {
-	Version int
-	Meta    Meta
-	State   agent.State
-	Turns   []string
-	Active  *Turn
+	Commands map[string]ToolActivity `json:",omitempty"`
+	Version  int
+	Meta     Meta
+	State    agent.State
+	Turns    []string
+	Active   *Turn
 }
 
 type Store struct {
@@ -70,6 +73,9 @@ type Store struct {
 }
 
 func New(home string, meta Meta) *Store {
+	if meta.PathMode == 0 && meta.ID == "" && meta.Parent == "" && meta.Project != "" {
+		meta.PathMode = 2
+	}
 	return &Store{home: home, data: manifest{Version: 1, Meta: meta}}
 }
 
@@ -378,6 +384,19 @@ func (s *Store) ReadTurn(index int) (Turn, error) {
 	}
 	var turn Turn
 	err := read(s.object(runID, ""), 10<<20, &turn)
+	s.mu.Lock()
+	for i, cell := range turn.Cells {
+		if cell.Tool == nil {
+			continue
+		}
+		value, ok := s.data.Commands[cell.Tool.Key()]
+		if !ok {
+			value = interruptedCommand(*cell.Tool, "Interrupted; this terminal is not running in this process")
+		}
+		turn.Cells[i].Tool = &value
+	}
+	s.mu.Unlock()
+
 	return turn, err
 }
 
@@ -408,6 +427,24 @@ func (s *Store) Fork(ctx context.Context, index int) (*Store, error) {
 	}
 	child := New(s.home, meta)
 	child.data.Turns = slices.Clone(turns)
+	child.data.Commands = map[string]ToolActivity{}
+	allowed := map[string]bool{}
+	for _, turnID := range turns {
+		var turn Turn
+		if err := read(s.object(turnID, ""), 10<<20, &turn); err != nil {
+			return nil, err
+		}
+		for _, cell := range turn.Cells {
+			if cell.Tool != nil {
+				allowed[cell.Tool.Key()] = true
+			}
+		}
+	}
+	for key, value := range s.data.Commands {
+		if index < 0 || allowed[key] {
+			child.data.Commands[key] = interruptedCommand(value, "Terminal not resumed in this branch")
+		}
+	}
 	if err := child.Save(ctx, agent.State{ID: id.New("session"), Revision: 1, Messages: messages}); err != nil {
 		return nil, errors.Join(err, child.Close())
 	}
@@ -551,4 +588,20 @@ func (s *Store) ActiveTurn() *Turn {
 	turn := *s.data.Active
 	turn.Cells = slices.Clone(turn.Cells)
 	return &turn
+}
+
+// MarkHostPaths records the native path namespace without rewriting old messages.
+func (s *Store) MarkHostPaths() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.data.Meta.PathMode == 2 {
+		return nil
+	}
+	if s.data.Meta.PathMode != 0 && s.data.Meta.PathMode != 1 {
+		return errors.New("unsupported session path namespace")
+	}
+	next := s.data
+	next.Meta.PathMode = 2
+	next.Meta.LegacyPathContext = len(next.State.Messages) > 0 || len(next.Turns) > 0
+	return s.commit(next)
 }

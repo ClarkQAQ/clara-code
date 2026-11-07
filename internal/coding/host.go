@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"clara-core/agent"
@@ -36,16 +37,21 @@ type Conversation struct {
 	Questions *Questions
 	sessionMu sync.RWMutex
 
-	model      models.LanguageModel
-	plan       *tools.MemoryPlan
-	items      []models.AgentTool
-	commands   *tools.Commands
-	mcp        *mcp.Manager
-	tasks      *tools.TaskScope
-	backend    tools.TaskBackend
-	external   *tools.ACPTaskBackend
-	cancel     context.CancelFunc
-	activities *activityLog
+	model             models.LanguageModel
+	plan              *tools.MemoryPlan
+	items             []models.AgentTool
+	commands          *tools.Commands
+	mcp               *mcp.Manager
+	tasks             *tools.TaskScope
+	backend           tools.TaskBackend
+	external          *tools.ACPTaskBackend
+	cancel            context.CancelFunc
+	activities        *activityLog
+	commandSequence   atomic.Uint64
+	backgroundUpdates chan struct{}
+	monitorDone       chan struct{}
+	backgroundMu      sync.Mutex
+	backgroundErr     error
 }
 
 func (h Host) Open(ctx context.Context, workspace Workspace, store *session.Store, ask *Questions, extra []mcp.ServerConfig) (*Conversation, error) {
@@ -63,8 +69,9 @@ func (h Host) Open(ctx context.Context, workspace Workspace, store *session.Stor
 	c.model = model
 	c.commands = tools.NewCommands(observedRunner{runner{workspace, tools.NewLocal()}})
 	c.commands.Context = lifetime
-	files := tools.NewFiles(workspace.toolFS(), nil)
-	c.items = append(files.All(), observeCommand(c.commands.ExecCommand()), observeCommand(c.commands.WriteStdin()),
+	c.commands.NoDefaultTimeout = true
+	files := workspace.files()
+	c.items = append(hostPathTools(files.All()), c.command(c.commands.ExecCommand(), "main"), c.command(c.commands.WriteStdin(), "main"),
 		tools.GetPlan(c.plan), tools.UpdatePlan(c.plan), c.Goal.Get(), c.Goal.Update())
 	if ask != nil {
 		c.items = append(c.items, ask.Tool())
@@ -127,7 +134,7 @@ func (h Host) Open(ctx context.Context, workspace Workspace, store *session.Stor
 		}
 		return ""
 	}, func(activity session.ToolActivity) error {
-		return c.Session.Emit(context.Background(), "tool.activity", activity)
+		return c.publishActivity(activity)
 	})
 	c.items = append(c.items, taskTools(backend)...)
 	engine := agent.NewAgent(model)
@@ -139,6 +146,16 @@ func (h Host) Open(ctx context.Context, workspace Workspace, store *session.Stor
 	if err != nil {
 		return cleanup(err)
 	}
+	if err := store.InterruptCommands(); err != nil {
+		return cleanup(err)
+	}
+	if err := store.MarkHostPaths(); err != nil {
+		return cleanup(err)
+	}
+	c.backgroundUpdates = make(chan struct{}, 1)
+	c.monitorDone = make(chan struct{})
+	c.commands.OnChange = c.onTerminal
+	go c.watchTerminals(lifetime)
 	return c, nil
 }
 
@@ -229,7 +246,12 @@ func (c *Conversation) Call(mode prompt.Mode, review bool) agent.AgentStreamCall
 		failure.Message = c.Host.Config.Redact(failure.Message)
 		_ = c.Session.Emit(context.Background(), "model.retry", session.RetryStatus{Attempt: attempt, Limit: retries, DelayMS: delay.Milliseconds(), Kind: failure.Kind, Message: failure.Message})
 	}
-	call.OnToolCall = c.activities.start
+	call.OnToolCall = func(call models.ToolCallContent) error {
+		if call.ToolName == "exec_command" || call.ToolName == "write_stdin" {
+			return nil
+		}
+		return c.activities.start(call)
+	}
 	call.OnError = func(err error) {
 		c.activities.finish(err)
 		failure := session.DescribeFailure(err)
@@ -259,8 +281,10 @@ func (c *Conversation) Call(mode prompt.Mode, review bool) agent.AgentStreamCall
 		}
 	}
 	call.OnToolResult = func(result models.ToolResultContent) error {
-		if err := c.activities.complete(result); err != nil {
-			return err
+		if result.ToolName != "exec_command" && result.ToolName != "write_stdin" {
+			if err := c.activities.complete(result); err != nil {
+				return err
+			}
 		}
 		switch result.ToolName {
 		case "update_plan":
@@ -309,6 +333,16 @@ func (c *Conversation) prepare(mode prompt.Mode, role string, model models.Langu
 			items = append(items, c.mcp.Tools()...)
 		}
 		overrides := map[string]string{}
+		for _, fragment := range []string{"search", "hashline", "commands"} {
+			body := strings.ReplaceAll(prompt.Default(fragment), `"path":"/`, `"path":"`)
+			body = strings.ReplaceAll(body, "[/main.go#", "[/absolute/path/main.go#")
+			body = strings.ReplaceAll(body, "logical workspace paths", "real host paths")
+			body = strings.ReplaceAll(body, "workspace root", "system filesystem root")
+			body = strings.ReplaceAll(body, "timeout_seconds defaults to 600 and has a maximum of 600", "timeout_seconds is optional in Clara Code; omission sets no total deadline, and explicit values up to 600 seconds still apply")
+			overrides[fragment] = body
+		}
+		overrides["commands"] += "\nDetached terminals belong to this Clara session, including terminals started by subagents. Canceling a turn or write_stdin wait leaves detached terminals running. Check their latest status before polling or restarting; do not restart a terminal explicitly stopped by the user unless requested. Automatic observation does not consume unread output or start a new turn."
+		overrides["workspace_rules"] = prompt.Default("workspace_rules") + "\nClara Code already injects global instructions and current-directory project rules. fs_instructions queries project files only; no project instructions does not mean no global instructions. For new files, query the destination path before writing."
 		if role == "reviewer" && foreground {
 			items = append(items, c.Workspace.reviewTool())
 			overrides["review"] = prompt.Default("review") + "\nCall review_changes to inspect staged, unstaged and untracked changes. " +
@@ -342,7 +376,11 @@ func (c *Conversation) prepare(mode prompt.Mode, role string, model models.Langu
 		}
 		dynamic := state.Message()
 		body := session.Text(dynamic)
-		body += "\nProject root: " + c.Workspace.Root + "\nFile tool paths are relative to the project root; / is the project root. Use anchored paths verbatim for Hashline edits. Shell commands default to the current working directory; relative workdir values resolve there."
+		body += "\nBackground terminals in this process (old session IDs cannot be resumed after restart):\n" + jsonText(c.terminalSummaries())
+		body += "\nSearch tools follow the target repository Git ignore rules by default. Use include_ignored=true to include ignored files. Default recursive searches skip Git metadata and submodules; an explicit root inside them is allowed. Omitted search paths mean the current working directory.\nProject root: " + c.Workspace.Root + "\nFile tools and Shell use real host paths with current-user OS permissions. Relative paths and workdir start at the current working directory; absolute paths are native; / is the system root; ~/ expands to home. Use the real absolute headers returned by anchored reads for Hashline edits."
+		if c.Store.Meta().LegacyPathContext {
+			body += "\nPath migration: older transcript entries used /foo to mean a file under " + c.Workspace.Root + ". That old virtual mapping no longer applies. Re-resolve the intended target and read it again before editing; old snapshots are invalid. New calls always use native host paths."
+		}
 		if len(inputs.skills) > 0 {
 			body += "\n## Available skills\n" + jsonText(inputs.skills)
 		}
@@ -441,6 +479,9 @@ func (c *Conversation) Compact(ctx context.Context) error {
 
 func (c *Conversation) Close() error {
 	c.cancel()
+	if c.monitorDone != nil {
+		<-c.monitorDone
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 	var err error

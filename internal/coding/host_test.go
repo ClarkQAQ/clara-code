@@ -115,7 +115,7 @@ func TestCodingLoopUsesRealHashlineAndShell(t *testing.T) {
 			return toolReply("read", map[string]any{"path": "test.txt", "anchored": true}, 1), nil
 		case 1:
 			header, _, _ := strings.Cut(outputs[0], "\n")
-			if !strings.HasPrefix(header, "[/test.txt#") {
+			if !strings.HasPrefix(header, "[") || !strings.Contains(header, "/test.txt#") {
 				return nil, fmt.Errorf("no anchored snapshot: %s", outputs[0])
 			}
 			return toolReply("edit", map[string]any{"input": header + "\nPUT 1.=1:\n+new"}, 2), nil

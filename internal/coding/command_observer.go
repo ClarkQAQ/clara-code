@@ -27,7 +27,11 @@ func (r observedRunner) Start(ctx context.Context, spec tools.Spec) (tools.Proce
 	if err != nil {
 		return nil, err
 	}
-	return observedProcess{process}, nil
+	wrapped := observedProcess{process}
+	if _, ok := process.(tools.SnapshotProcess); ok {
+		return observedSnapshotProcess{wrapped}, nil
+	}
+	return wrapped, nil
 }
 
 func (p observedProcess) Poll(ctx context.Context, wait time.Duration) (tools.Poll, error) {
@@ -56,6 +60,25 @@ func (t observedCommand) Run(ctx context.Context, call models.ToolCall) (models.
 		Stop      bool   `json:"stop"`
 	}
 	_ = json.Unmarshal([]byte(call.Input), &input)
+	var state struct {
+		Terminal tools.TerminalInfo `json:"terminal"`
+	}
+	_ = json.Unmarshal([]byte(result.Metadata), &state)
+	if state.Terminal.ID != "" {
+		info := state.Terminal
+		outcome := session.CommandOutcome{Output: info.Poll.Output, Running: info.Status == "running", TimedOut: info.Status == "timed_out", Stopped: info.Status == "stopped", SessionID: info.ID, DurationMS: info.Poll.Duration.Milliseconds(), Snapshot: info.Observable, Revision: info.Revision}
+		outcome.Output, outcome.Omitted = session.PreviewOutput(info.Poll.Output, 16<<10)
+		if info.Poll.OutputOffset > 0 {
+			outcome.Omitted++
+		}
+		if !outcome.Running {
+			exit := info.Poll.ExitCode
+			outcome.ExitCode = &exit
+		}
+		body, _ := json.Marshal(map[string]any{"clara_command": outcome})
+		result.Metadata = string(body)
+		return result, nil
+	}
 	if !observation.valid && (!input.Stop || result.IsError) {
 		return result, nil
 	}
@@ -79,4 +102,10 @@ func (t observedCommand) Run(ctx context.Context, call models.ToolCall) (models.
 	body, _ := json.Marshal(metadata)
 	result.Metadata = string(body)
 	return result, nil
+}
+
+type observedSnapshotProcess struct{ observedProcess }
+
+func (p observedSnapshotProcess) Snapshot(ctx context.Context) (tools.Poll, error) {
+	return p.Process.(tools.SnapshotProcess).Snapshot(ctx)
 }

@@ -15,25 +15,8 @@ type tmuxCursor struct {
 }
 
 func TestInlineNativeCursorInTmux(t *testing.T) {
-	tmuxPath, err := exec.LookPath("tmux")
-	if err != nil {
-		t.Skip("tmux is not installed")
-	}
 	home, cwd := t.TempDir(), t.TempDir()
-	socket := "clara-cursor-" + filepath.Base(filepath.Dir(home))
-	call := func(args ...string) string {
-		t.Helper()
-		command := exec.Command(tmuxPath, append([]string{"-L", socket, "-f", "/dev/null"}, args...)...)
-		output, err := command.CombinedOutput()
-		if err != nil {
-			t.Fatalf("tmux %v: %v\n%s", args, err, output)
-		}
-		return string(output)
-	}
-	t.Cleanup(func() {
-		_ = exec.Command(tmuxPath, "-L", socket, "kill-server").Run()
-	})
-	call("new-session", "-d", "-s", "cursor", "-x", "64", "-y", "24", "env", childEnv+"=1", "CLARA_CODE_HOME="+home, "TERM=xterm-256color", os.Args[0], "--demo", "--cwd", cwd)
+	call := startTmux(t, home, "--demo", "--cwd", cwd)
 	inspect := func() (string, tmuxCursor) {
 		t.Helper()
 		text := call("capture-pane", "-p", "-S", "-2000", "-t", "cursor")
@@ -112,4 +95,28 @@ func TestInlineNativeCursorInTmux(t *testing.T) {
 	})
 	call("send-keys", "-t", "cursor", "Escape")
 	await("restored input cursor", func(text string, cursor tmuxCursor) bool { return onInput(text, cursor, "Run /review", 2) })
+}
+
+func startTmux(t *testing.T, home string, args ...string) func(...string) string {
+	t.Helper()
+	tmuxPath, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux is not installed")
+	}
+	socket := "clara-cursor-" + filepath.Base(filepath.Dir(home))
+	call := func(args ...string) string {
+		t.Helper()
+		command := exec.Command(tmuxPath, append([]string{"-L", socket, "-f", "/dev/null"}, args...)...)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("tmux %v: %v\n%s", args, err, output)
+		}
+		return string(output)
+	}
+	t.Cleanup(func() {
+		_ = exec.Command(tmuxPath, "-L", socket, "kill-server").Run()
+	})
+	command := []string{"new-session", "-d", "-s", "cursor", "-x", "64", "-y", "24", "env", childEnv + "=1", "CLARA_CODE_HOME=" + home, "TERM=xterm-256color", os.Args[0]}
+	call(append(command, args...)...)
+	return call
 }

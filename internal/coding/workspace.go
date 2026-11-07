@@ -16,6 +16,7 @@ import (
 	"clara-core/models"
 	"clara-core/tools"
 	corefs "clara-core/tools/fs"
+	"clara-core/tools/fs/host"
 	"clara-core/tools/fs/local"
 	"clara-core/tools/fs/mount"
 	"github.com/pelletier/go-toml/v2"
@@ -26,6 +27,7 @@ type Workspace struct {
 	Root, Cwd string
 	Git       bool
 	FS        *local.FS
+	Native    *host.FS
 }
 
 func ResolveWorkspace(path string) (Workspace, error) {
@@ -56,7 +58,11 @@ func ResolveWorkspace(path string) (Workspace, error) {
 		}
 	}
 	storage, err := local.New(root)
-	return Workspace{Root: root, Cwd: cwd, Git: git, FS: storage}, err
+	if err != nil {
+		return Workspace{}, err
+	}
+	native, err := host.New(cwd)
+	return Workspace{Root: root, Cwd: cwd, Git: git, FS: storage, Native: native}, err
 }
 
 func (w Workspace) Branch(ctx context.Context) string {
@@ -86,31 +92,22 @@ type runner struct {
 }
 
 func (r runner) Start(ctx context.Context, spec tools.Spec) (tools.Process, error) {
-	cwd := r.workspace.Cwd
-	if spec.Workdir != "" {
-		if filepath.IsAbs(spec.Workdir) {
-			if spec.Workdir == r.workspace.Root || strings.HasPrefix(spec.Workdir, r.workspace.Root+string(filepath.Separator)) {
-				cwd = spec.Workdir
-			} else {
-				// Canonical Core paths returned by file tools are rooted at the project.
-				cwd = filepath.Join(r.workspace.Root, strings.TrimPrefix(spec.Workdir, "/"))
-			}
-		} else {
-			cwd = filepath.Join(cwd, spec.Workdir)
-		}
-	}
-	relative, err := filepath.Rel(r.workspace.Root, cwd)
+	resolved, err := r.workspace.Native.ResolvePath(spec.Workdir)
 	if err != nil {
 		return nil, err
 	}
-	logical, err := corefs.Clean(filepath.ToSlash(relative))
+	cwd, err := filepath.EvalSymlinks(filepath.FromSlash(resolved.String()))
 	if err != nil {
 		return nil, err
 	}
-	spec.Workdir, err = r.workspace.FS.ResolveDir(ctx, logical)
+	info, err := os.Stat(cwd)
 	if err != nil {
 		return nil, err
 	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("working directory is not a directory: %s", cwd)
+	}
+	spec.Workdir = cwd
 	return r.local.Start(ctx, spec)
 }
 
@@ -312,25 +309,39 @@ func boundedFile(path string, limit int64) ([]byte, error) {
 	return body, err
 }
 
-type workspaceFS struct{ *local.FS }
-
-func (f workspaceFS) ResolvePath(value string) (corefs.Path, error) {
-	if filepath.IsAbs(value) {
-		root := f.Root()
-		if value == root {
-			return "/", nil
-		}
-		if strings.HasPrefix(value, root+string(filepath.Separator)) {
-			relative, err := filepath.Rel(root, value)
-			if err != nil {
-				return "", err
-			}
-			return corefs.Clean(filepath.ToSlash(relative))
-		}
-	}
-	return corefs.Clean(value)
+func (w Workspace) toolFS() *host.FS {
+	return w.Native
 }
 
-func (w Workspace) toolFS() workspaceFS {
-	return workspaceFS{w.FS}
+func projectForPath(value string) (string, bool, error) {
+	info, err := os.Stat(value)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", false, err
+	}
+	if err != nil || !info.IsDir() {
+		value = filepath.Dir(value)
+	}
+	for dir := value; ; dir = filepath.Dir(dir) {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return dir, true, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", false, err
+		}
+		if filepath.Dir(dir) == dir {
+			break
+		}
+	}
+	return string(filepath.Separator), false, nil
+}
+
+func (w Workspace) targetRules(ctx context.Context, target corefs.Path) (string, error) {
+	real, err := w.Native.RealPath(ctx, target)
+	if err != nil {
+		return "", err
+	}
+	root, _, err := projectForPath(filepath.FromSlash(real.String()))
+	if err != nil {
+		return "", err
+	}
+	return corefs.InstructionsFrom(ctx, w.Native, corefs.Path(filepath.ToSlash(root)), real)
 }

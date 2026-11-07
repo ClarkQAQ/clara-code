@@ -206,6 +206,10 @@ func (a *app) submit(line string) bool {
 		a.switchSession("", false, -1, "", "Cleared conversation")
 	case "/status":
 		a.showStatus()
+	case "/ps":
+		a.showTerminals()
+	case "/stop":
+		a.stopTerminals(arg)
 	case "/pwd":
 		a.view.message("notice", a.space.Cwd)
 	case "/diff":

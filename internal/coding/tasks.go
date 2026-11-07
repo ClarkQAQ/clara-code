@@ -33,18 +33,19 @@ func (c *Conversation) buildTask(ctx context.Context, spec tools.TaskSpec, scope
 		return tools.TaskSetup{}, err
 	}
 	role := strings.ToLower(spec.Role)
-	files := tools.NewFiles(c.Workspace.toolFS(), nil)
+	files := c.Workspace.files()
 	items := []models.AgentTool{files.List(), files.Stat(), files.Instructions(), files.Read(), files.Glob(), files.Grep()}
 	mode := prompt.Execute
 	switch role {
 	case "explorer", "reviewer":
 		mode = prompt.Plan
 	case "", "general":
-		items = append(files.All(), c.commands.ExecCommand(), c.commands.WriteStdin())
+		items = append(files.All(), c.command(c.commands.ExecCommand(), "task:"+spec.Name), c.command(c.commands.WriteStdin(), "task:"+spec.Name))
 		items = append(items, taskTools(scope)...)
 	default:
 		return tools.TaskSetup{}, errs.New(errs.CodeInvalidArgument, "use general, explorer, reviewer or a configured external ACP role")
 	}
+	items = hostPathTools(items)
 	result := tools.TaskSetup{Model: model, Tools: items, PrepareStep: c.prepare(mode, role, model, items, nil, false)}
 	if mode == prompt.Plan {
 		result.Authorize = tools.PlanOnly

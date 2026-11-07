@@ -38,6 +38,25 @@ func runnerForTest(t *testing.T) runner {
 	return runner{workspace, tools.NewLocal()}
 }
 
+func TestOnDemandBackgroundUpdatesWithoutSnapshotSupport(t *testing.T) {
+	log := newActivityLog(func() string { return "run" }, func(session.ToolActivity) error { return nil })
+	if err := log.start(models.ToolCallContent{ToolCallID: "original", ToolName: "exec_command", Input: `{"command":"fixture"}`}); err != nil {
+		t.Fatal(err)
+	}
+	metadata, _ := json.Marshal(map[string]any{"clara_command": session.CommandOutcome{SessionID: "terminal", Output: "first", Running: true}})
+	if err := log.complete(models.ToolResultContent{ToolCallID: "original", ToolName: "exec_command", ClientMetadata: string(metadata)}); err != nil {
+		t.Fatal(err)
+	}
+	info := tools.TerminalInfo{ID: "terminal", Status: "running", Revision: 1, Poll: tools.Poll{Running: true, Output: "last"}}
+	activity, changed := log.terminal(info)
+	if !changed || activity.Output != "firstlast" {
+		t.Fatalf("on-demand polling lost output: %+v %v", activity, changed)
+	}
+	if _, changed := log.terminal(info); changed {
+		t.Fatal("repeated state replay duplicated unread output")
+	}
+}
+
 func TestBackgroundPollingUpdatesTheOriginalRecordAcrossTurns(t *testing.T) {
 	step := 0
 	model := fixtureModel{reply: func(call models.Call) (*models.Response, error) {
@@ -91,11 +110,11 @@ func TestBackgroundPollingUpdatesTheOriginalRecordAcrossTurns(t *testing.T) {
 			last = cell.Tool
 		}
 	}
-	if first == nil || last == nil || first.Status != "background" || last.Status != "succeeded" || first.Key() != last.Key() {
+	if first == nil || last == nil || first.Status != "succeeded" || last.Status != "succeeded" || first.SessionID != last.SessionID || first.Key() == last.Key() {
 		t.Fatalf("background record not associated: %+v %+v", first, last)
 	}
-	if !strings.Contains(last.Output, "first") || !strings.Contains(last.Output, "last") {
-		t.Fatalf("background output lost: %q", last.Output)
+	if !strings.Contains(first.Output, "first") || !strings.Contains(first.Output, "last") {
+		t.Fatalf("background output lost: %q", first.Output)
 	}
 }
 
@@ -134,8 +153,8 @@ func TestInterruptedBackgroundPollClearsAliases(t *testing.T) {
 	_ = log.complete(models.ToolResultContent{ToolCallID: "start", ToolName: "exec_command", ClientMetadata: string(metadata)})
 	_ = log.start(models.ToolCallContent{ToolCallID: "poll", ToolName: "write_stdin", Input: `{"session_id":"exec_background"}`})
 	log.finish(context.Canceled)
-	if len(log.calls) != 0 || len(log.aliases) != 0 || len(log.background) != 0 {
-		t.Fatalf("interrupted poll retained stale associations: %+v", log)
+	if len(log.calls) != 1 || len(log.background) != 1 {
+		t.Fatalf("interrupted poll discarded the live background record: %+v", log)
 	}
 }
 

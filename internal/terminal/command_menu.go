@@ -22,6 +22,8 @@ var commands = []commandSpec{
 	{name: "/agent", description: "switch to Agent mode"},
 	{name: "/status", description: "show session configuration and token usage", busy: true},
 	{name: "/diff", description: "show staged, unstaged and untracked changes"},
+	{name: "/ps", description: "view running background terminals", busy: true},
+	{name: "/stop", description: "stop all background terminals or a given ID", args: true, busy: true},
 	{name: "/pwd", description: "show the current working directory", busy: true},
 	{name: "/mcp", description: "list MCP servers and connection status", busy: true},
 	{name: "/goal", description: "set a goal for a long-running task", args: true, required: true},
