@@ -124,7 +124,8 @@ func Run(ctx context.Context, options Options) (err error) {
 	defer func() {
 		err = errors.Join(err, a.view.finish(), term.Restore(int(in.Fd()), state))
 	}()
-	a.view.buf.WriteString("\x1b[?25l\x1b[?2004h")
+	a.view.setCursorVisible(false)
+	a.view.buf.WriteString("\x1b[?2004h")
 	if options.PickSession {
 		a.openResume(true)
 	} else {
@@ -611,15 +612,13 @@ func (a *app) draw() error {
 		a.reflow = false
 	}
 	pane := a.pane()
-	if len(pane) > p.height {
-		pane = pane[:p.height]
-	}
+	pane = pane.slice(0, p.height)
 	if a.stream != "" {
 		rows := p.messageRows("assistant", a.stream)
 		if len(rows) > 0 {
 			rows = rows[:len(rows)-1]
 		}
-		live := max(1, min(5, p.height-len(pane)))
+		live := max(1, min(5, p.height-len(pane.rows)))
 		commitTo := max(0, len(rows)-live)
 		if commitTo < a.streamRows {
 			p.rebuild()
@@ -630,29 +629,38 @@ func (a *app) draw() error {
 			a.streamRows++
 			a.continued = true
 		}
-		available := max(0, p.height-len(pane))
+		available := max(0, p.height-len(pane.rows))
 		tail := rows[min(a.streamRows, len(rows)):]
 		if len(tail) > available {
 			tail = tail[len(tail)-available:]
 		}
-		pane = append(tail, pane...)
+		pane = pane.prepend(tail)
 	}
 	return p.frame(pane)
 }
 
-func (a *app) pane() []string {
+func (a *app) pane() layout {
 	p := &a.view
 	if a.picker != nil {
 		if a.picker.kind == "diff" {
-			return a.diffRows()
+			return layout{rows: a.diffRows()}
 		}
 		if a.picker.kind == "rewind" {
-			return a.rewindRows()
+			return layout{rows: a.rewindRows()}
 		}
-		return a.picker.rows(p)
+		return layout{rows: a.picker.rows(p)}
 	}
 	if a.question != nil {
-		return a.question.rows(p)
+		return a.question.layout(p)
+	}
+	chrome := min(3, max(0, p.height-1))
+	input := p.inputLayout(a.editor, "Run /review on my current changes", min(7, max(1, p.height-chrome)))
+	var footer []string
+	if matches := a.menuMatches(); len(matches) > 0 {
+		menuHeight := max(0, p.height-min(2, chrome)-len(input.rows))
+		footer = a.commandRows(menuHeight)
+	} else if p.height > 3 {
+		footer = []string{a.statusLine()}
 	}
 	var lines []string
 	if a.stream == "" {
@@ -661,23 +669,20 @@ func (a *app) pane() []string {
 		}
 		lines = append(lines, a.activityRows(time.Now())...)
 	}
-	// Reserve enough room for the composer even when many tools run in parallel.
-	if maxRows := max(0, p.height-4); len(lines) > maxRows {
+	borderRows := min(2, max(0, p.height-1))
+	if maxRows := max(0, p.height-borderRows-len(input.rows)-len(footer)); len(lines) > maxRows {
 		lines = lines[len(lines)-maxRows:]
 	}
 	if p.height > 1 {
 		lines = append(lines, p.style(dim, strings.Repeat("─", p.width)))
 	}
-	lines = append(lines, p.inputRows(a.editor, "Run /review on my current changes")...)
+	view := layout{rows: lines}
+	view.append(input)
 	if p.height > 2 {
-		lines = append(lines, p.style(dim, strings.Repeat("─", p.width)))
+		view.rows = append(view.rows, p.style(dim, strings.Repeat("─", p.width)))
 	}
-	if matches := a.menuMatches(); len(matches) > 0 {
-		lines = append(lines, a.commandRows(max(0, p.height-len(lines)))...)
-	} else if p.height > 3 {
-		lines = append(lines, a.statusLine())
-	}
-	return lines
+	view.rows = append(view.rows, footer...)
+	return view
 }
 
 func modelLabel(meta session.Meta) string {

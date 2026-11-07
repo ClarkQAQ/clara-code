@@ -41,7 +41,7 @@ func questionOptions(item coding.Question) []coding.QuestionOption {
 	return options
 }
 
-func (q *questionForm) rows(p *painter) []string {
+func (q *questionForm) layout(p *painter) layout {
 	q.width = p.width
 	item, draft := q.request.Items[q.index], &q.drafts[q.index]
 	unanswered := 0
@@ -123,31 +123,28 @@ func (q *questionForm) rows(p *painter) []string {
 			break
 		}
 	}
-	var notes []string
+	var notes layout
 	if q.notesMode || len(options) == 0 {
-		notes = append(notes, p.style(dim, truncate(margin+"Notes", p.width)))
-		editorRows := p.inputRows(draft.notes, "Type your answer or additional details")
+		notes.rows = append(notes.rows, p.style(dim, truncate(margin+"Notes", p.width)))
 		limit := max(1, min(4, p.height/3))
-		cursor := 0
-		for i, row := range editorRows {
-			if strings.Contains(row, reverse) {
-				cursor = i
-			}
-		}
-		start := max(0, cursor-limit+1)
-		notes = append(notes, editorRows[start:min(len(editorRows), start+limit)]...)
+		notes.append(p.inputLayout(draft.notes, "Type your answer or additional details", limit))
 	}
-	available := max(0, p.height-len(lines)-len(notes)-len(footer)-1)
+	available := max(0, p.height-len(lines)-len(notes.rows)-len(footer)-1)
 	if len(options) > 0 && available > 0 {
 		start := max(0, min(selectedStart, selectedEnd-available))
 		lines = append(lines, optionLines[start:min(len(optionLines), start+available)]...)
 	}
-	lines = append(lines, notes...)
-	if len(lines)+len(footer) < p.height {
-		lines = append(lines, "")
+	view := layout{rows: lines}
+	if notes.cursor != nil {
+		view = view.slice(0, max(0, p.height-len(notes.rows)))
+		notes = notes.slice(max(0, len(notes.rows)-p.height), len(notes.rows))
 	}
-	lines = append(lines, footer...)
-	return lines[:min(len(lines), p.height)]
+	view.append(notes)
+	if len(view.rows)+len(footer) < p.height {
+		view.rows = append(view.rows, "")
+	}
+	view.rows = append(view.rows, footer...)
+	return view.slice(0, p.height)
 }
 
 func (q *questionForm) key(input key) bool {

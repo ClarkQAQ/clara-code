@@ -38,7 +38,7 @@ func TestStructuredQuestionAndLegacyOptions(t *testing.T) {
 		}
 		form := newQuestionForm(request)
 		p := painter{width: 100, height: 24, color: true}
-		if rows := strings.Join(form.rows(&p), "\n"); !strings.Contains(rows, "Question 1/1 (1 unanswered)") || !strings.Contains(rows, "1. Yes") || !strings.Contains(rows, "None of the above") {
+		if rows := strings.Join(form.layout(&p).rows, "\n"); !strings.Contains(rows, "Question 1/1 (1 unanswered)") || !strings.Contains(rows, "1. Yes") || !strings.Contains(rows, "None of the above") {
 			t.Fatalf("question layout %q", rows)
 		}
 		form.key(key{code: "down"})
@@ -46,7 +46,7 @@ func TestStructuredQuestionAndLegacyOptions(t *testing.T) {
 		form.key(key{code: "paste", text: "Please adjust the layout."})
 		for _, width := range []int{100, 34, 18} {
 			p.width = width
-			for _, row := range form.rows(&p) {
+			for _, row := range form.layout(&p).rows {
 				if widthOf(stripStyles(row)) > width {
 					t.Fatalf("row exceeds %d cells: %q", width, row)
 				}
@@ -129,7 +129,7 @@ func TestResizeRebuildUsesSourcesAndRetainsQuestionState(t *testing.T) {
 		if len(a.view.history) != 2 {
 			t.Fatal("transient question entered history")
 		}
-		for _, line := range a.question.rows(&a.view) {
+		for _, line := range a.question.layout(&a.view).rows {
 			if widthOf(stripStyles(line)) > width {
 				t.Fatalf("overflow at %d: %q", width, line)
 			}

@@ -20,6 +20,8 @@ type painter struct {
 	width        int
 	height       int
 	rows         int
+	cursorRow    int
+	cursorHidden bool
 	color        bool
 	history      []session.Cell
 	header       *banner
@@ -34,6 +36,7 @@ func (p *painter) clearScreen() {
 	p.buf.Reset()
 	p.buf.WriteString("\x1b[0m\x1b[r\x1b[H\x1b[2J\x1b[3J")
 	p.rows = 0
+	p.cursorRow = 0
 }
 
 func (p *painter) rebuild() {
@@ -81,12 +84,11 @@ func (p *painter) trimHistory() {
 }
 
 const (
-	reset   = "\x1b[0m"
-	dim     = "\x1b[90m"
-	bold    = "\x1b[1m"
-	accent  = "\x1b[36m"
-	purple  = "\x1b[95m"
-	reverse = "\x1b[7m"
+	reset  = "\x1b[0m"
+	dim    = "\x1b[90m"
+	bold   = "\x1b[1m"
+	accent = "\x1b[36m"
+	purple = "\x1b[95m"
 )
 
 func (p *painter) style(code, text string) string {
@@ -101,11 +103,12 @@ func (p *painter) erase() {
 		return
 	}
 	p.buf.WriteByte('\r')
-	if p.rows > 1 {
-		fmt.Fprintf(&p.buf, "\x1b[%dA", min(p.rows-1, max(p.height-1, 0)))
+	if p.cursorRow > 0 {
+		fmt.Fprintf(&p.buf, "\x1b[%dA", min(p.cursorRow, max(p.height-1, 0)))
 	}
 	p.buf.WriteString("\x1b[J")
 	p.rows = 0
+	p.cursorRow = 0
 }
 
 func (p *painter) commit(lines ...string) {
@@ -116,16 +119,40 @@ func (p *painter) commit(lines ...string) {
 	}
 }
 
-func (p *painter) frame(lines []string) error {
+func (p *painter) setCursorVisible(visible bool) {
+	if visible == !p.cursorHidden {
+		return
+	}
+	if visible {
+		p.buf.WriteString("\x1b[?25h")
+	} else {
+		p.buf.WriteString("\x1b[?25l")
+	}
+	p.cursorHidden = !visible
+}
+
+func (p *painter) frame(view layout) error {
+	view = view.slice(0, p.height)
 	p.erase()
-	for index, line := range lines {
+	for index, line := range view.rows {
 		if index > 0 {
 			p.buf.WriteString("\r\n")
 		}
 		p.buf.WriteString(line)
 		p.buf.WriteString("\x1b[K")
 	}
-	p.rows = len(lines)
+	p.rows = len(view.rows)
+	p.cursorRow = max(0, p.rows-1)
+	visible := view.cursor != nil && view.cursor.column >= 0 && view.cursor.column < p.width
+	if visible {
+		p.buf.WriteByte('\r')
+		if up := p.cursorRow - view.cursor.row; up > 0 {
+			fmt.Fprintf(&p.buf, "\x1b[%dA", up)
+		}
+		fmt.Fprintf(&p.buf, "\x1b[%dG", view.cursor.column+1)
+		p.cursorRow = view.cursor.row
+	}
+	p.setCursorVisible(visible)
 	_, err := p.buf.WriteTo(p.output)
 	return err
 }
@@ -133,6 +160,7 @@ func (p *painter) frame(lines []string) error {
 func (p *painter) finish() error {
 	p.erase()
 	p.buf.WriteString("\x1b[0m\x1b[?2004l\x1b[?25h")
+	p.cursorHidden = false
 	_, err := p.buf.WriteTo(p.output)
 	return err
 }
@@ -487,68 +515,6 @@ func (e *editor) vertical(direction, width int) {
 		e.at = line.start + end
 		column += it.Width()
 	}
-}
-
-func newCluster(text string) string {
-	iterator := uniseg.NewGraphemes(text)
-	if iterator.Next() {
-		return iterator.Str()
-	}
-	return ""
-}
-
-func (p *painter) inputRows(e editor, placeholder string) []string {
-	prefix := "❯ "
-	if p.width < 4 {
-		prefix = ""
-	}
-	width := max(1, p.width-widthOf(prefix))
-	if e.text == "" {
-		hint := truncate(placeholder, width)
-		it := newCluster(hint)
-		if it == "" {
-			it = " "
-		}
-		cursor := reverse + it + reset
-		return []string{p.style(bold, prefix) + cursor + p.style(dim, strings.TrimPrefix(hint, it))}
-	}
-	rows := wrap(e.text, width)
-	if last := rows[len(rows)-1]; e.at == last.end && widthOf(last.text) >= width {
-		rows = append(rows, row{start: e.at, end: e.at})
-	}
-	cursorRow := 0
-	for i, row := range rows {
-		if row.start <= e.at {
-			cursorRow = i
-		}
-	}
-	limit := min(7, max(1, p.height-4))
-	start := min(max(cursorRow-limit+1, 0), max(0, len(rows)-limit))
-	end := min(len(rows), start+limit)
-	var lines []string
-	for i := start; i < end; i++ {
-		row := rows[i]
-		text := row.text
-		if i == cursorRow && e.at <= row.end && widthOf(text) <= width {
-			at := e.at - row.start
-			cell := newCluster(text[at:])
-			if cell == "" {
-				if widthOf(text) < width {
-					text += reverse + " " + reset
-				}
-			} else {
-				text = text[:at] + reverse + cell + reset + text[at+len(cell):]
-			}
-		} else {
-			text = truncate(text, width)
-		}
-		lead := strings.Repeat(" ", widthOf(prefix))
-		if i == start {
-			lead = p.style(bold, prefix)
-		}
-		lines = append(lines, lead+text)
-	}
-	return lines
 }
 
 func (p *painter) cellRows(cell session.Cell) []string {
