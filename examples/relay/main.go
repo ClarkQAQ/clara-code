@@ -7,7 +7,7 @@ import (
 
 	"clara-code/examples/internal/config"
 	"clara-code/examples/internal/demo"
-	relayconnector "clara-code/pkg/models/relay"
+	relayconnector "clara-code/pkg/model/relay"
 )
 
 func main() {

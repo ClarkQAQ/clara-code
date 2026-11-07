@@ -9,24 +9,24 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"clara-code/pkg/models"
-	"clara-code/pkg/tools"
-	corefs "clara-code/pkg/tools/fs"
+	"clara-code/pkg/model"
+	"clara-code/pkg/tool"
+	corefs "clara-code/pkg/tool/fs"
 )
 
-func (w Workspace) reviewTool() models.AgentTool {
+func (w Workspace) reviewTool() model.AgentTool {
 	type input struct {
 		Kind   string `json:"kind" enum:"staged,unstaged,untracked"`
 		Offset int    `json:"offset,omitempty" description:"byte offset from the previous result"`
 	}
-	return tools.Func(tools.Definition{Name: "review_changes", Description: "Read a page of staged, unstaged or untracked Git changes.", Effects: []tools.Effect{tools.EffectRead}},
-		func(ctx context.Context, in input) (tools.Result, error) {
+	return tool.Func(tool.Definition{Name: "review_changes", Description: "Read a page of staged, unstaged or untracked Git changes.", Effects: []tool.Effect{tool.EffectRead}},
+		func(ctx context.Context, in input) (tool.Result, error) {
 			if in.Offset < 0 || in.Offset > 16<<20 {
-				return tools.ErrorResult("invalid diff offset"), nil
+				return tool.ErrorResult("invalid diff offset"), nil
 			}
 			text, more, err := w.DiffPage(ctx, in.Kind, in.Offset)
 			if err != nil {
-				return tools.ErrorResult(err.Error()), nil
+				return tool.ErrorResult(err.Error()), nil
 			}
 			if more {
 				text += fmt.Sprintf("\n[More changes. Request offset %d.]", in.Offset+len(text))
@@ -34,7 +34,7 @@ func (w Workspace) reviewTool() models.AgentTool {
 			if text == "" {
 				text = "No " + in.Kind + " changes."
 			}
-			return tools.TextResult(text), nil
+			return tool.TextResult(text), nil
 		})
 }
 

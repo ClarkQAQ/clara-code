@@ -11,11 +11,11 @@ import (
 	"time"
 
 	"clara-code/pkg/core/prompt"
-	"clara-code/pkg/models"
+	modelapi "clara-code/pkg/model"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"clara-code/internal/session"
-	"clara-code/internal/settings"
+	"clara-code/internal/setting"
 )
 
 func TestMCPToolsFromHTTP(t *testing.T) {
@@ -30,9 +30,9 @@ func TestMCPToolsFromHTTP(t *testing.T) {
 	endpoint := httptest.NewServer(sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, nil))
 	defer endpoint.Close()
 
-	model := fixtureModel{reply: func(call models.Call) (*models.Response, error) {
+	model := fixtureModel{reply: func(call modelapi.Call) (*modelapi.Response, error) {
 		for _, message := range call.Prompt {
-			if message.Role == models.MessageRoleTool {
+			if message.Role == modelapi.MessageRoleTool {
 				body, _ := json.Marshal(message)
 				if !strings.Contains(string(body), "MCP probe") {
 					return nil, fmt.Errorf("tool result %s", body)
@@ -43,7 +43,7 @@ func TestMCPToolsFromHTTP(t *testing.T) {
 		return toolReply("mcp__fixture__echo", echo{Text: "MCP probe"}, 1), nil
 	}}
 	initial, host := testHost(t, t.TempDir(), model)
-	host.Config.MCP = map[string]settings.MCP{
+	host.Config.MCP = map[string]setting.MCP{
 		"fixture": {URL: endpoint.URL, Required: true},
 		"bad":     {URL: endpoint.URL, Command: "invalid-conflict"},
 	}
@@ -72,15 +72,15 @@ func TestReviewChangesAreReadOnlyAndCoverWorktree(t *testing.T) {
 	writeTestFile(t, root, "untracked.txt", "new file\n")
 	kinds := []string{"staged", "unstaged", "untracked"}
 	expect := []string{"+staged change", "+unstaged change", "untracked.txt"}
-	model := fixtureModel{reply: func(call models.Call) (*models.Response, error) {
+	model := fixtureModel{reply: func(call modelapi.Call) (*modelapi.Response, error) {
 		for _, tool := range call.Tools {
 			if tool.GetName() == "exec_command" || tool.GetName() == "edit" {
 				return nil, fmt.Errorf("review tool can mutate the workspace")
 			}
 		}
-		var results []models.Message
+		var results []modelapi.Message
 		for _, message := range call.Prompt {
-			if message.Role == models.MessageRoleTool {
+			if message.Role == modelapi.MessageRoleTool {
 				results = append(results, message)
 			}
 		}
@@ -108,14 +108,14 @@ func TestReviewChangesAreReadOnlyAndCoverWorktree(t *testing.T) {
 }
 
 func TestSteeringFollowupAndQuestion(t *testing.T) {
-	model := fixtureModel{reply: func(call models.Call) (*models.Response, error) {
+	model := fixtureModel{reply: func(call modelapi.Call) (*modelapi.Response, error) {
 		payload, _ := json.Marshal(call.Prompt)
 		data := string(payload)
 		if strings.Contains(data, "steer answer") && strings.Contains(data, "follow-up answer") {
 			return demoText("Both inputs accepted."), nil
 		}
 		for _, message := range call.Prompt {
-			if message.Role == models.MessageRoleTool {
+			if message.Role == modelapi.MessageRoleTool {
 				if !strings.Contains(data, "option 1") {
 					return nil, fmt.Errorf("missing the question response")
 				}

@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"clara-code/pkg/models"
-	"clara-code/pkg/tools"
-	corefs "clara-code/pkg/tools/fs"
+	"clara-code/pkg/model"
+	toolapi "clara-code/pkg/tool"
+	corefs "clara-code/pkg/tool/fs"
 )
 
 func searchGit(t *testing.T, root string, args ...string) {
@@ -21,9 +21,9 @@ func searchGit(t *testing.T, root string, args ...string) {
 	}
 }
 
-func runSearchTool(t *testing.T, tool models.AgentTool, input string) models.ToolResponse {
+func runSearchTool(t *testing.T, tool model.AgentTool, input string) model.ToolResponse {
 	t.Helper()
-	result, err := tool.Run(t.Context(), models.ToolCall{Input: input})
+	result, err := tool.Run(t.Context(), model.ToolCall{Input: input})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,11 +136,11 @@ func TestMainAndTaskSearchAssemblyUsesSamePolicy(t *testing.T) {
 	writeTestFile(t, root, ".gitignore", "ignored/\n")
 	writeTestFile(t, root, "ignored/a.go", "secret")
 	c, _ := testHost(t, root, DemoModel{})
-	task, err := c.buildTask(t.Context(), tools.TaskSpec{Role: "explorer"}, nil)
+	task, err := c.buildTask(t.Context(), toolapi.TaskSpec{Role: "explorer"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, items := range [][]models.AgentTool{c.items, task.Tools} {
+	for _, items := range [][]model.AgentTool{c.items, task.Tools} {
 		found := false
 		for _, tool := range items {
 			if tool.Info().Name != "glob" {

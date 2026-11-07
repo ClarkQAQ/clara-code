@@ -15,9 +15,9 @@ import (
 	"time"
 
 	"clara-code/pkg/core"
-	"clara-code/pkg/models"
-	"clara-code/pkg/tools"
-	"clara-code/pkg/tools/mcp"
+	"clara-code/pkg/model"
+	toolapi "clara-code/pkg/tool"
+	"clara-code/pkg/tool/mcp"
 	"github.com/creack/pty"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -67,7 +67,7 @@ func TestMCPStdioProcess(t *testing.T) {
 		if tool.Info().Name != "mcp__fixture__echo" {
 			continue
 		}
-		reply, err := tool.Run(ctx, models.ToolCall{Input: `{"text":"stdio probe"}`})
+		reply, err := tool.Run(ctx, model.ToolCall{Input: `{"text":"stdio probe"}`})
 		if err != nil || reply.IsError || !strings.Contains(reply.Content, "stdio probe") {
 			t.Fatalf("stdio reply %+v, %v", reply, err)
 		}
@@ -79,11 +79,11 @@ func TestMCPStdioProcess(t *testing.T) {
 func TestACPDelegateProcess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	backend := tools.NewACPTaskBackend(map[string]core.ACPExternalConfig{
+	backend := toolapi.NewACPTaskBackend(map[string]core.ACPExternalConfig{
 		"helper": {Command: os.Args[0], Args: []string{"__acp_exec", os.Args[0], "acp", "--demo"},
 			Cwd: t.TempDir(), Env: map[string]string{childEnv: "1", "CLARA_CODE_HOME": t.TempDir()}},
 	}, 1)
-	task, err := backend.Spawn(ctx, tools.TaskSpec{Role: "helper", Name: "probe", Message: "delegated work"})
+	task, err := backend.Spawn(ctx, toolapi.TaskSpec{Role: "helper", Name: "probe", Message: "delegated work"})
 	if err != nil {
 		t.Fatal(err)
 	}

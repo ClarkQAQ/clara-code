@@ -7,7 +7,7 @@ import (
 	"net"
 	"strings"
 
-	"clara-code/pkg/models"
+	"clara-code/pkg/model"
 )
 
 type Failure struct {
@@ -21,7 +21,7 @@ func DescribeFailure(err error) Failure {
 		return failure
 	}
 	failure.Message = err.Error()
-	var provider *models.ProviderError
+	var provider *model.ProviderError
 	var network net.Error
 	switch {
 	case errors.Is(err, context.Canceled):
@@ -38,10 +38,10 @@ func DescribeFailure(err error) Failure {
 			failure.Kind = "context"
 		case provider.StatusCode >= 500:
 			failure.Kind = "server"
-		case provider.TransientError || errors.Is(provider.Cause, io.ErrUnexpectedEOF) || models.IsTransportError(provider.Cause):
+		case provider.TransientError || errors.Is(provider.Cause, io.ErrUnexpectedEOF) || model.IsTransportError(provider.Cause):
 			failure.Kind = "stream"
 		}
-	case errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || models.IsTransportError(err):
+	case errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || model.IsTransportError(err):
 		failure.Kind = "connection"
 	case errors.As(err, &network):
 		failure.Kind = "connection"

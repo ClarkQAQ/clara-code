@@ -19,8 +19,8 @@ import (
 	"clara-code/examples/internal/host"
 	"clara-code/pkg/core"
 	"clara-code/pkg/core/prompt"
-	"clara-code/pkg/models"
-	"clara-code/pkg/tools"
+	"clara-code/pkg/model"
+	"clara-code/pkg/tool"
 )
 
 type web struct {
@@ -116,7 +116,7 @@ func (app *web) open(w http.ResponseWriter, r *http.Request) {
 	}
 	config := app.config
 	item := &room{}
-	item.questions.Publish = func(ctx context.Context, questions []tools.Question) error {
+	item.questions.Publish = func(ctx context.Context, questions []tool.Question) error {
 		return item.Session.Emit(ctx, "input.requested", questions)
 	}
 	config.Ask = item.questions.Ask
@@ -153,9 +153,9 @@ func (app *web) action(w http.ResponseWriter, r *http.Request) {
 	case "message", "follow":
 		if active := item.Session.Active(); active != nil {
 			if input.Action == "follow" {
-				err = active.FollowUp(models.NewUserMessage(input.Text))
+				err = active.FollowUp(model.NewUserMessage(input.Text))
 			} else {
-				err = active.Steer(models.NewUserMessage(input.Text))
+				err = active.Steer(model.NewUserMessage(input.Text))
 			}
 		} else {
 			_, err = item.Start(app.ctx, mode, input.Text)

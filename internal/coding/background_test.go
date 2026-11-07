@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"clara-code/pkg/core/prompt"
-	"clara-code/pkg/models"
-	"clara-code/pkg/tools"
+	"clara-code/pkg/model"
+	toolapi "clara-code/pkg/tool"
 
 	"clara-code/internal/session"
 )
@@ -31,7 +31,7 @@ func waitBackground(t *testing.T, c *Conversation, predicate func() bool) {
 func startBackgroundFixture(t *testing.T, command string) (*Conversation, Host) {
 	t.Helper()
 	count := 0
-	c, h := testHost(t, t.TempDir(), fixtureModel{reply: func(models.Call) (*models.Response, error) {
+	c, h := testHost(t, t.TempDir(), fixtureModel{reply: func(model.Call) (*model.Response, error) {
 		count++
 		if count == 1 {
 			return toolReply("exec_command", map[string]any{"command": command, "yield_seconds": 1}, 1), nil
@@ -138,7 +138,7 @@ func TestCancelOnlyInterruptsTheWait(t *testing.T) {
 	c, _ := startBackgroundFixture(t, "printf ready; sleep 30")
 	id := c.Terminals()[0].ID
 	ctx, cancel := context.WithCancel(t.Context())
-	var waiter models.AgentTool
+	var waiter model.AgentTool
 	for _, tool := range c.items {
 		if tool.Info().Name == "write_stdin" {
 			waiter = tool
@@ -146,7 +146,7 @@ func TestCancelOnlyInterruptsTheWait(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := waiter.Run(ctx, models.ToolCall{ID: "wait", Input: `{"session_id":"` + id + `","yield_seconds":30}`})
+		_, err := waiter.Run(ctx, model.ToolCall{ID: "wait", Input: `{"session_id":"` + id + `","yield_seconds":30}`})
 		done <- err
 	}()
 	time.Sleep(20 * time.Millisecond)
@@ -173,17 +173,17 @@ func TestCancelOnlyInterruptsTheWait(t *testing.T) {
 
 func TestTaskTerminalsBelongToTheParentClaraSession(t *testing.T) {
 	c, _ := testHost(t, t.TempDir(), DemoModel{})
-	setup, err := c.buildTask(t.Context(), tools.TaskSpec{Name: "builder", Role: "general"}, nil)
+	setup, err := c.buildTask(t.Context(), toolapi.TaskSpec{Name: "builder", Role: "general"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var executor models.AgentTool
+	var executor model.AgentTool
 	for _, tool := range setup.Tools {
 		if tool.Info().Name == "exec_command" {
 			executor = tool
 		}
 	}
-	result, err := executor.Run(t.Context(), models.ToolCall{ID: "child-command", Input: `{"command":"printf child-marker; sleep 30","yield_seconds":1}`})
+	result, err := executor.Run(t.Context(), model.ToolCall{ID: "child-command", Input: `{"command":"printf child-marker; sleep 30","yield_seconds":1}`})
 	if err != nil || result.IsError {
 		t.Fatal(result, err)
 	}

@@ -8,16 +8,16 @@ import (
 
 	"clara-code/pkg/core"
 	"clara-code/pkg/core/prompt"
-	"clara-code/pkg/models"
+	modelapi "clara-code/pkg/model"
 )
 
 func TestCompactionRetainsLatestToolPair(t *testing.T) {
-	latest := []models.Message{
-		models.NewUserMessage("Fix the current issue."),
-		{Role: models.MessageRoleAssistant, Content: []models.MessagePart{models.ToolCallPart{ToolCallID: "current", ToolName: "read", Input: "{}"}}},
-		{Role: models.MessageRoleTool, Content: []models.MessagePart{models.ToolResultPart{ToolCallID: "current", Output: models.ToolResultOutputContentText{Text: "current result"}}}},
+	latest := []modelapi.Message{
+		modelapi.NewUserMessage("Fix the current issue."),
+		{Role: modelapi.MessageRoleAssistant, Content: []modelapi.MessagePart{modelapi.ToolCallPart{ToolCallID: "current", ToolName: "read", Input: "{}"}}},
+		{Role: modelapi.MessageRoleTool, Content: []modelapi.MessagePart{modelapi.ToolResultPart{ToolCallID: "current", Output: modelapi.ToolResultOutputContentText{Text: "current result"}}}},
 	}
-	history := append([]models.Message{models.NewUserMessage(strings.Repeat("old history ", 300))}, latest...)
+	history := append([]modelapi.Message{modelapi.NewUserMessage(strings.Repeat("old history ", 300))}, latest...)
 	model := Model{Reply: Static("Prior decisions and checks.")}
 	replacement, err := (prompt.Compactor{BudgetBytes: 2000}).Fit(t.Context(), model, "system", history, nil)
 	if err != nil {
@@ -26,8 +26,8 @@ func TestCompactionRetainsLatestToolPair(t *testing.T) {
 	if len(replacement) != len(latest)+1 {
 		t.Fatalf("wrong compacted transcript length: %d", len(replacement))
 	}
-	call, callOK := models.AsMessagePart[models.ToolCallPart](replacement[2].Content[0])
-	result, resultOK := models.AsMessagePart[models.ToolResultPart](replacement[3].Content[0])
+	call, callOK := modelapi.AsMessagePart[modelapi.ToolCallPart](replacement[2].Content[0])
+	result, resultOK := modelapi.AsMessagePart[modelapi.ToolResultPart](replacement[3].Content[0])
 	if !callOK || !resultOK || call.ToolCallID != result.ToolCallID {
 		t.Fatal("compaction separated a tool call from its result")
 	}
@@ -38,20 +38,20 @@ func TestRunConsumesSteeringAndFollowUp(t *testing.T) {
 	defer cancel()
 	started, release := make(chan struct{}), make(chan struct{})
 	requests := 0
-	model := Model{Reply: func(ctx context.Context, call models.Call) (models.Response, error) {
+	model := Model{Reply: func(ctx context.Context, call modelapi.Call) (modelapi.Response, error) {
 		requests++
 		if requests == 1 {
 			close(started)
 			select {
 			case <-ctx.Done():
-				return models.Response{}, ctx.Err()
+				return modelapi.Response{}, ctx.Err()
 			case <-release:
 				return Text("first response"), nil
 			}
 		}
 		result, err := (Model{}).Generate(ctx, call)
 		if err != nil {
-			return models.Response{}, err
+			return modelapi.Response{}, err
 		}
 		return *result, nil
 	}}
@@ -68,10 +68,10 @@ func TestRunConsumesSteeringAndFollowUp(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	if err := run.Steer(models.NewUserMessage("steer")); err != nil {
+	if err := run.Steer(modelapi.NewUserMessage("steer")); err != nil {
 		t.Fatal(err)
 	}
-	if err := run.FollowUp(models.NewUserMessage("follow")); err != nil {
+	if err := run.FollowUp(modelapi.NewUserMessage("follow")); err != nil {
 		t.Fatal(err)
 	}
 	close(release)

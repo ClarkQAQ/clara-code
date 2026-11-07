@@ -8,42 +8,42 @@ import (
 	"time"
 
 	"clara-code/internal/session"
-	"clara-code/pkg/models"
-	"clara-code/pkg/tools"
+	"clara-code/pkg/model"
+	toolapi "clara-code/pkg/tool"
 )
 
 type trackedCommand struct {
-	models.AgentTool
+	model.AgentTool
 	conversation *Conversation
 	owner        string
 }
 
-func (c *Conversation) command(tool models.AgentTool, owner string) models.AgentTool {
+func (c *Conversation) command(tool model.AgentTool, owner string) model.AgentTool {
 	return trackedCommand{AgentTool: observeCommand(tool), conversation: c, owner: owner}
 }
 
-func (t trackedCommand) Run(ctx context.Context, call models.ToolCall) (models.ToolResponse, error) {
+func (t trackedCommand) Run(ctx context.Context, call model.ToolCall) (model.ToolResponse, error) {
 	c := t.conversation
 	prefix := "task:"
 	if active := c.Session.Active(); t.owner == "main" && active != nil {
 		prefix = active.ID + ":"
 	}
 	key := prefix + strconv.FormatUint(c.commandSequence.Add(1), 10) + ":" + call.ID
-	content := models.ToolCallContent{ToolCallID: call.ID, ToolName: t.Info().Name, Input: call.Input}
+	content := model.ToolCallContent{ToolCallID: call.ID, ToolName: t.Info().Name, Input: call.Input}
 	if content.ToolCallID == "" {
 		content.ToolCallID = key
 	}
 	if err := c.activities.startKey(content, key, t.owner); err != nil {
-		return models.ToolResponse{}, err
+		return model.ToolResponse{}, err
 	}
 	response, err := t.AgentTool.Run(ctx, call)
 	if err != nil {
 		c.activities.failKey(key, err)
 		return response, err
 	}
-	result := models.ToolResultContent{ToolCallID: content.ToolCallID, ToolName: content.ToolName, Result: models.ToolResultOutputContentText{Text: response.Content}, ClientMetadata: response.Metadata}
+	result := model.ToolResultContent{ToolCallID: content.ToolCallID, ToolName: content.ToolName, Result: model.ToolResultOutputContentText{Text: response.Content}, ClientMetadata: response.Metadata}
 	if response.IsError {
-		result.Result = models.ToolResultOutputContentError{Error: errors.New(response.Content)}
+		result.Result = model.ToolResultOutputContentError{Error: errors.New(response.Content)}
 	}
 	if err := c.activities.completeKey(result, key); err != nil {
 		return response, err
@@ -78,7 +78,7 @@ func (c *Conversation) notifyBackground() {
 	}
 }
 
-func (c *Conversation) onTerminal(info tools.TerminalInfo) {
+func (c *Conversation) onTerminal(info toolapi.TerminalInfo) {
 	if activity, changed := c.activities.terminal(info); changed {
 		if err := c.Store.UpdateCommand(activity); err != nil {
 			c.setBackgroundError(err)
@@ -122,7 +122,7 @@ func (c *Conversation) BackgroundUpdates() <-chan struct{} {
 	return c.backgroundUpdates
 }
 
-func (c *Conversation) Terminals() []tools.TerminalInfo {
+func (c *Conversation) Terminals() []toolapi.TerminalInfo {
 	if c.commands == nil {
 		return nil
 	}

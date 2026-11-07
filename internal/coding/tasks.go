@@ -8,18 +8,18 @@ import (
 	"time"
 
 	"clara-code/pkg/core/prompt"
-	"clara-code/pkg/models"
-	"clara-code/pkg/tools"
+	modelapi "clara-code/pkg/model"
+	"clara-code/pkg/tool"
 	"clara-code/pkg/util/errs"
 )
 
-func taskTools(backend tools.TaskBackend) []models.AgentTool {
-	return []models.AgentTool{tools.SpawnAgent(backend), tools.RunTask(backend), tools.ListAgents(backend),
-		tools.SendMessage(backend), tools.FollowupTask(backend), tools.WaitAgent(backend),
-		tools.InterruptAgent(backend), tools.CloseAgent(backend)}
+func taskTools(backend tool.TaskBackend) []modelapi.AgentTool {
+	return []modelapi.AgentTool{tool.SpawnAgent(backend), tool.RunTask(backend), tool.ListAgents(backend),
+		tool.SendMessage(backend), tool.FollowupTask(backend), tool.WaitAgent(backend),
+		tool.InterruptAgent(backend), tool.CloseAgent(backend)}
 }
 
-func (c *Conversation) buildTask(ctx context.Context, spec tools.TaskSpec, scope *tools.TaskScope) (tools.TaskSetup, error) {
+func (c *Conversation) buildTask(ctx context.Context, spec tool.TaskSpec, scope *tool.TaskScope) (tool.TaskSetup, error) {
 	meta := c.Store.Meta()
 	name, effort := meta.Model, meta.Effort
 	if spec.Model != "" {
@@ -30,11 +30,11 @@ func (c *Conversation) buildTask(ctx context.Context, spec tools.TaskSpec, scope
 	}
 	model, err := c.Host.model(ctx, name, effort)
 	if err != nil {
-		return tools.TaskSetup{}, err
+		return tool.TaskSetup{}, err
 	}
 	role := strings.ToLower(spec.Role)
 	files := c.Workspace.files()
-	items := []models.AgentTool{files.List(), files.Stat(), files.Instructions(), files.Read(), files.Glob(), files.Grep()}
+	items := []modelapi.AgentTool{files.List(), files.Stat(), files.Instructions(), files.Read(), files.Glob(), files.Grep()}
 	mode := prompt.Execute
 	switch role {
 	case "explorer", "reviewer":
@@ -43,32 +43,32 @@ func (c *Conversation) buildTask(ctx context.Context, spec tools.TaskSpec, scope
 		items = append(files.All(), c.command(c.commands.ExecCommand(), "task:"+spec.Name), c.command(c.commands.WriteStdin(), "task:"+spec.Name))
 		items = append(items, taskTools(scope)...)
 	default:
-		return tools.TaskSetup{}, errs.New(errs.CodeInvalidArgument, "use general, explorer, reviewer or a configured external ACP role")
+		return tool.TaskSetup{}, errs.New(errs.CodeInvalidArgument, "use general, explorer, reviewer or a configured external ACP role")
 	}
 	items = hostPathTools(items)
-	result := tools.TaskSetup{Model: model, Tools: items, PrepareStep: c.prepare(mode, role, model, items, nil, false)}
+	result := tool.TaskSetup{Model: model, Tools: items, PrepareStep: c.prepare(mode, role, model, items, nil, false)}
 	if mode == prompt.Plan {
-		result.Authorize = tools.PlanOnly
+		result.Authorize = tool.PlanOnly
 	}
 	return result, nil
 }
 
 type taskRouter struct {
 	mu       sync.Mutex
-	local    tools.TaskBackend
-	external *tools.ACPTaskBackend
+	local    tool.TaskBackend
+	external *tool.ACPTaskBackend
 }
 
-func (r *taskRouter) Spawn(ctx context.Context, spec tools.TaskSpec) (tools.TaskInfo, error) {
+func (r *taskRouter) Spawn(ctx context.Context, spec tool.TaskSpec) (tool.TaskInfo, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	tasks, err := r.List(ctx)
 	if err != nil {
-		return tools.TaskInfo{}, err
+		return tool.TaskInfo{}, err
 	}
 	for _, task := range tasks {
 		if task.Name == spec.Name && task.Status != "closed" {
-			return tools.TaskInfo{}, errs.ErrConflict
+			return tool.TaskInfo{}, errs.ErrConflict
 		}
 	}
 	if _, ok := r.external.Agents[spec.Role]; ok {
@@ -77,7 +77,7 @@ func (r *taskRouter) Spawn(ctx context.Context, spec tools.TaskSpec) (tools.Task
 	return r.local.Spawn(ctx, spec)
 }
 
-func (r *taskRouter) backend(ctx context.Context, target string) tools.TaskBackend {
+func (r *taskRouter) backend(ctx context.Context, target string) tool.TaskBackend {
 	if strings.HasPrefix(target, "acp_") {
 		return r.external
 	}
@@ -94,7 +94,7 @@ func (r *taskRouter) Send(ctx context.Context, target, text string, follow bool)
 	return r.backend(ctx, target).Send(ctx, target, text, follow)
 }
 
-func (r *taskRouter) Wait(ctx context.Context, target string, timeout time.Duration) (tools.TaskInfo, error) {
+func (r *taskRouter) Wait(ctx context.Context, target string, timeout time.Duration) (tool.TaskInfo, error) {
 	return r.backend(ctx, target).Wait(ctx, target, timeout)
 }
 
@@ -106,7 +106,7 @@ func (r *taskRouter) CloseTask(ctx context.Context, target string) error {
 	return r.backend(ctx, target).CloseTask(ctx, target)
 }
 
-func (r *taskRouter) List(ctx context.Context) ([]tools.TaskInfo, error) {
+func (r *taskRouter) List(ctx context.Context) ([]tool.TaskInfo, error) {
 	local, err := r.local.List(ctx)
 	if err != nil {
 		return nil, err

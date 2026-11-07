@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"clara-code/pkg/core"
-	"clara-code/pkg/models"
+	"clara-code/pkg/model"
 
 	"clara-code/internal/session"
 )
@@ -15,8 +15,8 @@ import (
 func TestToolGroupUpdatesInPlaceAndCommitsOnce(t *testing.T) {
 	a := testApp(t)
 	started := time.Now()
-	first := session.NewToolActivity(models.ToolCallContent{ToolCallID: "first", ToolName: "exec_command", Input: `{"command":"printf first"}`}, started)
-	second := session.NewToolActivity(models.ToolCallContent{ToolCallID: "second", ToolName: "read", Input: `{"path":"file.go"}`}, started)
+	first := session.NewToolActivity(model.ToolCallContent{ToolCallID: "first", ToolName: "exec_command", Input: `{"command":"printf first"}`}, started)
+	second := session.NewToolActivity(model.ToolCallContent{ToolCallID: "second", ToolName: "read", Input: `{"path":"file.go"}`}, started)
 	a.onToolActivity(first)
 	a.onToolActivity(second)
 	if len(a.view.history) != 0 || len(a.toolGroup) != 2 {
@@ -73,7 +73,7 @@ func TestIndependentActivityClockRetryAndPublicSummary(t *testing.T) {
 	if !strings.Contains(rows, "Reconnecting… 2/3") || !strings.Contains(rows, "HTTP 503") {
 		t.Fatalf("retry activity %q", rows)
 	}
-	summary := models.StreamPart{ID: "reasoning", ProviderMetadata: models.ProviderMetadata{ReasoningSummary: []string{"**Inspecting the workspace**\nCheck the project layout."}}}
+	summary := model.StreamPart{ID: "reasoning", ProviderMetadata: model.ProviderMetadata{ReasoningSummary: []string{"**Inspecting the workspace**\nCheck the project layout."}}}
 	body, _ = json.Marshal(summary)
 	a.onRunEvent(runEvent{event: core.Event{Kind: "reasoning_delta", Data: body}})
 	rows = strings.Join(a.activityRows(now), "\n")
@@ -123,19 +123,19 @@ func TestRetryClearsOnResponseAndFinalFailurePreservesDraft(t *testing.T) {
 
 func TestModelMessageBoundariesAndInterruptedText(t *testing.T) {
 	a := testApp(t)
-	send := func(kind string, part models.StreamPart) {
+	send := func(kind string, part model.StreamPart) {
 		body, _ := json.Marshal(part)
 		a.onRunEvent(runEvent{event: core.Event{Kind: kind, Data: body}})
 	}
 	for _, text := range []string{"I will inspect the project.", "I found the failing command."} {
-		send("text_start", models.StreamPart{ID: text})
-		send("text_delta", models.StreamPart{ID: text, Delta: text})
-		send("text_end", models.StreamPart{ID: text})
+		send("text_start", model.StreamPart{ID: text})
+		send("text_delta", model.StreamPart{ID: text, Delta: text})
+		send("text_end", model.StreamPart{ID: text})
 	}
 	if len(a.view.history) != 2 || a.view.history[0].Text == a.view.history[1].Text {
 		t.Fatalf("progress messages merged: %+v", a.view.history)
 	}
-	send("text_delta", models.StreamPart{ID: "partial", Delta: "Received before the stream disconnected."})
+	send("text_delta", model.StreamPart{ID: "partial", Delta: "Received before the stream disconnected."})
 	a.flushStream()
 	failure := session.Failure{Kind: "stream", Message: "Connection interrupted"}
 	a.activity.failure = &failure

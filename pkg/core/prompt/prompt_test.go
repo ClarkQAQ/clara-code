@@ -7,7 +7,7 @@ import (
 
 	"clara-code/pkg/core"
 	"clara-code/pkg/core/prompt"
-	"clara-code/pkg/models"
+	"clara-code/pkg/model"
 )
 
 func TestSystemSelectsOnlyAvailableCapabilities(t *testing.T) {
@@ -51,7 +51,7 @@ func TestSystemSelectsOnlyAvailableCapabilities(t *testing.T) {
 }
 
 func namedTool(name string) core.AgentTool {
-	return models.NewAgentTool(name, "", func(context.Context, struct{}, models.ToolCall) (models.ToolResponse, error) {
-		return models.NewTextResponse(""), nil
+	return model.NewAgentTool(name, "", func(context.Context, struct{}, model.ToolCall) (model.ToolResponse, error) {
+		return model.NewTextResponse(""), nil
 	})
 }

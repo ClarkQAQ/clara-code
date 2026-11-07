@@ -6,11 +6,11 @@ import (
 	"iter"
 	"strings"
 
-	"clara-code/pkg/models"
+	"clara-code/pkg/model"
 )
 
 type diagnosticModel struct {
-	models.LanguageModel
+	model.LanguageModel
 	redact func(string) string
 }
 
@@ -31,7 +31,7 @@ func (m diagnosticModel) safeError(err error) error {
 	if err == nil {
 		return nil
 	}
-	var provider *models.ProviderError
+	var provider *model.ProviderError
 	if errors.As(err, &provider) {
 		copy := *provider
 		copy.Message = m.redact(copy.Message)
@@ -48,12 +48,12 @@ func (m diagnosticModel) safeError(err error) error {
 	return diagnosticError{cause: err, message: m.redact(err.Error())}
 }
 
-func (m diagnosticModel) Generate(ctx context.Context, call models.Call) (*models.Response, error) {
+func (m diagnosticModel) Generate(ctx context.Context, call model.Call) (*model.Response, error) {
 	response, err := m.LanguageModel.Generate(ctx, call)
 	return response, m.safeError(err)
 }
 
-func (m diagnosticModel) Stream(ctx context.Context, call models.Call) (models.StreamResponse, error) {
+func (m diagnosticModel) Stream(ctx context.Context, call model.Call) (model.StreamResponse, error) {
 	stream, err := m.LanguageModel.Stream(ctx, call)
 	if err != nil {
 		return nil, m.safeError(err)
@@ -62,24 +62,24 @@ func (m diagnosticModel) Stream(ctx context.Context, call models.Call) (models.S
 		return nil, nil
 	}
 	next, stop := iter.Pull(stream)
-	var prefix []models.StreamPart
+	var prefix []model.StreamPart
 	for {
 		part, ok := next()
 		if !ok {
 			stop()
-			return nil, m.safeError(models.NewIncompleteStreamError())
+			return nil, m.safeError(model.NewIncompleteStreamError())
 		}
 		part.Error = m.safeError(part.Error)
-		if part.Type == models.StreamPartTypeError {
+		if part.Type == model.StreamPartTypeError {
 			stop()
 			return nil, part.Error
 		}
 		prefix = append(prefix, part)
-		if part.Type != models.StreamPartTypeWarnings {
+		if part.Type != model.StreamPartTypeWarnings {
 			break
 		}
 	}
-	return func(yield func(models.StreamPart) bool) {
+	return func(yield func(model.StreamPart) bool) {
 		defer stop()
 		for _, part := range prefix {
 			if !yield(part) {

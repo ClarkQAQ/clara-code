@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"clara-code/internal/session"
-	"clara-code/pkg/models"
-	"clara-code/pkg/tools"
+	"clara-code/pkg/model"
+	"clara-code/pkg/tool"
 )
 
 type activityLog struct {
@@ -25,11 +25,11 @@ func newActivityLog(currentRun func() string, publish func(session.ToolActivity)
 	return &activityLog{calls: map[string]session.ToolActivity{}, background: map[string]string{}, publish: publish, currentRun: currentRun}
 }
 
-func (l *activityLog) start(call models.ToolCallContent) error {
+func (l *activityLog) start(call model.ToolCallContent) error {
 	return l.startKey(call, l.currentRun()+":"+call.ToolCallID, "")
 }
 
-func (l *activityLog) startKey(call models.ToolCallContent, key, owner string) error {
+func (l *activityLog) startKey(call model.ToolCallContent, key, owner string) error {
 	if call.ToolName == "request_user_input" {
 		return nil
 	}
@@ -64,11 +64,11 @@ func (l *activityLog) startKey(call models.ToolCallContent, key, owner string) e
 	return l.publish(activity)
 }
 
-func (l *activityLog) complete(result models.ToolResultContent) error {
+func (l *activityLog) complete(result model.ToolResultContent) error {
 	return l.completeKey(result, l.currentRun()+":"+result.ToolCallID)
 }
 
-func (l *activityLog) completeKey(result models.ToolResultContent, key string) error {
+func (l *activityLog) completeKey(result model.ToolResultContent, key string) error {
 	if result.ToolName == "request_user_input" {
 		return nil
 	}
@@ -76,14 +76,14 @@ func (l *activityLog) completeKey(result models.ToolResultContent, key string) e
 	defer l.mu.Unlock()
 	activity, ok := l.calls[key]
 	if !ok {
-		activity = session.NewToolActivity(models.ToolCallContent{ToolCallID: result.ToolCallID, ToolName: result.ToolName}, time.Now())
+		activity = session.NewToolActivity(model.ToolCallContent{ToolCallID: result.ToolCallID, ToolName: result.ToolName}, time.Now())
 		activity.ID = key
 	}
 	completed := activity.WithResult(result, time.Now())
 	if activity.Interaction != "" {
 		completed.Output, completed.Error, completed.ExitCode = "", "", nil
 		completed.Status = "succeeded"
-		if _, failed := models.AsToolResultOutputType[models.ToolResultOutputContentError](result.Result); failed {
+		if _, failed := model.AsToolResultOutputType[model.ToolResultOutputContentError](result.Result); failed {
 			completed.Status = "failed"
 			completed.Error = session.ToolOutput(result).Text
 		}
@@ -103,7 +103,7 @@ func (l *activityLog) completeKey(result models.ToolResultContent, key string) e
 	return err
 }
 
-func (l *activityLog) terminal(info tools.TerminalInfo) (session.ToolActivity, bool) {
+func (l *activityLog) terminal(info tool.TerminalInfo) (session.ToolActivity, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	key := l.background[info.ID]

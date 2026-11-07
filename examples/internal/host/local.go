@@ -7,11 +7,11 @@ import (
 
 	"clara-code/examples/internal/config"
 	"clara-code/pkg/core"
-	"clara-code/pkg/models"
-	"clara-code/pkg/models/provider"
-	"clara-code/pkg/tools"
-	"clara-code/pkg/tools/fs"
-	"clara-code/pkg/tools/fs/local"
+	modelapi "clara-code/pkg/model"
+	"clara-code/pkg/model/provider"
+	"clara-code/pkg/tool"
+	"clara-code/pkg/tool/fs"
+	"clara-code/pkg/tool/fs/local"
 )
 
 func Local(root string) (Config, error) {
@@ -24,16 +24,16 @@ func Local(root string) (Config, error) {
 		Workspace: "The workspace root in file tools is /. Use paths like /main.go or ./main.go. " +
 			"Use the same workspace paths for the exec workdir. Shell output may show native paths. " +
 			"Translate a native path under the workspace into a workspace-relative path before passing it to a tool.",
-		Runner: localRunner{workspace: workspace, runner: tools.NewLocal()},
+		Runner: localRunner{workspace: workspace, runner: tool.NewLocal()},
 	}, nil
 }
 
 type localRunner struct {
 	workspace *local.FS
-	runner    tools.Runner
+	runner    tool.Runner
 }
 
-func (r localRunner) Start(ctx context.Context, spec tools.Spec) (tools.Process, error) {
+func (r localRunner) Start(ctx context.Context, spec tool.Spec) (tool.Process, error) {
 	path, err := fs.Resolve("/", spec.Workdir)
 	if err != nil {
 		return nil, err
@@ -74,7 +74,7 @@ func (b blobs) Write(ctx context.Context, name string, body []byte) error {
 	return err
 }
 
-func ModelFromEnv(ctx context.Context) (models.LanguageModel, func(context.Context, string) (models.LanguageModel, error), error) {
+func ModelFromEnv(ctx context.Context) (modelapi.LanguageModel, func(context.Context, string) (modelapi.LanguageModel, error), error) {
 	endpoint, id := config.Env("ENDPOINT"), config.Env("MODEL")
 	if endpoint == "" || id == "" {
 		return nil, nil, errors.New("set CLARA_CORE_ENDPOINT and CLARA_CORE_MODEL, or use -demo")

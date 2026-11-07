@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"clara-code/internal/localtime"
+	"clara-code/pkg/util/localtime"
 )
 
 func TestStatusAndResumeUseLocalDateTime(t *testing.T) {

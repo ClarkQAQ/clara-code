@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"clara-code/pkg/core"
-	"clara-code/pkg/models"
+	modelapi "clara-code/pkg/model"
 )
 
 func TestToolJSONValidationAndExplicitRepair(t *testing.T) {
@@ -27,27 +27,27 @@ func TestToolJSONValidationAndExplicitRepair(t *testing.T) {
 				Value string `json:"value"`
 			}
 			runs, permissions := 0, 0
-			tool := models.NewAgentTool("change", "Change a value.", func(_ context.Context, args input, _ models.ToolCall) (models.ToolResponse, error) {
+			tool := modelapi.NewAgentTool("change", "Change a value.", func(_ context.Context, args input, _ modelapi.ToolCall) (modelapi.ToolResponse, error) {
 				runs++
-				return models.NewTextResponse(args.Value), nil
+				return modelapi.NewTextResponse(args.Value), nil
 			})
 			call := core.AgentStreamCall{Prompt: "Apply the change.", StopWhen: []core.StopCondition{core.StepCountIs(1)}}
 			if tt.repair {
-				call.RepairToolCall = func(_ context.Context, options core.ToolCallRepairOptions) (*models.ToolCallContent, error) {
-					return &models.ToolCallContent{ToolCallID: "replacement", ToolName: options.OriginalToolCall.ToolName, Input: `{"value":"x"}`}, nil
+				call.RepairToolCall = func(_ context.Context, options core.ToolCallRepairOptions) (*modelapi.ToolCallContent, error) {
+					return &modelapi.ToolCallContent{ToolCallID: "replacement", ToolName: options.OriginalToolCall.ToolName, Input: `{"value":"x"}`}, nil
 				}
 			}
-			call.AuthorizeTool = func(context.Context, models.ToolInfo, models.ToolCall) error {
+			call.AuthorizeTool = func(context.Context, modelapi.ToolInfo, modelapi.ToolCall) error {
 				permissions++
 				if tt.deny {
 					return errors.New("denied")
 				}
 				return nil
 			}
-			model := Model{Reply: func(context.Context, models.Call) (models.Response, error) {
-				return models.Response{Content: models.ResponseContent{models.ToolCallContent{
+			model := Model{Reply: func(context.Context, modelapi.Call) (modelapi.Response, error) {
+				return modelapi.Response{Content: modelapi.ResponseContent{modelapi.ToolCallContent{
 					ToolCallID: "original", ToolName: "change", Input: tt.input,
-				}}, FinishReason: models.FinishReasonToolCalls}, nil
+				}}, FinishReason: modelapi.FinishReasonToolCalls}, nil
 			}}
 			result, err := core.NewAgent(model, core.WithTools(tool)).Stream(t.Context(), call)
 			if err != nil {
@@ -57,7 +57,7 @@ func TestToolJSONValidationAndExplicitRepair(t *testing.T) {
 			if len(out) != 1 || out[0].ToolCallID != "original" {
 				t.Fatalf("expected result for original call, got %+v", out)
 			}
-			if (runs == 1) != tt.wantRun || (out[0].Result.GetType() == models.ToolResultContentTypeText) != tt.wantRun {
+			if (runs == 1) != tt.wantRun || (out[0].Result.GetType() == modelapi.ToolResultContentTypeText) != tt.wantRun {
 				t.Fatalf("runs=%d, result=%+v", runs, out[0].Result)
 			}
 			if (permissions == 1) != (tt.wantRun || tt.deny) {

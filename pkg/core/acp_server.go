@@ -12,7 +12,7 @@ import (
 
 	sdk "github.com/coder/acp-go-sdk"
 
-	"clara-code/pkg/models"
+	"clara-code/pkg/model"
 )
 
 type ACPBinding struct {
@@ -152,15 +152,15 @@ func (s *ACPServer) LoadSession(ctx context.Context, req sdk.LoadSessionRequest)
 	}
 	for _, msg := range binding.Session.Messages() {
 		for _, part := range msg.Content {
-			text, ok := models.AsMessagePart[models.TextPart](part)
+			text, ok := model.AsMessagePart[model.TextPart](part)
 			if !ok || text.Text == "" {
 				continue
 			}
 			var update sdk.SessionUpdate
 			switch msg.Role {
-			case models.MessageRoleUser:
+			case model.MessageRoleUser:
 				update = sdk.UpdateUserMessageText(text.Text)
-			case models.MessageRoleAssistant:
+			case model.MessageRoleAssistant:
 				update = sdk.UpdateAgentMessageText(text.Text)
 			default:
 				continue
@@ -188,12 +188,12 @@ func (s *ACPServer) Prompt(ctx context.Context, req sdk.PromptRequest) (sdk.Prom
 	}
 	call.Messages = append(call.Messages, message)
 	chunk, start, finish := call.OnChunk, call.OnToolCall, call.OnToolResult
-	call.OnChunk = func(part models.StreamPart) error {
+	call.OnChunk = func(part model.StreamPart) error {
 		var err error
 		switch part.Type {
-		case models.StreamPartTypeTextDelta:
+		case model.StreamPartTypeTextDelta:
 			err = s.send(ctx, req.SessionId, sdk.UpdateAgentMessageText(part.Delta))
-		case models.StreamPartTypeReasoningDelta:
+		case model.StreamPartTypeReasoningDelta:
 			err = s.send(ctx, req.SessionId, sdk.UpdateAgentThoughtText(part.Delta))
 		}
 		if err == nil && chunk != nil {
@@ -201,7 +201,7 @@ func (s *ACPServer) Prompt(ctx context.Context, req sdk.PromptRequest) (sdk.Prom
 		}
 		return err
 	}
-	call.OnToolCall = func(item models.ToolCallContent) error {
+	call.OnToolCall = func(item model.ToolCallContent) error {
 		err := s.send(ctx, req.SessionId, sdk.StartToolCall(sdk.ToolCallId(item.ToolCallID), item.ToolName,
 			sdk.WithStartKind(toolKind(item.ToolName)), sdk.WithStartRawInput(json.RawMessage(item.Input))))
 		if err == nil && start != nil {
@@ -209,9 +209,9 @@ func (s *ACPServer) Prompt(ctx context.Context, req sdk.PromptRequest) (sdk.Prom
 		}
 		return err
 	}
-	call.OnToolResult = func(item models.ToolResultContent) error {
+	call.OnToolResult = func(item model.ToolResultContent) error {
 		status := sdk.ToolCallStatusCompleted
-		if _, failed := item.Result.(models.ToolResultOutputContentError); failed {
+		if _, failed := item.Result.(model.ToolResultOutputContentError); failed {
 			status = sdk.ToolCallStatusFailed
 		}
 		body, _ := json.Marshal(item.Result)
@@ -232,7 +232,7 @@ func (s *ACPServer) Prompt(ctx context.Context, req sdk.PromptRequest) (sdk.Prom
 		return sdk.PromptResponse{StopReason: sdk.StopReasonCancelled}, nil
 	case err != nil:
 		return sdk.PromptResponse{}, err
-	case result.Response.FinishReason == models.FinishReasonLength:
+	case result.Response.FinishReason == model.FinishReasonLength:
 		return sdk.PromptResponse{StopReason: sdk.StopReasonMaxTokens}, nil
 	default:
 		return sdk.PromptResponse{StopReason: sdk.StopReasonEndTurn}, nil
@@ -288,34 +288,34 @@ func unknownSession() error {
 	return &sdk.RequestError{Code: -32002, Message: "session not found"}
 }
 
-func fromContent(blocks []sdk.ContentBlock, images bool) (models.Message, error) {
-	message := models.Message{Role: models.MessageRoleUser}
+func fromContent(blocks []sdk.ContentBlock, images bool) (model.Message, error) {
+	message := model.Message{Role: model.MessageRoleUser}
 	for _, block := range blocks {
-		var part models.MessagePart
+		var part model.MessagePart
 		switch {
 		case block.Text != nil:
-			part = models.TextPart{Text: block.Text.Text}
+			part = model.TextPart{Text: block.Text.Text}
 		case block.Image != nil && images:
 			if len(block.Image.Data) > 16<<20 {
-				return models.Message{}, errors.New("ACP image exceeds limit")
+				return model.Message{}, errors.New("ACP image exceeds limit")
 			}
 			data, err := base64.StdEncoding.DecodeString(block.Image.Data)
 			if err != nil {
-				return models.Message{}, err
+				return model.Message{}, err
 			}
-			part = models.FilePart{Data: data, MediaType: block.Image.MimeType}
+			part = model.FilePart{Data: data, MediaType: block.Image.MimeType}
 		case block.ResourceLink != nil:
-			part = models.TextPart{Text: fmt.Sprintf("[resource %s] %s", block.ResourceLink.Uri, block.ResourceLink.Name)}
+			part = model.TextPart{Text: fmt.Sprintf("[resource %s] %s", block.ResourceLink.Uri, block.ResourceLink.Name)}
 		case block.Resource != nil && block.Resource.Resource.TextResourceContents != nil:
 			text := block.Resource.Resource.TextResourceContents
-			part = models.TextPart{Text: fmt.Sprintf("[resource %s]\n%s", text.Uri, text.Text)}
+			part = model.TextPart{Text: fmt.Sprintf("[resource %s]\n%s", text.Uri, text.Text)}
 		default:
-			return models.Message{}, errors.New("unsupported ACP prompt content")
+			return model.Message{}, errors.New("unsupported ACP prompt content")
 		}
 		message.Content = append(message.Content, part)
 	}
 	if len(message.Content) == 0 {
-		return models.Message{}, errors.New("ACP prompt is empty")
+		return model.Message{}, errors.New("ACP prompt is empty")
 	}
 	return message, nil
 }

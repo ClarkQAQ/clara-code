@@ -9,20 +9,20 @@ import (
 
 	"clara-code/pkg/core"
 	"clara-code/pkg/core/prompt"
-	"clara-code/pkg/models"
-	"clara-code/pkg/tools"
-	"clara-code/pkg/tools/fs"
-	"clara-code/pkg/tools/fs/image"
+	modelapi "clara-code/pkg/model"
+	"clara-code/pkg/tool"
+	"clara-code/pkg/tool/fs"
+	"clara-code/pkg/tool/fs/image"
 )
 
 type Config struct {
-	Model        models.LanguageModel
-	SelectModel  func(context.Context, string) (models.LanguageModel, error)
+	Model        modelapi.LanguageModel
+	SelectModel  func(context.Context, string) (modelapi.LanguageModel, error)
 	FS           fs.FS
-	Runner       tools.Runner
+	Runner       tool.Runner
 	Workspace    string
 	Store        core.Store
-	Ask          tools.AskUser
+	Ask          tool.AskUser
 	Authorize    core.ToolAuthorizer
 	ExtraTools   []core.AgentTool
 	DynamicTools func() []core.AgentTool
@@ -31,13 +31,13 @@ type Config struct {
 
 type Conversation struct {
 	Session  *core.Session
-	Goal     *tools.Goal
+	Goal     *tool.Goal
 	config   Config
 	storage  fs.FS
 	items    []core.AgentTool
-	plan     *tools.MemoryPlan
-	tasks    *tools.TaskScope
-	commands *tools.Commands
+	plan     *tool.MemoryPlan
+	tasks    *tool.TaskScope
+	commands *tool.Commands
 	cancel   context.CancelFunc
 }
 
@@ -46,35 +46,35 @@ func Open(ctx context.Context, config Config, id string) (*Conversation, error) 
 		return nil, errors.New("host needs a model and filesystem")
 	}
 	lifetime, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	host := &Conversation{config: config, storage: config.FS, Goal: &tools.Goal{}, plan: &tools.MemoryPlan{}, cancel: cancel}
-	files := tools.NewFiles(config.FS, nil)
-	host.items = append(files.All(), tools.NewImages(config.FS, image.Options{}).View(),
-		tools.NewDocuments(config.FS).Read(), tools.NewDocuments(config.FS).Create(),
-		tools.UpdatePlan(host.plan), tools.GetPlan(host.plan), host.Goal.Get(), host.Goal.Update())
+	host := &Conversation{config: config, storage: config.FS, Goal: &tool.Goal{}, plan: &tool.MemoryPlan{}, cancel: cancel}
+	files := tool.NewFiles(config.FS, nil)
+	host.items = append(files.All(), tool.NewImages(config.FS, image.Options{}).View(),
+		tool.NewDocuments(config.FS).Read(), tool.NewDocuments(config.FS).Create(),
+		tool.UpdatePlan(host.plan), tool.GetPlan(host.plan), host.Goal.Get(), host.Goal.Update())
 	if config.Runner != nil {
-		host.commands = tools.NewCommands(config.Runner)
+		host.commands = tool.NewCommands(config.Runner)
 		host.commands.Context = lifetime
 		host.items = append(host.items, host.commands.ExecCommand(), host.commands.WriteStdin())
 	}
 	if config.Ask != nil {
-		host.items = append(host.items, tools.RequestUserInput(config.Ask))
+		host.items = append(host.items, tool.RequestUserInput(config.Ask))
 	}
 	host.items = append(host.items, config.ExtraTools...)
-	manager := tools.NewTaskManager(host.buildTask, 4, 3)
-	taskTools := func(scope *tools.TaskScope) []core.AgentTool {
-		return []core.AgentTool{tools.SpawnAgent(scope), tools.RunTask(scope), tools.ListAgents(scope), tools.SendMessage(scope),
-			tools.FollowupTask(scope), tools.WaitAgent(scope), tools.InterruptAgent(scope), tools.CloseAgent(scope)}
+	manager := tool.NewTaskManager(host.buildTask, 4, 3)
+	taskTools := func(scope *tool.TaskScope) []core.AgentTool {
+		return []core.AgentTool{tool.SpawnAgent(scope), tool.RunTask(scope), tool.ListAgents(scope), tool.SendMessage(scope),
+			tool.FollowupTask(scope), tool.WaitAgent(scope), tool.InterruptAgent(scope), tool.CloseAgent(scope)}
 	}
 	allowed := append([]core.AgentTool{}, host.items...)
-	allowed = append(allowed, taskTools(&tools.TaskScope{})...)
+	allowed = append(allowed, taskTools(&tool.TaskScope{})...)
 	names := make([]string, 0, len(allowed))
 	for _, item := range allowed {
 		names = append(names, item.Info().Name)
 	}
-	host.tasks = manager.Scope(lifetime, "", tools.ScopeOptions{
+	host.tasks = manager.Scope(lifetime, "", tool.ScopeOptions{
 		AllowedTools: names, Authorize: config.Authorize,
-		History: func() []models.Message { return host.Session.Messages() },
-		Publish: func(ctx context.Context, info tools.TaskInfo) error {
+		History: func() []modelapi.Message { return host.Session.Messages() },
+		Publish: func(ctx context.Context, info tool.TaskInfo) error {
 			return host.Session.Emit(ctx, "task.updated", info)
 		},
 	})
@@ -96,8 +96,8 @@ func Open(ctx context.Context, config Config, id string) (*Conversation, error) 
 func (h *Conversation) Call(mode prompt.Mode) core.AgentStreamCall {
 	call := core.AgentStreamCall{AuthorizeTool: h.config.Authorize}
 	if mode == prompt.Plan {
-		call.AuthorizeTool = func(ctx context.Context, info models.ToolInfo, toolCall models.ToolCall) error {
-			if err := tools.PlanOnly(ctx, info, toolCall); err != nil {
+		call.AuthorizeTool = func(ctx context.Context, info modelapi.ToolInfo, toolCall modelapi.ToolCall) error {
+			if err := tool.PlanOnly(ctx, info, toolCall); err != nil {
 				return err
 			}
 			if h.config.Authorize != nil {
@@ -107,13 +107,13 @@ func (h *Conversation) Call(mode prompt.Mode) core.AgentStreamCall {
 		}
 	} else {
 		call.FollowUp = h.Goal.NextTurn
-		call.OnStreamFinish = func(usage models.Usage, _ models.FinishReason, _ models.ProviderMetadata) error {
+		call.OnStreamFinish = func(usage modelapi.Usage, _ modelapi.FinishReason, _ modelapi.ProviderMetadata) error {
 			h.Goal.Charge(usage)
 			return nil
 		}
 	}
 	call.PrepareStep = h.prepare(mode, "", h.items, h.plan, h.Goal, h.tasks)
-	call.OnToolResult = func(item models.ToolResultContent) error {
+	call.OnToolResult = func(item modelapi.ToolResultContent) error {
 		switch item.ToolName {
 		case "update_plan":
 			state, err := h.plan.GetPlan(context.Background())
@@ -145,14 +145,14 @@ func (h *Conversation) Close(ctx context.Context) error {
 	return err
 }
 
-func (h *Conversation) prepare(mode prompt.Mode, role string, registered []core.AgentTool, plan *tools.MemoryPlan, goal *tools.Goal, scope *tools.TaskScope) core.PrepareStepFunction {
+func (h *Conversation) prepare(mode prompt.Mode, role string, registered []core.AgentTool, plan *tool.MemoryPlan, goal *tool.Goal, scope *tool.TaskScope) core.PrepareStepFunction {
 	return func(ctx context.Context, step core.PrepareStepFunctionOptions) (context.Context, core.PrepareStepResult, error) {
 		items := append([]core.AgentTool{}, registered...)
 		if role == "" && h.config.DynamicTools != nil {
 			items = append(items, h.config.DynamicTools()...)
 		}
 		if mode == prompt.Plan {
-			items = tools.PlanTools(items)
+			items = tool.PlanTools(items)
 		}
 		config := prompt.Config{Mode: mode, Tools: items, Role: role}
 		system := prompt.System(config)
@@ -204,26 +204,26 @@ func (h *Conversation) prepare(mode prompt.Mode, role string, registered []core.
 	}
 }
 
-func (h *Conversation) buildTask(ctx context.Context, spec tools.TaskSpec, scope *tools.TaskScope) (tools.TaskSetup, error) {
+func (h *Conversation) buildTask(ctx context.Context, spec tool.TaskSpec, scope *tool.TaskScope) (tool.TaskSetup, error) {
 	model := h.config.Model
 	if spec.Model != "" {
 		if h.config.SelectModel == nil {
-			return tools.TaskSetup{}, errors.New("host did not configure model selection")
+			return tool.TaskSetup{}, errors.New("host did not configure model selection")
 		}
 		var err error
 		model, err = h.config.SelectModel(ctx, spec.Model)
 		if err != nil {
-			return tools.TaskSetup{}, err
+			return tool.TaskSetup{}, err
 		}
 	}
-	files := tools.NewFiles(h.storage, nil)
-	plan := &tools.MemoryPlan{}
+	files := tool.NewFiles(h.storage, nil)
+	plan := &tool.MemoryPlan{}
 	items := []core.AgentTool{files.List(), files.Read(), files.Stat(), files.Grep(), files.Glob(), files.Instructions()}
 	role := strings.ToLower(spec.Role)
 	switch role {
 	case "explorer", "reviewer":
 	case "image":
-		items = append(items, tools.NewImages(h.storage, image.Options{}).View())
+		items = append(items, tool.NewImages(h.storage, image.Options{}).View())
 	case "search":
 		for _, item := range h.config.ExtraTools {
 			if name := item.Info().Name; name == "web_search" || name == "web_fetch" {
@@ -231,12 +231,12 @@ func (h *Conversation) buildTask(ctx context.Context, spec tools.TaskSpec, scope
 			}
 		}
 	case "general":
-		items = append(files.All(), tools.GetPlan(plan), tools.UpdatePlan(plan), tools.SpawnAgent(scope), tools.RunTask(scope),
-			tools.SendMessage(scope), tools.FollowupTask(scope), tools.WaitAgent(scope), tools.InterruptAgent(scope), tools.CloseAgent(scope), tools.ListAgents(scope))
+		items = append(files.All(), tool.GetPlan(plan), tool.UpdatePlan(plan), tool.SpawnAgent(scope), tool.RunTask(scope),
+			tool.SendMessage(scope), tool.FollowupTask(scope), tool.WaitAgent(scope), tool.InterruptAgent(scope), tool.CloseAgent(scope), tool.ListAgents(scope))
 	default:
-		return tools.TaskSetup{}, errors.New("unknown role. Use general, explorer, reviewer, search or image")
+		return tool.TaskSetup{}, errors.New("unknown role. Use general, explorer, reviewer, search or image")
 	}
-	return tools.TaskSetup{Model: model, Tools: items, PrepareStep: h.prepare(prompt.Execute, role, items, plan, nil, scope)}, nil
+	return tool.TaskSetup{Model: model, Tools: items, PrepareStep: h.prepare(prompt.Execute, role, items, plan, nil, scope)}, nil
 }
 
 func asJSON(value any) string {

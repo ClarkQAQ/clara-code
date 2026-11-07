@@ -9,8 +9,8 @@ import (
 	"clara-code/examples/internal/host"
 	"clara-code/pkg/core"
 	"clara-code/pkg/core/prompt"
-	"clara-code/pkg/models"
-	"clara-code/pkg/tools/fs"
+	"clara-code/pkg/model"
+	"clara-code/pkg/tool/fs"
 )
 
 func TestLocalWorkspaceUsesLogicalPaths(t *testing.T) {
@@ -33,18 +33,18 @@ func TestLocalWorkspaceUsesLogicalPaths(t *testing.T) {
 		}
 	}
 
-	config.Model = Model{Reply: func(_ context.Context, call models.Call) (models.Response, error) {
-		state, _ := models.AsMessagePart[models.TextPart](call.Prompt[len(call.Prompt)-1].Content[0])
+	config.Model = Model{Reply: func(_ context.Context, call model.Call) (model.Response, error) {
+		state, _ := model.AsMessagePart[model.TextPart](call.Prompt[len(call.Prompt)-1].Content[0])
 		if !strings.Contains(state.Text, "workspace root in file tools is /") ||
 			!strings.Contains(state.Text, "Follow the root rules.") || strings.Contains(state.Text, root) {
-			return models.Response{}, fmt.Errorf("unexpected workspace context: %s", state.Text)
+			return model.Response{}, fmt.Errorf("unexpected workspace context: %s", state.Text)
 		}
-		return models.Response{
-			FinishReason: models.FinishReasonToolCalls,
-			Content: models.ResponseContent{
-				models.ToolCallContent{ToolCallID: "list", ToolName: "list", Input: `{"path":"/"}`},
-				models.ToolCallContent{ToolCallID: "rules", ToolName: "fs_instructions", Input: `{"path":"/nested"}`},
-				models.ToolCallContent{ToolCallID: "new-file", ToolName: "fs_instructions", Input: `{"path":"/nested/future.go"}`},
+		return model.Response{
+			FinishReason: model.FinishReasonToolCalls,
+			Content: model.ResponseContent{
+				model.ToolCallContent{ToolCallID: "list", ToolName: "list", Input: `{"path":"/"}`},
+				model.ToolCallContent{ToolCallID: "rules", ToolName: "fs_instructions", Input: `{"path":"/nested"}`},
+				model.ToolCallContent{ToolCallID: "new-file", ToolName: "fs_instructions", Input: `{"path":"/nested/future.go"}`},
 			},
 		}, nil
 	}}

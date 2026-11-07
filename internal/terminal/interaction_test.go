@@ -9,11 +9,11 @@ import (
 	"testing"
 
 	"clara-code/pkg/core/prompt"
-	"clara-code/pkg/models"
+	"clara-code/pkg/model"
 
 	"clara-code/internal/coding"
 	"clara-code/internal/session"
-	"clara-code/internal/settings"
+	"clara-code/internal/setting"
 )
 
 func TestStructuredQuestionAndLegacyOptions(t *testing.T) {
@@ -22,11 +22,11 @@ func TestStructuredQuestionAndLegacyOptions(t *testing.T) {
 		`{"questions":[{"id":"choice","text":"Is this working?","options":["Yes","No"]}]}`,
 	} {
 		q := coding.NewQuestions()
-		done := make(chan models.ToolResponse, 1)
+		done := make(chan model.ToolResponse, 1)
 		go func() {
-			response, err := q.Tool().Run(t.Context(), models.ToolCall{Input: input})
+			response, err := q.Tool().Run(t.Context(), model.ToolCall{Input: input})
 			if err != nil {
-				response = models.NewTextErrorResponse(err.Error())
+				response = model.NewTextErrorResponse(err.Error())
 			}
 			done <- response
 		}()
@@ -152,8 +152,8 @@ func testApp(t *testing.T) *app {
 	if err != nil {
 		t.Fatal(err)
 	}
-	host := coding.Host{Config: settings.Config{Home: t.TempDir(), DefaultModel: "demo", Models: map[string]settings.Model{"demo": {ID: "demo", ContextWindow: 1_048_576}}},
-		Models: func(context.Context, string) (models.LanguageModel, error) { return coding.DemoModel{}, nil }}
+	host := coding.Host{Config: setting.Config{Home: t.TempDir(), DefaultModel: "demo", Models: map[string]setting.Model{"demo": {ID: "demo", ContextWindow: 1_048_576}}},
+		Models: func(context.Context, string) (model.LanguageModel, error) { return coding.DemoModel{}, nil }}
 	store := session.New(host.Config.Home, session.Meta{Project: space.Root, Cwd: space.Cwd, Model: "demo"})
 	conversation, err := host.Open(t.Context(), space, store, nil, nil)
 	if err != nil {
@@ -207,7 +207,7 @@ func TestCommandMenuAndClearKeepSavedSession(t *testing.T) {
 }
 
 func TestContextAndRightAlignedMode(t *testing.T) {
-	if got := (settings.Model{ContextWindow: 1_048_576}).EffectiveWindow(); got != 996147 {
+	if got := (setting.Model{ContextWindow: 1_048_576}).EffectiveWindow(); got != 996147 {
 		t.Fatalf("window %d", got)
 	}
 	for count, expected := range map[int64]string{996147: "996K", 11300: "11.3K", 1000000: "1M", 1048576: "1.05M"} {

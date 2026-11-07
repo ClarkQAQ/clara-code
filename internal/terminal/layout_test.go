@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"clara-code/pkg/core"
-	"clara-code/pkg/models"
+	"clara-code/pkg/model"
 
 	"clara-code/internal/coding"
 	"clara-code/internal/session"
@@ -100,7 +100,7 @@ func TestComposerCursorSurvivesActivityMenuAndStreaming(t *testing.T) {
 	a.run = &core.Run{ID: "cursor-test"}
 	a.activity.start(time.Now())
 	a.editor.replace("ni hao")
-	tool := session.NewToolActivity(models.ToolCallContent{ToolCallID: "call", ToolName: "read", Input: `{"path":"file.go"}`}, time.Now())
+	tool := session.NewToolActivity(model.ToolCallContent{ToolCallID: "call", ToolName: "read", Input: `{"path":"file.go"}`}, time.Now())
 	a.toolGroup = []session.ToolActivity{tool}
 	for _, height := range []int{24, 8, 4, 2, 1} {
 		a.view.height = height

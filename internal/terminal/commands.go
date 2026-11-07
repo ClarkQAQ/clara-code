@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"clara-code/pkg/core/prompt"
-	"clara-code/pkg/tools"
+	"clara-code/pkg/tool"
 
-	"clara-code/internal/localtime"
 	"clara-code/internal/session"
+	"clara-code/pkg/util/localtime"
 )
 
 func (a *app) handle(input key) bool {
@@ -303,7 +303,7 @@ func (a *app) interrupt() {
 	if a.run == nil {
 		return
 	}
-	if a.conv.Goal.State().Status == tools.GoalActive {
+	if a.conv.Goal.State().Status == tool.GoalActive {
 		_ = a.conv.Goal.Pause()
 	}
 	a.question = nil
@@ -311,7 +311,7 @@ func (a *app) interrupt() {
 }
 
 func (a *app) pauseGoal() {
-	if a.conv.Goal.State().Status != tools.GoalActive {
+	if a.conv.Goal.State().Status != tool.GoalActive {
 		a.notice(errors.New("no active goal"))
 		return
 	}

@@ -6,35 +6,35 @@ import (
 	"strings"
 	"time"
 
-	"clara-code/pkg/models"
-	"clara-code/pkg/tools"
+	"clara-code/pkg/model"
+	toolapi "clara-code/pkg/tool"
 
 	"clara-code/internal/session"
 )
 
 type commandObservation struct {
-	poll  tools.Poll
+	poll  toolapi.Poll
 	valid bool
 }
 
 type observationKey struct{}
 
-type observedRunner struct{ tools.Runner }
-type observedProcess struct{ tools.Process }
+type observedRunner struct{ toolapi.Runner }
+type observedProcess struct{ toolapi.Process }
 
-func (r observedRunner) Start(ctx context.Context, spec tools.Spec) (tools.Process, error) {
+func (r observedRunner) Start(ctx context.Context, spec toolapi.Spec) (toolapi.Process, error) {
 	process, err := r.Runner.Start(ctx, spec)
 	if err != nil {
 		return nil, err
 	}
 	wrapped := observedProcess{process}
-	if _, ok := process.(tools.SnapshotProcess); ok {
+	if _, ok := process.(toolapi.SnapshotProcess); ok {
 		return observedSnapshotProcess{wrapped}, nil
 	}
 	return wrapped, nil
 }
 
-func (p observedProcess) Poll(ctx context.Context, wait time.Duration) (tools.Poll, error) {
+func (p observedProcess) Poll(ctx context.Context, wait time.Duration) (toolapi.Poll, error) {
 	poll, err := p.Process.Poll(ctx, wait)
 	if observation, ok := ctx.Value(observationKey{}).(*commandObservation); ok && err == nil {
 		observation.poll = poll
@@ -43,13 +43,13 @@ func (p observedProcess) Poll(ctx context.Context, wait time.Duration) (tools.Po
 	return poll, err
 }
 
-type observedCommand struct{ models.AgentTool }
+type observedCommand struct{ model.AgentTool }
 
-func observeCommand(tool models.AgentTool) models.AgentTool {
+func observeCommand(tool model.AgentTool) model.AgentTool {
 	return observedCommand{tool}
 }
 
-func (t observedCommand) Run(ctx context.Context, call models.ToolCall) (models.ToolResponse, error) {
+func (t observedCommand) Run(ctx context.Context, call model.ToolCall) (model.ToolResponse, error) {
 	observation := &commandObservation{}
 	result, err := t.AgentTool.Run(context.WithValue(ctx, observationKey{}, observation), call)
 	if err != nil {
@@ -61,7 +61,7 @@ func (t observedCommand) Run(ctx context.Context, call models.ToolCall) (models.
 	}
 	_ = json.Unmarshal([]byte(call.Input), &input)
 	var state struct {
-		Terminal tools.TerminalInfo `json:"terminal"`
+		Terminal toolapi.TerminalInfo `json:"terminal"`
 	}
 	_ = json.Unmarshal([]byte(result.Metadata), &state)
 	if state.Terminal.ID != "" {
@@ -106,6 +106,6 @@ func (t observedCommand) Run(ctx context.Context, call models.ToolCall) (models.
 
 type observedSnapshotProcess struct{ observedProcess }
 
-func (p observedSnapshotProcess) Snapshot(ctx context.Context) (tools.Poll, error) {
-	return p.Process.(tools.SnapshotProcess).Snapshot(ctx)
+func (p observedSnapshotProcess) Snapshot(ctx context.Context) (toolapi.Poll, error) {
+	return p.Process.(toolapi.SnapshotProcess).Snapshot(ctx)
 }

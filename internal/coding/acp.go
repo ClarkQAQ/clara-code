@@ -10,7 +10,7 @@ import (
 
 	"clara-code/pkg/core"
 	"clara-code/pkg/core/prompt"
-	"clara-code/pkg/tools/mcp"
+	"clara-code/pkg/tool/mcp"
 	acpsdk "github.com/coder/acp-go-sdk"
 	"golang.org/x/sys/unix"
 

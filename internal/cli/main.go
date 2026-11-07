@@ -10,10 +10,10 @@ import (
 	"os"
 	"strings"
 
-	"clara-code/pkg/models"
+	"clara-code/pkg/model"
 
 	"clara-code/internal/coding"
-	"clara-code/internal/settings"
+	"clara-code/internal/setting"
 	"clara-code/internal/terminal"
 )
 
@@ -91,15 +91,15 @@ func Run(ctx context.Context, args []string, input, output, stderr *os.File, ver
 		_, err := fmt.Fprint(output, "Clara Code\n\nUsage:\n  clara-code [--cwd DIR] [--demo]\n  clara-code resume [ID] [--cwd DIR] [--demo]\n  clara-code acp [--demo]\n  clara-code --version\n")
 		return err
 	}
-	config, err := settings.Load()
+	config, err := setting.Load()
 	if err != nil {
 		return err
 	}
 	host := coding.Host{Config: config}
 	if options.demo {
 		host.Config.DefaultModel = "demo"
-		host.Config.Models = map[string]settings.Model{"demo": {ID: "demo"}}
-		host.Models = func(context.Context, string) (models.LanguageModel, error) { return coding.DemoModel{}, nil }
+		host.Config.Models = map[string]setting.Model{"demo": {ID: "demo"}}
+		host.Models = func(context.Context, string) (model.LanguageModel, error) { return coding.DemoModel{}, nil }
 	} else {
 		host.Models, err = config.Factory()
 		if err != nil {

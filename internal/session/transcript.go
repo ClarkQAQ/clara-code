@@ -7,13 +7,13 @@ import (
 	"time"
 
 	"clara-code/pkg/core"
-	"clara-code/pkg/models"
+	"clara-code/pkg/model"
 )
 
-func Text(message models.Message) string {
+func Text(message model.Message) string {
 	var out strings.Builder
 	for _, part := range message.Content {
-		if text, ok := models.AsMessagePart[models.TextPart](part); ok {
+		if text, ok := model.AsMessagePart[model.TextPart](part); ok {
 			out.WriteString(text.Text)
 		}
 	}
@@ -30,7 +30,7 @@ func (t *Turn) collect(events []core.Event) {
 		t.Cursor = event.Sequence
 		switch event.Kind {
 		case "text_delta":
-			var part models.StreamPart
+			var part model.StreamPart
 			if !t.Staged && partial.Len() < 256<<10 && json.Unmarshal(event.Data, &part) == nil {
 				partial.WriteString(excerpt(part.Delta, (256<<10)-partial.Len()))
 			}
@@ -51,7 +51,7 @@ func (t *Turn) collect(events []core.Event) {
 				t.upsertTool(activity)
 			}
 		case "tool.result":
-			var result models.ToolResultContent
+			var result model.ToolResultContent
 			if json.Unmarshal(event.Data, &result) == nil && result.ToolName == "request_user_input" {
 				cell := ToolOutput(result)
 				t.append(cell.Kind, cell.Text)
@@ -93,7 +93,7 @@ func (t *Turn) collect(events []core.Event) {
 	t.Partial = partial.String()
 }
 
-func ToolLabel(call models.ToolCallContent) string {
+func ToolLabel(call model.ToolCallContent) string {
 	var args struct{ Command, Path, Query, Input string }
 	_ = json.Unmarshal([]byte(call.Input), &args)
 	if call.ToolName == "request_user_input" {
@@ -111,8 +111,8 @@ func ToolLabel(call models.ToolCallContent) string {
 	return call.ToolName
 }
 
-func ToolOutput(result models.ToolResultContent) Cell {
-	if failure, ok := models.AsToolResultOutputType[models.ToolResultOutputContentError](result.Result); ok {
+func ToolOutput(result model.ToolResultContent) Cell {
+	if failure, ok := model.AsToolResultOutputType[model.ToolResultOutputContentError](result.Result); ok {
 		detail := result.ToolName + " failed"
 		if failure.Error != nil {
 			detail += " · " + excerpt(failure.Error.Error(), 500)
@@ -120,7 +120,7 @@ func ToolOutput(result models.ToolResultContent) Cell {
 		return Cell{Kind: "notice", Text: detail}
 	}
 	if result.ToolName == "request_user_input" {
-		if text, ok := models.AsToolResultOutputType[models.ToolResultOutputContentText](result.Result); ok {
+		if text, ok := model.AsToolResultOutputType[model.ToolResultOutputContentText](result.Result); ok {
 			var value struct {
 				Questions map[string]string
 				Answers   map[string]struct {
@@ -152,7 +152,7 @@ func ToolOutput(result models.ToolResultContent) Cell {
 		}
 	}
 	if result.ToolName == "exec_command" || result.ToolName == "write_stdin" || result.ToolName == "edit" || result.ToolName == "write" || result.ToolName == "remove" || result.ToolName == "move" || result.ToolName == "copy" {
-		if text, ok := models.AsToolResultOutputType[models.ToolResultOutputContentText](result.Result); ok {
+		if text, ok := model.AsToolResultOutputType[model.ToolResultOutputContentText](result.Result); ok {
 			lines := strings.SplitN(excerpt(strings.TrimSpace(text.Text), 1200), "\n", 9)
 			if len(lines) == 9 {
 				lines[8] = "…"

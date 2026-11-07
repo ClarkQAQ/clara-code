@@ -1,6 +1,6 @@
 package core
 
-import "clara-code/pkg/models"
+import "clara-code/pkg/model"
 
 func responseStream(response *Response) StreamResponse {
 	return func(yield func(StreamPart) bool) {
@@ -8,8 +8,8 @@ func responseStream(response *Response) StreamResponse {
 			return
 		}
 		for _, content := range response.Content {
-			part := StreamPart{Type: models.StreamPartTypeContent, Content: content}
-			if call, ok := models.AsContentType[ToolCallContent](content); ok {
+			part := StreamPart{Type: model.StreamPartTypeContent, Content: content}
+			if call, ok := model.AsContentType[ToolCallContent](content); ok {
 				part = StreamPart{Type: StreamPartTypeToolCall, ID: call.ToolCallID, ToolCallName: call.ToolName, ToolCallInput: call.Input,
 					ProviderMetadata: call.ProviderMetadata, ProviderExecuted: call.ProviderExecuted}
 			}

@@ -15,8 +15,8 @@ import (
 	"clara-code/examples/internal/host"
 	"clara-code/pkg/core"
 	"clara-code/pkg/core/prompt"
-	"clara-code/pkg/models"
-	"clara-code/pkg/tools/mcp"
+	modelapi "clara-code/pkg/model"
+	"clara-code/pkg/tool/mcp"
 )
 
 func main() {
@@ -30,8 +30,8 @@ func run() error {
 	persist := flag.String("store", "", "directory for persistent sessions")
 	flag.Parse()
 	ctx := context.Background()
-	var model models.LanguageModel = demo.Model{}
-	var selectModel func(context.Context, string) (models.LanguageModel, error)
+	var model modelapi.LanguageModel = demo.Model{}
+	var selectModel func(context.Context, string) (modelapi.LanguageModel, error)
 	var store core.Store = core.NewMemoryStore()
 	var err error
 	if !*demoMode {

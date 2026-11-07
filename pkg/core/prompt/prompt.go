@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"clara-code/pkg/core"
-	"clara-code/pkg/models"
+	"clara-code/pkg/model"
 )
 
 //go:embed *.md
@@ -101,7 +101,7 @@ type Context struct {
 	Tasks     string
 }
 
-func (state Context) Message() models.Message {
+func (state Context) Message() model.Message {
 	var out strings.Builder
 	out.WriteString("# Current workspace state\n")
 	for _, item := range []struct{ label, text string }{
@@ -112,7 +112,7 @@ func (state Context) Message() models.Message {
 			fmt.Fprintf(&out, "\n## %s\n%s\n", item.label, item.text)
 		}
 	}
-	return models.NewUserMessage(out.String())
+	return model.NewUserMessage(out.String())
 }
 
 // Prepare builds a hook that can be used with either Agent entry point.

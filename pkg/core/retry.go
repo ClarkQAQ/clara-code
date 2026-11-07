@@ -1,7 +1,7 @@
 package core
 
 import (
-	"clara-code/pkg/models"
+	"clara-code/pkg/model"
 	"context"
 	"errors"
 	"net"
@@ -189,7 +189,7 @@ func isRetryableError(err error) bool {
 	if errors.As(err, &netErr) {
 		return true
 	}
-	return models.IsTransportError(err)
+	return model.IsTransportError(err)
 }
 
 // isAbortError checks if the error is a context cancellation error.

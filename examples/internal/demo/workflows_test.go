@@ -11,9 +11,9 @@ import (
 	"clara-code/examples/internal/host"
 	"clara-code/pkg/core"
 	"clara-code/pkg/core/prompt"
-	"clara-code/pkg/models"
-	"clara-code/pkg/tools"
-	"clara-code/pkg/tools/fs/memory"
+	modelapi "clara-code/pkg/model"
+	"clara-code/pkg/tool"
+	"clara-code/pkg/tool/fs/memory"
 	"clara-code/pkg/util/errs"
 )
 
@@ -27,13 +27,13 @@ func TestPlanAndGoalUseHostHooks(t *testing.T) {
 	ctx := t.Context()
 	storage := memory.New()
 	asked := false
-	model := Model{Reply: func(_ context.Context, call models.Call) (models.Response, error) {
+	model := Model{Reply: func(_ context.Context, call modelapi.Call) (modelapi.Response, error) {
 		for _, message := range call.Prompt {
 			for _, part := range message.Content {
-				if text, ok := models.AsMessagePart[models.TextPart](part); ok && strings.Contains(text.Text, "Plan Mode") {
+				if text, ok := modelapi.AsMessagePart[modelapi.TextPart](part); ok && strings.Contains(text.Text, "Plan Mode") {
 					for _, item := range call.Tools {
-						if function, ok := item.(models.FunctionTool); ok && (function.Name == "write" || function.Name == "update_plan") {
-							return models.Response{}, errors.New("side-effecting tool advertised in Plan Mode")
+						if function, ok := item.(modelapi.FunctionTool); ok && (function.Name == "write" || function.Name == "update_plan") {
+							return modelapi.Response{}, errors.New("side-effecting tool advertised in Plan Mode")
 						}
 					}
 					return ToolThenText("request_user_input", `{"questions":[{"id":"choice","text":"Choose scope","options":["Small","Large"]}]}`)(ctx, call)
@@ -42,7 +42,7 @@ func TestPlanAndGoalUseHostHooks(t *testing.T) {
 		}
 		return Text("continue"), nil
 	}}
-	conversation, err := host.Open(ctx, host.Config{Model: model, FS: storage, Ask: func(_ context.Context, items []tools.Question) (map[string]string, error) {
+	conversation, err := host.Open(ctx, host.Config{Model: model, FS: storage, Ask: func(_ context.Context, items []tool.Question) (map[string]string, error) {
 		asked = len(items) == 1 && items[0].ID == "choice"
 		return map[string]string{"choice": "Small"}, nil
 	}}, "")
@@ -62,9 +62,9 @@ func TestPlanAndGoalUseHostHooks(t *testing.T) {
 	if err != nil || !asked || !strings.Contains(result.Response.Content.Text(), "Small") {
 		t.Fatalf("plan question was not answered. Result %v. Error %v", result, err)
 	}
-	guarded := tools.NewFiles(storage, nil).Write()
+	guarded := tool.NewFiles(storage, nil).Write()
 	result, err = core.NewAgent(Model{Reply: ToolThenText("write", `{"path":"blocked","content":"test"}`)}, core.WithTools(guarded)).
-		Generate(ctx, core.AgentCall{Prompt: "try mutation", AuthorizeTool: tools.PlanOnly})
+		Generate(ctx, core.AgentCall{Prompt: "try mutation", AuthorizeTool: tool.PlanOnly})
 	if err != nil || !strings.Contains(result.Response.Content.Text(), "Plan Mode") {
 		t.Fatalf("tool execution did not enforce Plan Mode. Result %v. Error %v", result, err)
 	}
@@ -82,7 +82,7 @@ func TestPlanAndGoalUseHostHooks(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := conversation.Goal.State()
-	if state.TokensUsed != 30 || state.Status != tools.GoalExhausted || state.TurnsUsed != 1 {
+	if state.TokensUsed != 30 || state.Status != tool.GoalExhausted || state.TurnsUsed != 1 {
 		t.Fatalf("unexpected goal state: %+v", state)
 	}
 }
@@ -132,14 +132,14 @@ func TestSessionCheckpointsAndReplays(t *testing.T) {
 func TestExecSurvivesToolReturn(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 	defer cancel()
-	commands := tools.NewCommands(tools.NewLocal())
+	commands := tool.NewCommands(tool.NewLocal())
 	t.Cleanup(func() {
 		if err := commands.Close(); err != nil {
 			t.Error(err)
 		}
 	})
 	toolCtx, finishTool := context.WithCancel(ctx)
-	result, err := commands.ExecCommand().Run(toolCtx, models.ToolCall{
+	result, err := commands.ExecCommand().Run(toolCtx, modelapi.ToolCall{
 		Input: `{"command":"read line; printf '%s' \"$line\"","yield_seconds":1}`,
 	})
 	finishTool()
@@ -151,7 +151,7 @@ func TestExecSurvivesToolReturn(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing process ID: %s", result.Content)
 	}
-	result, err = commands.WriteStdin().Run(ctx, models.ToolCall{Input: `{"session_id":"` + id + `","chars":"still alive\n","yield_seconds":2}`})
+	result, err = commands.WriteStdin().Run(ctx, modelapi.ToolCall{Input: `{"session_id":"` + id + `","chars":"still alive\n","yield_seconds":2}`})
 	if err != nil || result.IsError || !strings.Contains(result.Content, "still alive") {
 		t.Fatalf("wait background command: %+v %v", result, err)
 	}

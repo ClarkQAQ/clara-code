@@ -12,21 +12,21 @@ historical `clara-core` checkout is not a dependency.
   `internal/cli` owns argument parsing, startup, diagnostics, and CLI integration tests.
 - `internal/coding` owns Clara's agent assembly, native-path and Git policies,
   instruction and skill discovery, interactive questions, and tool presentation.
-  Terminal UI, application configuration, and application-specific persistence
-  belong to their respective `internal` packages.
+  Terminal UI and application-specific persistence belong to their respective
+  `internal` packages; application configuration belongs to `internal/setting`.
 - `pkg/core` owns the agent loop, extension points, sessions, events, and ACP
   client/server adapters. Keep filesystem implementations, concrete tools, and
   model providers out of this package. `pkg/core/prompt` provides optional prompt
   composition and embedded templates.
-- `pkg/models` owns model contracts, providers, and relay protocols.
-  `pkg/tools` owns reusable tools, execution backends, filesystem and Hashline
+- `pkg/model` owns model contracts, providers, and relay protocols.
+  `pkg/tool` owns reusable tools, execution backends, filesystem and Hashline
   capabilities, MCP adapters, plans, goals, and task orchestration.
-- `pkg/util/errs` and `pkg/util/id` are independent foundational packages.
+- `pkg/util/errs`, `pkg/util/id`, and `pkg/util/localtime` are independent foundational packages.
   Do not turn `util` into a general-purpose collection of unrelated helpers.
 - Public packages must not import application packages under root `internal`.
   Model contracts and utilities do not depend on Core or application policy.
   Tools may depend on Core, models, and utilities. Package-local implementation
-  directories such as `pkg/models/relay/internal` remain private to their subtree.
+  directories such as `pkg/model/relay/internal` remain private to their subtree.
 - Put reusable mechanisms in `pkg`; put Clara-specific policy and interaction in
   `internal`. Examples belong in `examples`, including example-only shared helpers.
 
@@ -59,9 +59,9 @@ historical `clara-core` checkout is not a dependency.
 Run `make check`: formatting, tests, race tests, vet, lint, CLI build, and example
 builds. Use `make fmt` only when intentionally formatting changes.
 
-For protocol changes, run the applicable `make conformance-openresponses` or
-`make conformance-acp` target. Use deterministic models and local endpoints for
-integration checks, and report any external services used in live checks.
+For protocol changes, extend the repository's protocol regression tests using
+deterministic models and local endpoints. Keep verification self-contained;
+do not add external test-suite downloads or runners.
 
 For terminal changes, run the existing PTY/tmux tests. For platform-sensitive
 changes, build macOS and Linux on amd64 and arm64. For public-package changes,

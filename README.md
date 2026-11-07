@@ -1,10 +1,10 @@
 # Clara Code
 
-Clara Code 是基于 Clara Core 的终端编码助手。它使用终端主屏幕，已完成的对话保留在原生滚动历史中。调整窗口大小时按逻辑消息重建当前终端缓冲区并重排会话，当前问题、菜单和输入草稿随窗口重新布局。交互版支持 macOS 和 Linux。
+Clara Code is a terminal coding assistant built on Clara Core. It uses the terminal's main screen and preserves completed conversations in native scrollback. Resizing rebuilds the terminal buffer from logical messages and reflows the conversation, including the current question, menu, and input draft. The interactive CLI supports macOS and Linux.
 
-## 启动
+## Getting Started
 
-需要 Go 1.27。CLI 与可复用的 Agent、模型及工具包均在当前仓库中。
+Go 1.27 is required. The CLI and reusable agent, model, and tool packages all live in this repository.
 
 ```sh
 go run . --demo
@@ -13,11 +13,11 @@ go build -o clara-code .
 ./clara-code resume --cwd /path/to/project
 ```
 
-## 项目结构与库引用
+## Project Structure and Library Usage
 
-根目录 `main.go` 提供命令行入口，启动实现与终端、配置、会话存储等应用功能位于 `internal`。可复用机制位于 `pkg/core`、`pkg/models`、`pkg/tools` 和 `pkg/util`。`pkg` 不依赖 Clara 的应用层。示例位于 `examples`；更多装配说明见[公共 Go 包](docs/core.md)。
+Root `main.go` provides the CLI entry point. Startup, terminal UI, configuration, session storage, and other application features live in `internal`. Reusable mechanisms live in `pkg/core`, `pkg/model`, `pkg/tool`, and `pkg/util`. Public packages do not depend on Clara's application layer. Examples live in `examples`; see [Public Go Packages](CORE.md) for assembly details.
 
-其他本地项目可配置：
+Other local projects can use:
 
 ```sh
 go mod edit -require=clara-code@v0.0.0
@@ -28,39 +28,39 @@ go mod tidy
 ```go
 import (
     "clara-code/pkg/core"
-    "clara-code/pkg/models"
-    "clara-code/pkg/tools"
+    "clara-code/pkg/model"
+    "clara-code/pkg/tool"
 )
 ```
 
-旧导入路径按以下映射迁移，包内类型及功能保持原有行为，不提供旧模块兼容层：
+Migrate old imports using the following mapping. Types and behavior remain unchanged; no compatibility module is provided for the old paths.
 
-| 旧路径 | 新路径 |
+| Old path | New path |
 | --- | --- |
-| `clara-core/agent`（包名 `agent`） | `clara-code/pkg/core`（包名 `core`） |
+| `clara-core/agent` (package `agent`) | `clara-code/pkg/core` (package `core`) |
 | `clara-core/agent/prompt` | `clara-code/pkg/core/prompt` |
 | `clara-core/agent/errs` | `clara-code/pkg/util/errs` |
 | `clara-core/agent/id` | `clara-code/pkg/util/id` |
-| `clara-core/models/...` | `clara-code/pkg/models/...` |
-| `clara-core/tools/...` | `clara-code/pkg/tools/...` |
+| `clara-core/models/...` | `clara-code/pkg/model/...` |
+| `clara-core/tools/...` | `clara-code/pkg/tool/...` |
 
-合并后无需相邻 Clara Core 工作树。现有配置、环境变量、会话及协议格式不变；原示例继续使用其 `CLARA_CORE_*` 配置。`make check` 统一运行格式检查、测试、race、vet、lint、CLI 与示例构建。`make build` 生成根目录的 `clara-code`；版本可用 `go build -ldflags '-X main.version=VERSION' .` 注入。英文[开发约定](AGENTS.md)说明新增功能的放置边界和检查要求。原框架的许可证、归属说明和提示词来源均已保留。
+An adjacent Clara Core checkout is no longer needed. Existing configuration, environment variables, sessions, and protocol formats remain compatible; the original examples continue to use their `CLARA_CORE_*` settings. `make check` runs formatting checks, tests, race tests, vet, lint, and CLI and example builds. `make build` produces `clara-code` at the repository root. Inject a version with `go build -ldflags '-X main.version=VERSION' .`. The [Development Guide](AGENTS.md) defines placement rules and verification requirements for new features. The original framework's license, attribution, and prompt provenance are preserved.
 
-真实模型可用环境变量配置。
+Configure a live model through environment variables:
 
 ```sh
 export CLARA_CODE_ENDPOINT='https://gateway.example/v1'
-export CLARA_CODE_PROTOCOL='responses' # 或 completions
+export CLARA_CODE_PROTOCOL='responses' # or completions
 export CLARA_CODE_MODEL='your-model'
 export CLARA_CODE_API_KEY='your-key'
 ./clara-code
 ```
 
-## 配置
+## Configuration
 
-Linux 数据目录默认为 `~/.local/share/clara-code`，设置 `XDG_DATA_HOME` 时使用其下的 `clara-code`。macOS 使用 `~/Library/Application Support/clara-code`。两个平台都可通过 `CLARA_CODE_HOME` 覆盖。
+On Linux, the data directory defaults to `~/.local/share/clara-code`, or `clara-code` under `XDG_DATA_HOME` when set. On macOS, it is `~/Library/Application Support/clara-code`. `CLARA_CODE_HOME` overrides the directory on either platform.
 
-在数据目录中创建 `config.toml`。模型环境变量优先，未配置的模型连接参数可回退到同名的 `CLARA_CORE_*` 变量。也可用 `api_key_file` 指定仅当前用户可访问的密钥文件（权限 `0600`）。相对路径以数据目录为基准，环境变量中的密钥优先。
+Create `config.toml` in the data directory. Model environment variables take precedence; unspecified connection settings can fall back to the corresponding `CLARA_CORE_*` variables. You can also set `api_key_file` to a key file accessible only to the current user (mode `0600`). Relative paths resolve from the data directory. A key supplied through the environment takes precedence.
 
 ```toml
 endpoint = "https://gateway.example/v1"
@@ -78,72 +78,71 @@ effective_context_window_percent = 95
 [models.fast]
 id = "another-model"
 
-# MCP stdio 示例
+# MCP stdio example
 [mcp_servers.files]
 command = "/path/to/mcp-server"
 args = ["--stdio"]
 required = false
 
-# MCP Streamable HTTP 示例
+# MCP Streamable HTTP example
 [mcp_servers.docs]
 url = "http://127.0.0.1:8765/mcp"
 
-# 外部 ACP 子代理示例。模型可用 reviewer-external 作为任务角色。
+# External ACP subagent. The model can use reviewer-external as a task role.
 [acp_agents.reviewer-external]
 command = "/path/to/another-agent"
 args = ["acp"]
 ```
 
-`context_bytes` 是自动压缩的序列化字节预算，设为 `0` 关闭自动压缩。`context_window` 是模型原始 token 上限。状态栏默认使用其 95% 作为有效窗口，可通过 `effective_context_window_percent` 调整。当前上下文使用最近一次有效请求的总 token，百分比与参考 Codex 一样扣除 12,000 token 的固定基线，累计用量在 `/status` 单独显示。未取得用量时显示 unknown。全局规则文件放在数据目录的 `AGENTS.md`，全局技能放在 `skills/<name>/SKILL.md`。项目规则从 Git 根目录向下加载，项目技能放在相应目录的 `.agents/skills/`。技能文件用 YAML 或 TOML front matter 声明 `name` 和 `description`。
+`context_bytes` is the serialized byte budget for automatic compaction; set it to `0` to disable automatic compaction. `context_window` is the model's raw token limit. The status bar uses 95% of that limit as the effective window by default; change it with `effective_context_window_percent`. Current context usage comes from the most recent valid request's total tokens. The percentage calculation subtracts a fixed 12,000-token baseline, following the reference Codex implementation. Cumulative usage appears separately in `/status`; unavailable usage is shown as unknown. Put global rules in `AGENTS.md` in the data directory and global skills in `skills/<name>/SKILL.md`. Project rules load from the Git root downward; project skills live in `.agents/skills/` at the applicable directory. Skill files declare `name` and `description` in YAML or TOML front matter.
 
-## 交互
+## Interaction
 
-| 操作 | 按键或命令 |
+| Action | Key or command |
 | --- | --- |
-| 提交或引导运行中的回合 | Enter |
-| 添加换行 | Alt+Enter，支持区分按键的终端也可用 Shift+Enter |
-| 切换 Agent 与 Plan | Shift+Tab，或 `/agent`、`/plan` |
-| 中断运行 | Esc 或 `/cancel` |
-| 查看、关闭后台终端（运行中也可用） | `/ps`、`/stop [ID]`，不带 ID 关闭调用时已有的全部后台终端 |
-| 编辑历史消息并创建分支 | 空输入时按两次 Esc，左右键选消息，上下键滚动，Ctrl+T 切换详情，Enter 确认 |
-| 新建、恢复、从当前会话分支 | `/new`、`/resume [ID]`、`/fork` |
-| 清理终端并新开会话 | `/clear`，旧会话仍可恢复 |
-| 查看用量、配置、当前目录 | `/status`、`/pwd` |
-| 查看变更 | `/diff`，Tab 切换暂存、未暂存与未跟踪文件，n/p 翻页 |
-| 选模型和推理强度 | `/model [名称 [强度]]` |
-| 只读审查当前 Git 变更 | `/review` |
-| 主动压缩模型上下文 | `/compact` |
-| 运行目标或排队后续指令 | `/goal`、`/pause`、`/continue`、`/follow` |
-| 查看连接状态、选择技能 | `/mcp`、`/skills` |
-| 查看帮助或退出 | `/help`、`/exit` 或 `/quit` |
+| Submit input or steer an active turn | Enter |
+| Insert a newline | Alt+Enter, or Shift+Enter in terminals that distinguish it |
+| Switch between Agent and Plan | Shift+Tab, or `/agent` and `/plan` |
+| Interrupt a turn | Esc or `/cancel` |
+| View or stop background terminals, including during a turn | `/ps`, `/stop [ID]`; omit the ID to stop all terminals present when called |
+| Edit a previous message and create a branch | Press Esc twice with empty input; use Left/Right to select, Up/Down to scroll, Ctrl+T to toggle details, and Enter to confirm |
+| Create, resume, or fork a conversation | `/new`, `/resume [ID]`, `/fork` |
+| Clear the terminal and start a new conversation | `/clear`; the old session remains resumable |
+| View usage, configuration, or the working directory | `/status`, `/pwd` |
+| View changes | `/diff`; Tab switches staged, unstaged, and untracked views; n/p changes pages |
+| Select a model and reasoning effort | `/model [name [effort]]` |
+| Review current Git changes without writing | `/review` |
+| Compact model context manually | `/compact` |
+| Run a goal or queue follow-up instructions | `/goal`, `/pause`, `/continue`, `/follow` |
+| View connection status or select a skill | `/mcp`, `/skills` |
+| Show help or exit | `/help`, `/exit`, `/quit` |
 
+Type `/` to open the two-column command menu. Use Up/Down to select, Tab to complete, Enter to confirm, and Esc to close while retaining the draft. Plan mode appears on the right of the status bar.
 
-输入 `/` 显示双列命令菜单，上下键选择，Tab 补全，Enter 确认，Esc 关闭并保留草稿。Plan 模式显示在状态栏右侧。
+The main composer, question notes, and free-text answers use the real terminal cursor, allowing Chinese IME candidates and input-mode indicators to follow the insertion point. The cursor keeps the terminal's default shape, is hidden in read-only selectors, and becomes visible again on exit. Positions use terminal display columns for Chinese text, combined emoji, multiline input, and narrow windows. The terminal and system IME control candidate appearance and selection.
 
-主输入框、问题备注和自由回答使用真实终端光标，中文输入法候选框及中英文切换提示可按插入位置定位。光标沿用终端默认形状；只读选择器隐藏光标，退出时恢复可见。中文、组合 emoji、多行和窄窗口均按终端显示列计算位置。候选框外观与选词操作仍由终端和系统输入法负责。
+Model progress updates and final answers are stored separately. Tool execution appears as an updating record such as `● Bash(command)`, with output beneath `└`. Green indicates success, red indicates failure, and cancellation and background execution have distinct states. Shell results use actual exit codes; subsequent background output updates the original record. Long previews retain the beginning and end. Structured records follow session storage limits and support replay on recovery and resize.
 
-模型的进度说明与最终回答分别保留。工具执行显示为持续更新的记录，例如 `● Bash(command)`，下方用 `└` 展示输出。绿色代表成功，红色代表失败，取消和后台运行有独立状态。Shell 结果依据实际退出码；后台命令的后续输出更新原记录。长输出预览保留首尾，结构化记录沿用会话的存储上限，可在恢复和窗口重排时回放。
+Background terminals belong to their Clara session, including commands started by subagents. `yield_seconds` controls how long an initial execution or subsequent wait blocks before returning. Omitting `timeout_seconds` removes the total runtime limit; explicit timeouts still apply, up to 600 seconds. Esc interrupts only the current agent turn and wait. Detached terminals continue running until explicitly stopped with `/stop`, or cleaned up when their session closes or switches, or the process exits.
 
-后台终端由所属 Clara 会话统一管理，包含子代理启动的命令。`yield_seconds` 决定首次执行或后续等待多久后返回；省略 `timeout_seconds` 时没有总运行时限，显式超时仍生效（最多 600 秒）。Esc 只中断当前 Agent 回合和等待，已经进入后台的终端继续运行；`/stop` 才会显式停止它们。关闭或切换会话、退出进程时清理其终端。
+While a background command is running, the area above the composer shows `1 background terminal running · /ps to view · /stop to close`, merged into the activity indicator when visible. Status is checked every 500 ms without consuming output, and the UI refreshes only when status or output changes. `/ps` does not take output the model has not yet read. A model poll with empty input produces a separate `Waiting for background terminal` record, retained as `Waited for background terminal` afterward. Sending input produces `Interacted with background terminal`; the original Bash record continues to show output and final status. Canceling an input write only stops waiting; characters already delivered to the terminal cannot be recalled.
 
-后台有命令运行时，输入区上方显示 `1 background terminal running · /ps to view · /stop to close`；活动提示可见时合并显示。每 500ms 非消费检查状态，仅在输出或状态变化时刷新，`/ps` 不取走模型尚未读取的输出。模型空输入轮询显示独立的 `Waiting for background terminal`，结束后保留 `Waited for background terminal`；发送输入显示 `Interacted with background terminal`，原 Bash 记录继续显示命令输出及最终状态。取消发送输入只能停止等待，已交给终端的字符无法撤回。
+Asynchronous command states are saved separately using atomic writes; completed turn files are not rewritten. Natural exits, failures, stops, and timeouts update the original command record. Unread output remains available through `write_stdin`. The completion cache retains at most the latest 32 terminals, with the existing 1 MiB output limit per terminal and head-and-tail previews. Recovery and branching replay records without restarting processes; old records without a final state appear as interrupted. Custom execution backends without Core's `SnapshotProcess` update only when the model explicitly polls; `/ps` reports this limitation.
 
-异步命令状态单独原子保存，已完成回合文件不改写。自然退出、失败、停止及超时都会更新原命令记录；未读输出仍可通过 `write_stdin` 领取。完成缓存最多保留最近 32 个终端，单终端输出沿用最多 1 MiB 的保留限制，终端预览保留首尾。恢复和分支只回放记录，不重新启动后台进程；尚无最终状态的旧记录显示为已中断。自定义执行后端若未实现 Core 的 `SnapshotProcess`，只能在模型主动轮询时更新状态，`/ps` 会提示这一限制。
+The activity line above the composer shows waiting, execution, compaction, and reconnection states, including elapsed time and the Esc interruption hint. It is temporarily hidden for interactive questions. Public reasoning summaries may supply an activity title; raw reasoning is not displayed as a progress update. Core retries eligible connection-establishment errors up to three times, displaying the attempt, delay, and redacted reason. Interruptions after streaming begins preserve received text and report the error without automatically replaying executed tools. Final failures preserve the current draft; an empty composer is refilled with that turn's prompt for editing and retrying.
 
-输入区上方的活动行独立显示等待、执行、压缩及重连状态，包含耗时和 Esc 中断提示；交互问题出现时暂时隐藏。公开的 reasoning summary 可提供活动标题，原始推理内容不会作为进度说明显示。连接建立阶段的可重试错误由 Core 最多重试三次，显示次数、等待时间和脱敏原因。流已开始后发生中断会保留收到的文字并报告错误，不会自动重放已执行的工具。最终失败会保留正在编辑的草稿；输入框为空时会填回该轮提示，方便修改后重试。
+Interactive questions contain numbered choices and descriptions. Use Up/Down or number keys to select, Tab to edit notes, Left/Right to switch questions, Enter to submit, and Esc to interrupt. Selecting a skill inserts `$skill-name` into the composer. The model can load skills and their supporting text files with `read_skill` and `read_skill_resource`.
 
-交互问题包含编号选项和说明。上下键或数字选择，Tab 编辑备注，左右键切换问题，Enter 提交，Esc 中断。技能选择会把 `$技能名` 插入输入框，模型可通过 `read_skill` 和 `read_skill_resource` 读取技能及其附属文本文件。
+File tools and Shell use real host paths. Relative paths start at the current working directory, `..` can access adjacent directories, absolute paths keep their system meaning, `/` is the system root, and `~/` expands to the current user's home. File tools return real absolute paths, including Hashline headers. Shell `workdir` follows the same rules and supports directories outside the project.
 
-文件工具与 Shell 使用真实主机路径：相对路径以当前工作目录为基准，`..` 可访问相邻目录，绝对路径按系统原义解析，`/` 是系统根目录，`~/` 展开为当前用户主目录。文件工具的返回路径和 Hashline 头为真实绝对路径。Shell 的 `workdir` 使用相同语义，支持项目外目录。
+Full date-times in the UI use local `time.DateTime`, formatted as `YYYY-MM-DD HH:mm:ss`; dates use `YYYY-MM-DD`. `/status` shows the current local time and time zone. The time zone follows the process's system settings and `TZ`. When a region name is unavailable, the UI shows the UTC offset instead of guessing from abbreviations such as CST. Main agents, subagents, Plan, Review, and ACP receive a fresh date, time, RFC3339 timestamp, and offset at each model step, including after date changes, recovery, and compaction. These clock snapshots belong only to the current request and are not saved in conversation context. Compaction preserves the original meaning of historical dates and time zones.
 
-界面中的完整日期时间按本地 `time.DateTime` 显示为 `YYYY-MM-DD HH:mm:ss`，日期使用 `YYYY-MM-DD`。`/status` 显示当前本地时间和时区；时区遵循进程的系统设置及 `TZ`，无法获得明确地区名称时显示 UTC 偏移，不根据 CST 等缩写猜测地区。主 Agent、子 Agent、Plan、Review 和 ACP 在每次模型步骤中取得新的当前日期、时间、RFC3339 时间戳及偏移，跨日、恢复和压缩后均刷新。这些时钟快照仅属于当前请求，不写入对话上下文；压缩保留历史日期和时区的原意。
+Session, event, and background-terminal metadata use RFC3339 JSON timestamps with `Z` or an explicit offset, retaining fractional-second precision without rewriting old records. `stat.modified` uses RFC3339Nano. ACP diagnostic logs also include time zones and go only to standard error. Session and terminal IDs remain compatible; their embedded time fragments should not be used to infer the current date. The current step's clock snapshot is the model's time reference. Elapsed times and timeouts continue to use durations. Dedicated fields in formats such as PDF follow their own date specifications.
 
-会话、事件和后台终端元数据继续使用带 `Z` 或明确偏移的 RFC3339 JSON 时间，保留原有小数秒精度，不改写旧记录。`stat.modified` 使用 RFC3339Nano，ACP 的诊断日志同样带时区且只写到标准错误。会话及终端 ID 为兼容保留，不能用其中的时间片段判断当前日期；模型时间基准以当前步骤的时钟快照为准。耗时与超时继续使用持续时间计算。PDF 等文件的专用时间字段遵循其格式规范。
+By default, `glob` and `grep` use Git to search tracked files and unignored untracked files, including tracked files that match ignore rules. Set `include_ignored=true` to include ignored files. Recursive searches skip Git metadata and submodules unless explicitly selected as the search root. Searches across projects use the target repository's rules; direct `read` calls are unaffected. Non-Git projects search the full directory tree. Git rules refresh on every search. Git enumeration failures are reported explicitly; narrow the search path when enumeration exceeds 20,000 candidate files or 8 MiB of output.
 
-`glob` 与 `grep` 默认通过 Git 搜索跟踪文件及未被忽略的未跟踪文件，包含被忽略但已跟踪的文件。设置 `include_ignored=true` 可包含忽略文件；默认递归遍历跳过 Git 元数据和子模块，明确指定其中的目录为搜索根时允许进入。跨项目搜索使用目标仓库的 Git 规则，直接 `read` 不受过滤影响。非 Git 项目搜索完整目录树。每次搜索刷新 Git 规则；Git 枚举失败会明确报错，超过 20,000 个候选文件或 8 MiB 枚举输出时需缩小搜索路径。
+Glob patterns support `*.go`, `**/*.go`, `?`, and character classes; `**` can match zero directory levels. `grep` searches literal text with `query` and filters files with `include`, for example `{"path":"internal","query":"cursorPosition","include":["*.go"]}`. When results report an incomplete search, inspect the diagnostics and narrow the scope rather than concluding that the project contains no matching code. `fs_instructions` queries project rules; the host injects global rules separately.
 
-搜索通配支持 `*.go`、`**/*.go`、`?` 和字符集合，`**` 可匹配零层目录。`grep` 使用 `query` 搜索字面量，`include` 过滤文件；例如 `{"path":"internal","query":"cursorPosition","include":["*.go"]}`。结果带有搜索不完整提示时，应查看诊断并缩小范围，不能据此认定项目中没有相关代码。`fs_instructions` 查询项目规则，全局规则由宿主单独注入。
+Agent mode uses YOLO permissions: file tools and Shell operate with the current user's OS permissions, without a project-directory boundary. Reads follow symbolic links; overwrite writes and edits update their targets. Moving or deleting a link operates on the link itself. Creating a file does not overwrite an existing link. Old sessions remain resumable. Their original `/foo` paths referred to project-relative files; recovery displays a migration notice. Read targets again under the new semantics before editing; old snapshots are not reused. Plan mode exposes only read-only and interaction tools. Branching restores model context before the selected prompt; prior file changes and command effects remain in the workspace. Each session has an independent lock, so other processes can open different sessions in the same project. Running goals, subagents, and Shell processes end when the owning session closes.
 
-Agent 模式使用 YOLO 权限，文件工具和 Shell 均按当前用户的系统权限访问文件，不以项目目录为边界。读取符号链接会跟随目标，覆盖写入与编辑更新目标；移动或删除链接操作链接本身。新建文件不会覆盖已有链接。旧会话仍可恢复，其原记录中的 `/foo` 曾代表项目内路径，恢复时会显示迁移说明；编辑前需按新语义重新读取目标，旧快照不复用。Plan 模式只提供只读和交互工具。分支恢复选中提示之前的模型上下文。此前的文件修改和命令效果仍留在工作区。每个会话有独立锁，其他进程仍可打开同一项目的不同会话。运行中的目标、子代理和 Shell 进程随当前会话关闭而结束。
-
-在支持 ACP 的编辑器中，将 `clara-code acp` 作为 stdio agent 启动命令。它支持创建和加载会话、发送提示、流式更新和取消。协议会话使用相同的项目识别与持久化目录。
+In an ACP-compatible editor, use `clara-code acp` as the stdio agent command. It supports session creation and loading, prompting, streaming updates, and cancellation, using the same project identification and persistence directories.

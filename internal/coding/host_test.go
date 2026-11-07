@@ -16,22 +16,22 @@ import (
 
 	"clara-code/pkg/core"
 	"clara-code/pkg/core/prompt"
-	"clara-code/pkg/models"
-	"clara-code/pkg/tools"
+	modelapi "clara-code/pkg/model"
+	toolapi "clara-code/pkg/tool"
 
 	"clara-code/internal/session"
-	"clara-code/internal/settings"
+	"clara-code/internal/setting"
 )
 
-func testHost(t *testing.T, cwd string, model models.LanguageModel) (*Conversation, Host) {
+func testHost(t *testing.T, cwd string, model modelapi.LanguageModel) (*Conversation, Host) {
 	t.Helper()
 	workspace, err := ResolveWorkspace(cwd)
 	if err != nil {
 		t.Fatal(err)
 	}
-	host := Host{Config: settings.Config{Home: t.TempDir(), DefaultModel: "fixture",
-		Models: map[string]settings.Model{"fixture": {ID: "fixture"}, "second": {ID: "second"}}},
-		Models: func(context.Context, string) (models.LanguageModel, error) { return model, nil }}
+	host := Host{Config: setting.Config{Home: t.TempDir(), DefaultModel: "fixture",
+		Models: map[string]setting.Model{"fixture": {ID: "fixture"}, "second": {ID: "second"}}},
+		Models: func(context.Context, string) (modelapi.LanguageModel, error) { return model, nil }}
 	store := session.New(host.Config.Home, session.Meta{Project: workspace.Root, Cwd: workspace.Cwd, Model: "fixture"})
 	c, err := host.Open(t.Context(), workspace, store, NewQuestions(), nil)
 	if err != nil {
@@ -62,50 +62,50 @@ func finish(t *testing.T, c *Conversation, mode prompt.Mode, input string) *core
 
 type fixtureModel struct {
 	DemoModel
-	reply func(models.Call) (*models.Response, error)
+	reply func(modelapi.Call) (*modelapi.Response, error)
 }
 
-func (m fixtureModel) Stream(_ context.Context, call models.Call) (models.StreamResponse, error) {
+func (m fixtureModel) Stream(_ context.Context, call modelapi.Call) (modelapi.StreamResponse, error) {
 	response, err := m.reply(call)
 	if err != nil {
 		return nil, err
 	}
-	return func(yield func(models.StreamPart) bool) {
+	return func(yield func(modelapi.StreamPart) bool) {
 		for _, item := range response.Content {
 			switch content := item.(type) {
-			case models.ToolCallContent:
-				if !yield(models.StreamPart{Type: models.StreamPartTypeToolCall, ID: content.ToolCallID,
+			case modelapi.ToolCallContent:
+				if !yield(modelapi.StreamPart{Type: modelapi.StreamPartTypeToolCall, ID: content.ToolCallID,
 					ToolCallName: content.ToolName, ToolCallInput: content.Input}) {
 					return
 				}
-			case models.TextContent:
-				if !yield(models.StreamPart{Type: models.StreamPartTypeTextStart, ID: "text"}) ||
-					!yield(models.StreamPart{Type: models.StreamPartTypeTextDelta, ID: "text", Delta: content.Text}) ||
-					!yield(models.StreamPart{Type: models.StreamPartTypeTextEnd, ID: "text"}) {
+			case modelapi.TextContent:
+				if !yield(modelapi.StreamPart{Type: modelapi.StreamPartTypeTextStart, ID: "text"}) ||
+					!yield(modelapi.StreamPart{Type: modelapi.StreamPartTypeTextDelta, ID: "text", Delta: content.Text}) ||
+					!yield(modelapi.StreamPart{Type: modelapi.StreamPartTypeTextEnd, ID: "text"}) {
 					return
 				}
 			}
 		}
-		yield(models.StreamPart{Type: models.StreamPartTypeFinish, FinishReason: response.FinishReason, Usage: response.Usage})
+		yield(modelapi.StreamPart{Type: modelapi.StreamPartTypeFinish, FinishReason: response.FinishReason, Usage: response.Usage})
 	}, nil
 }
 
-func toolReply(name string, args any, step int) *models.Response {
+func toolReply(name string, args any, step int) *modelapi.Response {
 	body, _ := json.Marshal(args)
-	return &models.Response{Content: models.ResponseContent{models.ToolCallContent{
+	return &modelapi.Response{Content: modelapi.ResponseContent{modelapi.ToolCallContent{
 		ToolCallID: fmt.Sprintf("call_%d", step), ToolName: name, Input: string(body),
-	}}, FinishReason: models.FinishReasonToolCalls}
+	}}, FinishReason: modelapi.FinishReasonToolCalls}
 }
 
 func TestCodingLoopUsesRealHashlineAndShell(t *testing.T) {
 	cwd := t.TempDir()
 	writeTestFile(t, cwd, "test.txt", "old\n")
-	model := fixtureModel{reply: func(call models.Call) (*models.Response, error) {
+	model := fixtureModel{reply: func(call modelapi.Call) (*modelapi.Response, error) {
 		var outputs []string
 		for _, message := range call.Prompt {
 			for _, part := range message.Content {
-				if result, ok := models.AsMessagePart[models.ToolResultPart](part); ok {
-					text, _ := models.AsToolResultOutputType[models.ToolResultOutputContentText](result.Output)
+				if result, ok := modelapi.AsMessagePart[modelapi.ToolResultPart](part); ok {
+					text, _ := modelapi.AsToolResultOutputType[modelapi.ToolResultOutputContentText](result.Output)
 					outputs = append(outputs, text.Text)
 				}
 			}
@@ -148,7 +148,7 @@ func TestPlanOnlyAndProjectInstructions(t *testing.T) {
 	writeTestFile(t, root, "sub/AGENTS.override.md", "nearby instructions")
 	writeTestFile(t, root, ".agents/skills/example/SKILL.md", "---\nname: example\ndescription: project skill\n---\nroot secret")
 	writeTestFile(t, root, "sub/.agents/skills/example/SKILL.md", "---\nname: example\ndescription: nearer skill\n---\nonly load on request")
-	model := fixtureModel{reply: func(call models.Call) (*models.Response, error) {
+	model := fixtureModel{reply: func(call modelapi.Call) (*modelapi.Response, error) {
 		if !strings.Contains(session.Text(call.Prompt[len(call.Prompt)-1]), "global instructions") {
 			return nil, fmt.Errorf("missing global instructions")
 		}
@@ -163,13 +163,13 @@ func TestPlanOnlyAndProjectInstructions(t *testing.T) {
 				return nil, fmt.Errorf("unexpected context %s", hidden)
 			}
 		}
-		if slices.ContainsFunc(call.Tools, func(tool models.Tool) bool {
+		if slices.ContainsFunc(call.Tools, func(tool modelapi.Tool) bool {
 			return tool.GetName() == "exec_command" || tool.GetName() == "edit"
 		}) {
 			return nil, fmt.Errorf("write tools are visible in Plan mode")
 		}
 		for _, message := range call.Prompt {
-			if message.Role == models.MessageRoleTool {
+			if message.Role == modelapi.MessageRoleTool {
 				if !strings.Contains(fmt.Sprint(message.Content), "only load on request") {
 					body, _ := json.Marshal(message)
 					if !strings.Contains(string(body), "only load on request") {
@@ -185,7 +185,7 @@ func TestPlanOnlyAndProjectInstructions(t *testing.T) {
 	writeTestFile(t, host.Config.Home, "AGENTS.md", "global instructions")
 	writeTestFile(t, host.Config.Home, "skills/example/SKILL.md", "---\nname: example\ndescription: global skill\n---\nglobal secret")
 	call := c.Call(prompt.Plan, false)
-	if err := call.AuthorizeTool(t.Context(), models.ToolInfo{Effect: "write"}, models.ToolCall{}); err == nil {
+	if err := call.AuthorizeTool(t.Context(), modelapi.ToolInfo{Effect: "write"}, modelapi.ToolCall{}); err == nil {
 		t.Fatal("plan authorized a write")
 	}
 	finish(t, c, prompt.Plan, "Plan this.")
@@ -273,7 +273,7 @@ func TestOpenAICompatibleEndpoint(t *testing.T) {
 	c, _ := testHost(t, t.TempDir(), DemoModel{})
 	c.Host.Config.Endpoint = server.URL + "/v1"
 	c.Host.Config.Protocol = "completions"
-	c.Host.Config.Models["second"] = settings.Model{ID: "model-b"}
+	c.Host.Config.Models["second"] = setting.Model{ID: "model-b"}
 	factory, err := c.Host.Config.Factory()
 	if err != nil {
 		t.Fatal(err)
@@ -312,7 +312,7 @@ func gitTest(t *testing.T, cwd string, args ...string) {
 }
 
 func TestAutomaticCompactionKeepsVisibleTurns(t *testing.T) {
-	model := fixtureModel{reply: func(models.Call) (*models.Response, error) {
+	model := fixtureModel{reply: func(modelapi.Call) (*modelapi.Response, error) {
 		return demoText("Short response."), nil
 	}}
 	c, _ := testHost(t, t.TempDir(), model)
@@ -321,11 +321,11 @@ func TestAutomaticCompactionKeepsVisibleTurns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	definitions := make([]models.ToolInfo, 0, len(prepared.Tools))
+	definitions := make([]modelapi.ToolInfo, 0, len(prepared.Tools))
 	for _, item := range prepared.Tools {
 		definitions = append(definitions, item.Info())
 	}
-	baseline, err := json.Marshal([]any{*prepared.System, []models.Message{}, definitions})
+	baseline, err := json.Marshal([]any{*prepared.System, []modelapi.Message{}, definitions})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,14 +362,14 @@ func TestWorkspacePathsAndSkillResources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	files := tools.NewFiles(space.toolFS(), nil)
+	files := toolapi.NewFiles(space.toolFS(), nil)
 	body, _ := json.Marshal(map[string]string{"path": filepath.Join(space.Root, "target.txt")})
-	reply, err := files.Read().Run(t.Context(), models.ToolCall{Input: string(body)})
+	reply, err := files.Read().Run(t.Context(), modelapi.ToolCall{Input: string(body)})
 	if err != nil || reply.IsError || reply.Content != "root content" {
 		t.Fatalf("absolute file path %+v %v", reply, err)
 	}
-	localRunner := runner{workspace: space, local: tools.NewLocal()}
-	process, err := localRunner.Start(t.Context(), tools.Spec{Command: "pwd", Workdir: "child"})
+	localRunner := runner{workspace: space, local: toolapi.NewLocal()}
+	process, err := localRunner.Start(t.Context(), toolapi.Spec{Command: "pwd", Workdir: "child"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -378,7 +378,7 @@ func TestWorkspacePathsAndSkillResources(t *testing.T) {
 	if err != nil || !strings.Contains(poll.Output, filepath.Join(space.Cwd, "child")) {
 		t.Fatalf("relative shell workdir %+v %v", poll, err)
 	}
-	if process, err := localRunner.Start(t.Context(), tools.Spec{Command: "pwd", Workdir: "../../outside"}); err == nil {
+	if process, err := localRunner.Start(t.Context(), toolapi.Spec{Command: "pwd", Workdir: "../../outside"}); err == nil {
 		process.Close()
 		t.Fatal("workdir escaped the project")
 	}
@@ -386,7 +386,7 @@ func TestWorkspacePathsAndSkillResources(t *testing.T) {
 	if err != nil || len(catalog) != 1 || catalog[0].Source == "" {
 		t.Fatalf("skills %+v %v", catalog, err)
 	}
-	var resource models.AgentTool
+	var resource modelapi.AgentTool
 	for _, item := range items {
 		if item.Info().Name == "read_skill_resource" {
 			resource = item
@@ -397,7 +397,7 @@ func TestWorkspacePathsAndSkillResources(t *testing.T) {
 	}
 	for path, expected := range map[string]string{"refs/guide.txt": "resource content", "../SKILL.md": ""} {
 		body, _ := json.Marshal(map[string]string{"name": "demo", "path": path})
-		result, err := resource.Run(t.Context(), models.ToolCall{Input: string(body)})
+		result, err := resource.Run(t.Context(), modelapi.ToolCall{Input: string(body)})
 		if err != nil {
 			t.Fatal(err)
 		}

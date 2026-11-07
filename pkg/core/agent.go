@@ -2,6 +2,8 @@
 package core
 
 import (
+	modelapi "clara-code/pkg/model"
+	"clara-code/pkg/model/schema"
 	"cmp"
 	"context"
 	"encoding/base64"
@@ -13,9 +15,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"clara-code/pkg/models"
-	"clara-code/pkg/models/schema"
 )
 
 // StepResult represents the result of a single step in an agent execution.
@@ -367,7 +366,7 @@ func finalResponse(steps []StepResult) Response {
 func hasNonBlankText(content ResponseContent) bool {
 	for _, c := range content {
 		if c.GetType() == ContentTypeText {
-			if tc, ok := models.AsContentType[TextContent](c); ok {
+			if tc, ok := modelapi.AsContentType[TextContent](c); ok {
 				if strings.TrimSpace(tc.Text) != "" {
 					return true
 				}
@@ -427,7 +426,7 @@ func (a *agent) prepareCall(call AgentCall) AgentCall {
 		call.OnRetry = a.settings.onRetry
 	}
 
-	call.ProviderOptions = models.MergeProviderOptions(a.settings.providerOptions, call.ProviderOptions)
+	call.ProviderOptions = modelapi.MergeProviderOptions(a.settings.providerOptions, call.ProviderOptions)
 
 	headers := map[string]string{}
 
@@ -484,7 +483,7 @@ func toResponseMessages(content []Content) []Message {
 	for _, c := range content {
 		switch c.GetType() {
 		case ContentTypeText:
-			text, ok := models.AsContentType[TextContent](c)
+			text, ok := modelapi.AsContentType[TextContent](c)
 			if !ok {
 				continue
 			}
@@ -492,7 +491,7 @@ func toResponseMessages(content []Content) []Message {
 				Text: text.Text,
 			})
 		case ContentTypeReasoning:
-			reasoning, ok := models.AsContentType[ReasoningContent](c)
+			reasoning, ok := modelapi.AsContentType[ReasoningContent](c)
 			if !ok {
 				continue
 			}
@@ -501,7 +500,7 @@ func toResponseMessages(content []Content) []Message {
 				Encrypted: reasoning.ProviderMetadata.EncryptedReasoning,
 			})
 		case ContentTypeToolCall:
-			toolCall, ok := models.AsContentType[ToolCallContent](c)
+			toolCall, ok := modelapi.AsContentType[ToolCallContent](c)
 			if !ok {
 				continue
 			}
@@ -512,7 +511,7 @@ func toResponseMessages(content []Content) []Message {
 				ProviderExecuted: toolCall.ProviderExecuted,
 			})
 		case ContentTypeFile:
-			file, ok := models.AsContentType[FileContent](c)
+			file, ok := modelapi.AsContentType[FileContent](c)
 			if !ok {
 				continue
 			}
@@ -525,7 +524,7 @@ func toResponseMessages(content []Content) []Message {
 			// They don't need to be included in the conversation messages.
 			continue
 		case ContentTypeToolResult:
-			result, ok := models.AsContentType[ToolResultContent](c)
+			result, ok := modelapi.AsContentType[ToolResultContent](c)
 			if !ok {
 				continue
 			}
@@ -622,7 +621,7 @@ func (a *agent) executeSingleTool(ctx context.Context, toolMap map[string]AgentT
 		return result
 	}
 	if len(toolResult.Data) > 16<<20 {
-		toolResult = models.NewTextErrorResponse("tool media exceeds its size limit")
+		toolResult = modelapi.NewTextErrorResponse("tool media exceeds its size limit")
 	}
 	if len(toolResult.Content) > 16<<20 {
 		toolResult.Content = strings.ToValidUTF8(toolResult.Content[:16<<20], "") + "\n[output truncated]"
@@ -1175,7 +1174,7 @@ func WithProviderDefinedTools(tools ...ProviderTool) AgentOption {
 			// Every provider tool goes into providerDefinedTools
 			// for wire formatting.
 			s.providerDefinedTools = append(
-				s.providerDefinedTools, models.ProviderDefinition(t),
+				s.providerDefinedTools, modelapi.ProviderDefinition(t),
 			)
 			// Executable ones also register for local execution.
 			if exec, ok := t.(ExecutableProviderTool); ok {
@@ -1485,7 +1484,7 @@ func (a *agent) processStepStream(ctx context.Context, stream StreamResponse, op
 				}
 			}
 
-		case models.StreamPartTypeContent:
+		case modelapi.StreamPartTypeContent:
 			if part.Content != nil {
 				stepContent = append(stepContent, part.Content)
 			}
@@ -1507,7 +1506,7 @@ func (a *agent) processStepStream(ctx context.Context, stream StreamResponse, op
 	}
 
 	if !seenFinish {
-		return stepExecutionResult{}, models.NewIncompleteStreamError()
+		return stepExecutionResult{}, modelapi.NewIncompleteStreamError()
 	}
 	if len(rawToolCalls) > 128 {
 		return stepExecutionResult{}, errors.New("too many tool calls")
@@ -1549,7 +1548,7 @@ func (a *agent) processStepStream(ctx context.Context, stream StreamResponse, op
 		// Determine if tool can run in parallel
 		isParallel := false
 		if tool, exists := toolMap[validatedToolCall.ToolName]; exists {
-			isParallel = tool.Info().Parallel && tool.Info().Effect == models.EffectRead
+			isParallel = tool.Info().Parallel && tool.Info().Effect == modelapi.EffectRead
 		}
 
 		// Buffer dispatch until stream is fully consumed so that all
@@ -1573,7 +1572,7 @@ func (a *agent) processStepStream(ctx context.Context, stream StreamResponse, op
 	}
 	if opts.OnToolCall != nil {
 		for _, content := range stepContent {
-			if item, ok := models.AsContentType[ToolCallContent](content); ok {
+			if item, ok := modelapi.AsContentType[ToolCallContent](content); ok {
 				if err := opts.OnToolCall(item); err != nil {
 					return stepExecutionResult{}, err
 				}

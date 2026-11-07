@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"clara-code/pkg/core/prompt"
-	"clara-code/pkg/models"
-	"clara-code/pkg/tools"
+	"clara-code/pkg/model"
+	toolapi "clara-code/pkg/tool"
 
 	"clara-code/internal/session"
 )
@@ -30,7 +30,7 @@ func TestYOLOToolsOperateOutsideTheProject(t *testing.T) {
 	writeTestFile(t, other, "ignored.go", "needle")
 	writeTestFile(t, other, ".git/fixture.txt", "metadata needle")
 	c, _ := testHost(t, project, DemoModel{})
-	invoke := func(name string, args any) models.ToolResponse {
+	invoke := func(name string, args any) model.ToolResponse {
 		t.Helper()
 		data, _ := json.Marshal(args)
 		for _, tool := range c.items {
@@ -39,7 +39,7 @@ func TestYOLOToolsOperateOutsideTheProject(t *testing.T) {
 			}
 		}
 		t.Fatal("missing tool", name)
-		return models.ToolResponse{}
+		return model.ToolResponse{}
 	}
 	target := filepath.Join(other, "new.go")
 	rules := invoke("fs_instructions", map[string]any{"path": target})
@@ -101,9 +101,9 @@ func TestYOLOToolsOperateOutsideTheProject(t *testing.T) {
 	if _, err := os.Stat(moved); !os.IsNotExist(err) {
 		t.Fatal("temporary moved file was not removed", err)
 	}
-	local := runner{workspace: c.Workspace, local: tools.NewLocal()}
+	local := runner{workspace: c.Workspace, local: toolapi.NewLocal()}
 	for _, workdir := range []string{other, "../other"} {
-		process, err := local.Start(t.Context(), tools.Spec{Command: "pwd", Workdir: workdir})
+		process, err := local.Start(t.Context(), toolapi.Spec{Command: "pwd", Workdir: workdir})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -115,11 +115,11 @@ func TestYOLOToolsOperateOutsideTheProject(t *testing.T) {
 		}
 	}
 	// Plan exposes the same path semantics while execution authorization stays read-only.
-	setup, err := c.buildTask(t.Context(), tools.TaskSpec{Role: "explorer"}, nil)
+	setup, err := c.buildTask(t.Context(), toolapi.TaskSpec{Role: "explorer"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var reader models.AgentTool
+	var reader model.AgentTool
 	for _, tool := range setup.Tools {
 		if tool.Info().Name == "read" {
 			reader = tool

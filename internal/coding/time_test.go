@@ -12,8 +12,8 @@ import (
 
 	"clara-code/pkg/core"
 	"clara-code/pkg/core/prompt"
-	"clara-code/pkg/models"
-	"clara-code/pkg/tools"
+	modelapi "clara-code/pkg/model"
+	"clara-code/pkg/tool"
 
 	"clara-code/internal/session"
 )
@@ -24,7 +24,7 @@ func TestClockRefreshesBetweenModelStepsWithoutEnteringHistory(t *testing.T) {
 		time.Date(2026, 11, 8, 16, 0, 1, 987654321, time.UTC),
 	}
 	var requests, ticks atomic.Int32
-	model := fixtureModel{reply: func(call models.Call) (*models.Response, error) {
+	model := fixtureModel{reply: func(call modelapi.Call) (*modelapi.Response, error) {
 		step := int(requests.Add(1)) - 1
 		if step >= len(times) {
 			return nil, fmt.Errorf("unexpected request %d", step)
@@ -32,7 +32,7 @@ func TestClockRefreshesBetweenModelStepsWithoutEnteringHistory(t *testing.T) {
 		var clock string
 		for _, message := range call.Prompt {
 			text := session.Text(message)
-			if message.Role == models.MessageRoleSystem {
+			if message.Role == modelapi.MessageRoleSystem {
 				if strings.Contains(text, "## Current local time") || !strings.Contains(text, timeInstructions) {
 					return nil, fmt.Errorf("clock snapshot entered stable prompt or time guidance missing")
 				}
@@ -67,7 +67,7 @@ func TestClockSharedByModesAndTasks(t *testing.T) {
 	c, _ := testHost(t, t.TempDir(), DemoModel{})
 	now := time.Date(2026, 11, 8, 1, 2, 3, 0, time.UTC)
 	c.Host.now = func() time.Time { return now }
-	child, err := c.buildTask(t.Context(), tools.TaskSpec{Name: "planner", Role: "explorer"}, nil)
+	child, err := c.buildTask(t.Context(), tool.TaskSpec{Name: "planner", Role: "explorer"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

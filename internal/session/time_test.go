@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"clara-code/pkg/core"
-	"clara-code/pkg/models"
+	"clara-code/pkg/model"
 	"clara-code/pkg/util/id"
 )
 
@@ -22,7 +22,7 @@ func TestPersistedTimestampsKeepOffsetsPrecisionAndOldMessages(t *testing.T) {
 	ended := start.Add(3 * time.Second).UTC()
 	sessionID := id.New("session")
 	const oldText = "Historical timestamp from an old tool: 2026-11-07 17:02:03"
-	state := core.State{ID: sessionID, Revision: 1, Messages: []models.Message{models.NewUserMessage(oldText)},
+	state := core.State{ID: sessionID, Revision: 1, Messages: []model.Message{model.NewUserMessage(oldText)},
 		Events: []core.Event{{Sequence: 1, Kind: "fixture", At: ended}}}
 	if err := store.Save(t.Context(), state); err != nil {
 		t.Fatal(err)

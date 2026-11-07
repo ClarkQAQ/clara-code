@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"clara-code/pkg/models"
+	"clara-code/pkg/model"
 	"clara-code/pkg/util/errs"
 	"clara-code/pkg/util/id"
 )
@@ -72,7 +72,7 @@ func (s *Session) ID() string {
 	return s.state.ID
 }
 
-func (s *Session) Messages() []models.Message {
+func (s *Session) Messages() []model.Message {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return slices.Clone(s.state.Messages)
@@ -85,7 +85,7 @@ type Run struct {
 	done             chan struct{}
 	step             int
 	mu               sync.Mutex
-	steering, follow []models.Message
+	steering, follow []model.Message
 	sealed           bool
 	result           *AgentResult
 	err              error
@@ -100,14 +100,14 @@ func (r *Run) Wait(ctx context.Context) (*AgentResult, error) {
 	}
 }
 
-func (r *Run) Cancel()                               { r.cancel() }
-func (r *Run) Steer(message models.Message) error    { return r.queue(message, false) }
-func (r *Run) FollowUp(message models.Message) error { return r.queue(message, true) }
+func (r *Run) Cancel()                              { r.cancel() }
+func (r *Run) Steer(message model.Message) error    { return r.queue(message, false) }
+func (r *Run) FollowUp(message model.Message) error { return r.queue(message, true) }
 
-func (r *Run) queue(message models.Message, follow bool) error {
+func (r *Run) queue(message model.Message, follow bool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if message.Role != models.MessageRoleUser {
+	if message.Role != model.MessageRoleUser {
 		return errs.New(errs.CodeInvalidArgument, "queued input must be a user message")
 	}
 	if r.sealed {
@@ -124,7 +124,7 @@ func (r *Run) queue(message models.Message, follow bool) error {
 	return nil
 }
 
-func (r *Run) take(idle, seal bool) []models.Message {
+func (r *Run) take(idle, seal bool) []model.Message {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := r.steering
@@ -162,7 +162,7 @@ func (s *Session) Start(ctx context.Context, call AgentStreamCall) (*Run, error)
 	}
 	input := slices.Clone(call.Messages)
 	if call.Prompt != "" {
-		input = append(input, models.NewUserMessage(call.Prompt, call.Files...))
+		input = append(input, model.NewUserMessage(call.Prompt, call.Files...))
 		call.Prompt = ""
 		call.Files = nil
 	}
@@ -206,8 +206,8 @@ func (s *Session) execute(ctx context.Context, run *Run, call AgentStreamCall) {
 	}
 	hostSteer, hostFollow := call.Steer, call.FollowUp
 	var queueErr error
-	drain := func(idle bool) []models.Message {
-		var items []models.Message
+	drain := func(idle bool) []model.Message {
+		var items []model.Message
 		if idle && hostFollow != nil {
 			items = hostFollow()
 		}
@@ -224,11 +224,11 @@ func (s *Session) execute(ctx context.Context, run *Run, call AgentStreamCall) {
 		}
 		return items
 	}
-	call.Steer = func() []models.Message { return drain(false) }
-	call.FollowUp = func() []models.Message { return drain(true) }
-	call.OnChunk = func(part models.StreamPart) error {
+	call.Steer = func() []model.Message { return drain(false) }
+	call.FollowUp = func() []model.Message { return drain(true) }
+	call.OnChunk = func(part model.StreamPart) error {
 		switch part.Type {
-		case models.StreamPartTypeTextDelta, models.StreamPartTypeReasoningDelta, models.StreamPartTypeToolInputDelta:
+		case model.StreamPartTypeTextDelta, model.StreamPartTypeReasoningDelta, model.StreamPartTypeToolInputDelta:
 			if err := s.Emit(ctx, string(part.Type), part); err != nil {
 				return err
 			}
@@ -238,7 +238,7 @@ func (s *Session) execute(ctx context.Context, run *Run, call AgentStreamCall) {
 		}
 		return nil
 	}
-	call.OnHistory = func(history []models.Message) error {
+	call.OnHistory = func(history []model.Message) error {
 		if err := s.commit(ctx, func() { s.state.Messages = slices.Clone(history) }); err != nil {
 			return err
 		}
@@ -247,12 +247,12 @@ func (s *Session) execute(ctx context.Context, run *Run, call AgentStreamCall) {
 		}
 		return nil
 	}
-	call.OnModelMessages = func(messages []models.Message) error {
+	call.OnModelMessages = func(messages []model.Message) error {
 		if err := s.commit(ctx, func() {
 			s.state.Staged = slices.Clone(messages)
 			for _, msg := range messages {
 				for _, part := range msg.Content {
-					if item, ok := models.AsMessagePart[models.ToolCallPart](part); ok && !item.ProviderExecuted {
+					if item, ok := model.AsMessagePart[model.ToolCallPart](part); ok && !item.ProviderExecuted {
 						s.state.Pending = append(s.state.Pending, Pending{Call: item})
 					}
 				}
@@ -265,7 +265,7 @@ func (s *Session) execute(ctx context.Context, run *Run, call AgentStreamCall) {
 		}
 		return nil
 	}
-	call.OnToolCall = func(item models.ToolCallContent) error {
+	call.OnToolCall = func(item model.ToolCallContent) error {
 		if err := s.Emit(ctx, "tool.call", item); err != nil {
 			return err
 		}
@@ -274,11 +274,11 @@ func (s *Session) execute(ctx context.Context, run *Run, call AgentStreamCall) {
 		}
 		return nil
 	}
-	call.OnToolResult = func(item models.ToolResultContent) error {
+	call.OnToolResult = func(item model.ToolResultContent) error {
 		if err := s.commit(ctx, func() {
 			for i, pending := range s.state.Pending {
 				if pending.Call.ToolCallID == item.ToolCallID {
-					s.state.Pending[i].Result = &models.ToolResultPart{ToolCallID: item.ToolCallID, Output: item.Result, ClientMetadata: item.ClientMetadata}
+					s.state.Pending[i].Result = &model.ToolResultPart{ToolCallID: item.ToolCallID, Output: item.Result, ClientMetadata: item.ClientMetadata}
 					break
 				}
 			}
@@ -352,12 +352,12 @@ func (s *Session) resolvePending() {
 	if len(s.state.Pending) == 0 {
 		return
 	}
-	assistant, results := models.Message{Role: models.MessageRoleAssistant}, models.Message{Role: models.MessageRoleTool}
+	assistant, results := model.Message{Role: model.MessageRoleAssistant}, model.Message{Role: model.MessageRoleTool}
 	for _, pending := range s.state.Pending {
 		assistant.Content = append(assistant.Content, pending.Call)
 		part := pending.Result
 		if part == nil {
-			part = &models.ToolResultPart{ToolCallID: pending.Call.ToolCallID, Output: models.ToolResultOutputContentError{Error: errors.New("interrupted before a result was recorded. Check the workspace before retrying")}}
+			part = &model.ToolResultPart{ToolCallID: pending.Call.ToolCallID, Output: model.ToolResultOutputContentError{Error: errors.New("interrupted before a result was recorded. Check the workspace before retrying")}}
 		}
 		results.Content = append(results.Content, *part)
 	}

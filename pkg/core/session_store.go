@@ -6,22 +6,22 @@ import (
 	"errors"
 	"sync"
 
-	"clara-code/pkg/models"
+	"clara-code/pkg/model"
 	"clara-code/pkg/util/errs"
 )
 
 type Pending struct {
-	Call   models.ToolCallPart
-	Result *models.ToolResultPart
+	Call   model.ToolCallPart
+	Result *model.ToolResultPart
 }
 
 type State struct {
 	ID        string
 	Revision  uint64
-	Messages  []models.Message
+	Messages  []model.Message
 	Events    []Event
 	Pending   []Pending
-	Staged    []models.Message
+	Staged    []model.Message
 	ActiveRun string
 }
 

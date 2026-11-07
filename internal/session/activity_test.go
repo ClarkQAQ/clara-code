@@ -7,11 +7,11 @@ import (
 	"time"
 
 	"clara-code/pkg/core"
-	"clara-code/pkg/models"
+	"clara-code/pkg/model"
 )
 
 func TestToolSnapshotReplacesCallAndSurvivesSerialization(t *testing.T) {
-	tool := NewToolActivity(models.ToolCallContent{ToolCallID: "call", ToolName: "exec_command", Input: `{"command":"printf hello"}`}, time.Now())
+	tool := NewToolActivity(model.ToolCallContent{ToolCallID: "call", ToolName: "exec_command", Input: `{"command":"printf hello"}`}, time.Now())
 	state := Turn{ID: "run"}
 	emit := func(sequence uint64, activity ToolActivity) {
 		body, _ := json.Marshal(activity)
@@ -20,7 +20,7 @@ func TestToolSnapshotReplacesCallAndSurvivesSerialization(t *testing.T) {
 	emit(1, tool)
 	exit := 7
 	metadata, _ := json.Marshal(map[string]any{"clara_command": CommandOutcome{Output: "hello\nfailed command", ExitCode: &exit, DurationMS: 240}})
-	result := models.ToolResultContent{ToolCallID: "call", ToolName: "exec_command", Result: models.ToolResultOutputContentError{Error: errFixture("exit failed")}, ClientMetadata: string(metadata)}
+	result := model.ToolResultContent{ToolCallID: "call", ToolName: "exec_command", Result: model.ToolResultOutputContentError{Error: errFixture("exit failed")}, ClientMetadata: string(metadata)}
 	tool = tool.WithResult(result, time.Now())
 	emit(2, tool)
 	if len(state.Cells) != 1 || state.Cells[0].Tool == nil {
@@ -56,7 +56,7 @@ func TestToolPreviewKeepsHeadAndTailAndEmptyPollKeepsOutput(t *testing.T) {
 	}
 	tool := ToolActivity{CallID: "background", Name: "exec_command", Status: "background", Started: time.Now(), SessionID: "exec_test", Output: "earlier output"}
 	body, _ := json.Marshal(map[string]any{"clara_command": CommandOutcome{Running: true, SessionID: "exec_test"}})
-	tool = tool.WithResult(models.ToolResultContent{ClientMetadata: string(body)}, time.Now())
+	tool = tool.WithResult(model.ToolResultContent{ClientMetadata: string(body)}, time.Now())
 	if tool.Output != "earlier output" || tool.Status != "background" {
 		t.Fatalf("empty poll lost previous output: %+v", tool)
 	}
@@ -66,10 +66,10 @@ func TestTextBoundariesDoNotDuplicateAtCheckpoint(t *testing.T) {
 	turn := Turn{ID: "run"}
 	data := func(value any) json.RawMessage { body, _ := json.Marshal(value); return body }
 	turn.collect([]core.Event{
-		{Sequence: 1, RunID: "run", Kind: "text_delta", Data: data(models.StreamPart{Delta: "First progress."})},
-		{Sequence: 2, RunID: "run", Kind: "text_end", Data: data(models.StreamPart{})},
-		{Sequence: 3, RunID: "run", Kind: "text_delta", Data: data(models.StreamPart{Delta: "Second progress."})},
-		{Sequence: 4, RunID: "run", Kind: "text_end", Data: data(models.StreamPart{})},
+		{Sequence: 1, RunID: "run", Kind: "text_delta", Data: data(model.StreamPart{Delta: "First progress."})},
+		{Sequence: 2, RunID: "run", Kind: "text_end", Data: data(model.StreamPart{})},
+		{Sequence: 3, RunID: "run", Kind: "text_delta", Data: data(model.StreamPart{Delta: "Second progress."})},
+		{Sequence: 4, RunID: "run", Kind: "text_end", Data: data(model.StreamPart{})},
 	})
 	if len(turn.Cells) != 2 || turn.StreamedText != "First progress.Second progress." {
 		t.Fatalf("message boundaries %+v", turn)

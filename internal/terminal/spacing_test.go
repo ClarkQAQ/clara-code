@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"clara-code/pkg/core"
-	"clara-code/pkg/models"
+	"clara-code/pkg/model"
 	"github.com/rivo/uniseg"
 )
 
@@ -171,18 +171,18 @@ func TestStreamingFramesKeepExactlyOneComposerGap(t *testing.T) {
 			}
 		}
 	}
-	emit("text_start", models.StreamPart{ID: "text"})
+	emit("text_start", model.StreamPart{ID: "text"})
 	for _, delta := range []string{"Hello", " world", "\n\n", "## Finding", "\n", "- first", "\n- second", "\n\n```go\n", "package main", "\n```", "\n喵~"} {
-		emit("text_delta", models.StreamPart{ID: "text", Delta: delta})
+		emit("text_delta", model.StreamPart{ID: "text", Delta: delta})
 		frame()
 	}
 	before := screen.y
-	emit("text_end", models.StreamPart{ID: "text"})
+	emit("text_end", model.StreamPart{ID: "text"})
 	frame()
 	if screen.y != before {
 		t.Fatal("text_end shifted composer")
 	}
-	emit("step.completed", models.Response{Content: models.ResponseContent{models.TextContent{Text: "final"}}})
+	emit("step.completed", model.Response{Content: model.ResponseContent{model.TextContent{Text: "final"}}})
 	frame()
 	if screen.y != before {
 		t.Fatal("step completion temporarily showed an activity row")
@@ -221,7 +221,7 @@ func TestLongStreamGapSurvivesResizeToolAndInterruption(t *testing.T) {
 	a.view.output = screen
 	a.view.width, a.view.height = 60, 24
 	a.reflow = true
-	tool := session.NewToolActivity(models.ToolCallContent{ToolCallID: "read", ToolName: "read", Input: `{"path":"file.txt"}`}, time.Now())
+	tool := session.NewToolActivity(model.ToolCallContent{ToolCallID: "read", ToolName: "read", Input: `{"path":"file.txt"}`}, time.Now())
 	a.onToolActivity(tool)
 	if err := a.draw(); err != nil {
 		t.Fatal(err)

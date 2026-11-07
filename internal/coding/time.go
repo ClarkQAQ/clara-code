@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"clara-code/internal/localtime"
+	"clara-code/pkg/util/localtime"
 )
 
 const timeInstructions = "Interpret today, yesterday and tomorrow in the current host's local time zone. Use YYYY-MM-DD for dates and YYYY-MM-DD HH:mm:ss for full date-times shown to the user. Label other time zones explicitly. Keep timestamps in data and tool results as RFC3339 with Z or an explicit offset. Preserve the original meaning and time zones of historical timestamps; IDs are opaque identifiers, not clocks."

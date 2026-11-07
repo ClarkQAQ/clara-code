@@ -15,17 +15,17 @@ import (
 
 	"clara-code/pkg/core"
 	"clara-code/pkg/core/prompt"
-	"clara-code/pkg/models"
-	"clara-code/pkg/tools"
-	"clara-code/pkg/tools/mcp"
+	modelapi "clara-code/pkg/model"
+	toolapi "clara-code/pkg/tool"
+	"clara-code/pkg/tool/mcp"
 
 	"clara-code/internal/session"
-	"clara-code/internal/settings"
+	"clara-code/internal/setting"
 )
 
 type Host struct {
-	Config settings.Config
-	Models func(context.Context, string) (models.LanguageModel, error)
+	Config setting.Config
+	Models func(context.Context, string) (modelapi.LanguageModel, error)
 	now    func() time.Time
 }
 
@@ -34,18 +34,18 @@ type Conversation struct {
 	Workspace Workspace
 	Store     *session.Store
 	Session   *core.Session
-	Goal      *tools.Goal
+	Goal      *toolapi.Goal
 	Questions *Questions
 	sessionMu sync.RWMutex
 
-	model             models.LanguageModel
-	plan              *tools.MemoryPlan
-	items             []models.AgentTool
-	commands          *tools.Commands
+	model             modelapi.LanguageModel
+	plan              *toolapi.MemoryPlan
+	items             []modelapi.AgentTool
+	commands          *toolapi.Commands
 	mcp               *mcp.Manager
-	tasks             *tools.TaskScope
-	backend           tools.TaskBackend
-	external          *tools.ACPTaskBackend
+	tasks             *toolapi.TaskScope
+	backend           toolapi.TaskBackend
+	external          *toolapi.ACPTaskBackend
 	cancel            context.CancelFunc
 	activities        *activityLog
 	commandSequence   atomic.Uint64
@@ -59,7 +59,7 @@ func (h Host) Open(ctx context.Context, workspace Workspace, store *session.Stor
 	meta := store.Meta()
 	lifetime, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	c := &Conversation{Host: h, Workspace: workspace, Store: store, Questions: ask,
-		Goal: &tools.Goal{}, plan: &tools.MemoryPlan{}, cancel: cancel}
+		Goal: &toolapi.Goal{}, plan: &toolapi.MemoryPlan{}, cancel: cancel}
 	cleanup := func(err error) (*Conversation, error) {
 		return nil, errors.Join(err, c.Close())
 	}
@@ -68,12 +68,12 @@ func (h Host) Open(ctx context.Context, workspace Workspace, store *session.Stor
 		return cleanup(err)
 	}
 	c.model = model
-	c.commands = tools.NewCommands(observedRunner{runner{workspace, tools.NewLocal()}})
+	c.commands = toolapi.NewCommands(observedRunner{runner{workspace, toolapi.NewLocal()}})
 	c.commands.Context = lifetime
 	c.commands.NoDefaultTimeout = true
 	files := workspace.files()
 	c.items = append(hostPathTools(files.All()), c.command(c.commands.ExecCommand(), "main"), c.command(c.commands.WriteStdin(), "main"),
-		tools.GetPlan(c.plan), tools.UpdatePlan(c.plan), c.Goal.Get(), c.Goal.Update())
+		toolapi.GetPlan(c.plan), toolapi.UpdatePlan(c.plan), c.Goal.Get(), c.Goal.Update())
 	if ask != nil {
 		c.items = append(c.items, ask.Tool())
 	}
@@ -93,25 +93,25 @@ func (h Host) Open(ctx context.Context, workspace Workspace, store *session.Stor
 			return cleanup(err)
 		}
 	}
-	manager := tools.NewTaskManager(c.buildTask, 4, 3)
+	manager := toolapi.NewTaskManager(c.buildTask, 4, 3)
 	allowed := make([]string, 0, len(c.items)+8)
-	for _, tool := range append(slices.Clone(c.items), taskTools(&tools.TaskScope{})...) {
+	for _, tool := range append(slices.Clone(c.items), taskTools(&toolapi.TaskScope{})...) {
 		allowed = append(allowed, tool.Info().Name)
 	}
-	c.tasks = manager.Scope(lifetime, "", tools.ScopeOptions{
+	c.tasks = manager.Scope(lifetime, "", toolapi.ScopeOptions{
 		AllowedTools: allowed,
-		History: func() []models.Message {
+		History: func() []modelapi.Message {
 			c.sessionMu.RLock()
 			defer c.sessionMu.RUnlock()
 			return c.Session.Messages()
 		},
-		Publish: func(ctx context.Context, info tools.TaskInfo) error {
+		Publish: func(ctx context.Context, info toolapi.TaskInfo) error {
 			c.sessionMu.RLock()
 			defer c.sessionMu.RUnlock()
 			return c.Session.Emit(ctx, "task.updated", info)
 		},
 	})
-	var backend tools.TaskBackend = c.tasks
+	var backend toolapi.TaskBackend = c.tasks
 	if len(h.Config.ACP) > 0 {
 		configs := make(map[string]core.ACPExternalConfig, len(h.Config.ACP))
 		executable, err := os.Executable()
@@ -125,7 +125,7 @@ func (h Host) Open(ctx context.Context, workspace Workspace, store *session.Stor
 			args := append([]string{"__acp_exec", config.Command}, config.Args...)
 			configs[name] = core.ACPExternalConfig{Command: executable, Args: args, Cwd: workspace.Cwd, Env: config.Env}
 		}
-		c.external = tools.NewACPTaskBackend(configs, 2)
+		c.external = toolapi.NewACPTaskBackend(configs, 2)
 		backend = &taskRouter{local: c.tasks, external: c.external}
 	}
 	c.backend = backend
@@ -160,13 +160,13 @@ func (h Host) Open(ctx context.Context, workspace Workspace, store *session.Stor
 	return c, nil
 }
 
-func (h Host) model(ctx context.Context, name, effort string) (models.LanguageModel, error) {
+func (h Host) model(ctx context.Context, name, effort string) (modelapi.LanguageModel, error) {
 	profile, ok := h.Config.Models[name]
 	if !ok {
 		return nil, fmt.Errorf("model %q is not configured", name)
 	}
-	level := models.ReasoningEffort(effort)
-	if !settings.ValidEffort(level) {
+	level := modelapi.ReasoningEffort(effort)
+	if !setting.ValidEffort(level) {
 		return nil, errors.New("invalid reasoning effort")
 	}
 	model, err := h.Models(ctx, profile.ID)
@@ -181,16 +181,16 @@ func (h Host) model(ctx context.Context, name, effort string) (models.LanguageMo
 }
 
 type effortModel struct {
-	models.LanguageModel
-	effort models.ReasoningEffort
+	modelapi.LanguageModel
+	effort modelapi.ReasoningEffort
 }
 
-func (m effortModel) Generate(ctx context.Context, call models.Call) (*models.Response, error) {
+func (m effortModel) Generate(ctx context.Context, call modelapi.Call) (*modelapi.Response, error) {
 	call.ProviderOptions.ReasoningEffort = &m.effort
 	return m.LanguageModel.Generate(ctx, call)
 }
 
-func (m effortModel) Stream(ctx context.Context, call models.Call) (models.StreamResponse, error) {
+func (m effortModel) Stream(ctx context.Context, call modelapi.Call) (modelapi.StreamResponse, error) {
 	call.ProviderOptions.ReasoningEffort = &m.effort
 	return m.LanguageModel.Stream(ctx, call)
 }
@@ -225,15 +225,15 @@ func (c *Conversation) Call(mode prompt.Mode, review bool) core.AgentStreamCall 
 		responseStarted = false
 		return c.Session.Emit(context.Background(), "model.started", map[string]int{"step": step})
 	}
-	call.OnChunk = func(part models.StreamPart) error {
-		if !responseStarted && part.Type != models.StreamPartTypeWarnings {
+	call.OnChunk = func(part modelapi.StreamPart) error {
+		if !responseStarted && part.Type != modelapi.StreamPartTypeWarnings {
 			responseStarted = true
 			if err := c.Session.Emit(context.Background(), "model.responding", nil); err != nil {
 				return err
 			}
 		}
 		switch part.Type {
-		case models.StreamPartTypeTextStart, models.StreamPartTypeTextEnd, models.StreamPartTypeReasoningStart, models.StreamPartTypeReasoningEnd:
+		case modelapi.StreamPartTypeTextStart, modelapi.StreamPartTypeTextEnd, modelapi.StreamPartTypeReasoningStart, modelapi.StreamPartTypeReasoningEnd:
 			return c.Session.Emit(context.Background(), string(part.Type), part)
 		}
 		return nil
@@ -247,7 +247,7 @@ func (c *Conversation) Call(mode prompt.Mode, review bool) core.AgentStreamCall 
 		failure.Message = c.Host.Config.Redact(failure.Message)
 		_ = c.Session.Emit(context.Background(), "model.retry", session.RetryStatus{Attempt: attempt, Limit: retries, DelayMS: delay.Milliseconds(), Kind: failure.Kind, Message: failure.Message})
 	}
-	call.OnToolCall = func(call models.ToolCallContent) error {
+	call.OnToolCall = func(call modelapi.ToolCallContent) error {
 		if call.ToolName == "exec_command" || call.ToolName == "write_stdin" {
 			return nil
 		}
@@ -266,22 +266,22 @@ func (c *Conversation) Call(mode prompt.Mode, review bool) core.AgentStreamCall 
 		c.activities.finish(nil)
 		return nil
 	}
-	call.OnHistory = func([]models.Message) error {
+	call.OnHistory = func([]modelapi.Message) error {
 		if err := c.Store.InvalidateContext(); err != nil {
 			return err
 		}
 		return c.Session.Emit(context.Background(), "context.compacted", nil)
 	}
 	if mode == prompt.Plan {
-		call.AuthorizeTool = tools.PlanOnly
+		call.AuthorizeTool = toolapi.PlanOnly
 	} else {
 		call.FollowUp = c.Goal.NextTurn
-		call.OnStreamFinish = func(usage models.Usage, _ models.FinishReason, _ models.ProviderMetadata) error {
+		call.OnStreamFinish = func(usage modelapi.Usage, _ modelapi.FinishReason, _ modelapi.ProviderMetadata) error {
 			c.Goal.Charge(usage)
 			return nil
 		}
 	}
-	call.OnToolResult = func(result models.ToolResultContent) error {
+	call.OnToolResult = func(result modelapi.ToolResultContent) error {
 		if result.ToolName != "exec_command" && result.ToolName != "write_stdin" {
 			if err := c.activities.complete(result); err != nil {
 				return err
@@ -312,7 +312,7 @@ func (c *Conversation) Start(ctx context.Context, mode prompt.Mode, text string,
 	return c.Session.Start(ctx, call)
 }
 
-func (c *Conversation) prepare(mode prompt.Mode, role string, model models.LanguageModel, registered []models.AgentTool, plan *tools.MemoryPlan, foreground bool) core.PrepareStepFunction {
+func (c *Conversation) prepare(mode prompt.Mode, role string, model modelapi.LanguageModel, registered []modelapi.AgentTool, plan *toolapi.MemoryPlan, foreground bool) core.PrepareStepFunction {
 	var inputs *promptInputs
 	return func(ctx context.Context, step core.PrepareStepFunctionOptions) (context.Context, core.PrepareStepResult, error) {
 		if inputs == nil || step.StepNumber == 0 {
@@ -350,7 +350,7 @@ func (c *Conversation) prepare(mode prompt.Mode, role string, model models.Langu
 				"Read untracked text with the read tool. Report actionable findings with file and line locations, or state that none were found."
 		}
 		if mode == prompt.Plan {
-			items = tools.PlanTools(items)
+			items = toolapi.PlanTools(items)
 		}
 		overrides["base"] = prompt.Default("base") + "\n\nBefore substantial tool work, give a short natural-language update describing your next action. After important findings or tool failures, briefly explain what changed and what you will do next. Keep these updates concise and separate from the final result."
 		overrides["base"] += "\n" + timeInstructions
@@ -395,9 +395,9 @@ func (c *Conversation) prepare(mode prompt.Mode, role string, model models.Langu
 			slices.Sort(names)
 			body += "\n## Configured external ACP task roles\n" + jsonText(names)
 		}
-		dynamic = models.NewUserMessage(body)
+		dynamic = modelapi.NewUserMessage(body)
 		history := step.Messages
-		var compacted []models.Message
+		var compacted []modelapi.Message
 		if budget := c.Host.Config.ContextBytes; budget > 0 {
 			budget -= len(jsonText(dynamic))
 			if budget <= 0 {
@@ -420,7 +420,7 @@ func (c *Conversation) prepare(mode prompt.Mode, role string, model models.Langu
 type promptInputs struct {
 	rules  string
 	skills []Skill
-	tool   []models.AgentTool
+	tool   []modelapi.AgentTool
 }
 
 func jsonText(value any) string {
@@ -454,16 +454,16 @@ func (c *Conversation) Compact(ctx context.Context) error {
 		return err
 	}
 	limit := int64(2048)
-	result, err := c.model.Generate(ctx, models.Call{Prompt: []models.Message{
-		models.NewSystemMessage(prompt.Default("compact")), models.NewUserMessage(string(body)),
+	result, err := c.model.Generate(ctx, modelapi.Call{Prompt: []modelapi.Message{
+		modelapi.NewSystemMessage(prompt.Default("compact")), modelapi.NewUserMessage(string(body)),
 	}, MaxOutputTokens: &limit})
 	if err != nil {
 		return err
 	}
-	if result == nil || strings.TrimSpace(result.Content.Text()) == "" || result.FinishReason == models.FinishReasonLength {
+	if result == nil || strings.TrimSpace(result.Content.Text()) == "" || result.FinishReason == modelapi.FinishReasonLength {
 		return errors.New("compaction did not return a complete summary")
 	}
-	summary := []models.Message{models.NewUserMessage("Prior conversation handoff:\n" + result.Content.Text())}
+	summary := []modelapi.Message{modelapi.NewUserMessage("Prior conversation handoff:\n" + result.Content.Text())}
 	if budget := c.Host.Config.ContextBytes; budget > 0 && len(jsonText(summary)) >= budget {
 		return errors.New("compaction summary exceeds the context budget")
 	}
@@ -517,9 +517,9 @@ func (c *Conversation) QueueInput(ctx context.Context, run *core.Run, text strin
 	}
 	var err error
 	if follow {
-		err = run.FollowUp(models.NewUserMessage(text))
+		err = run.FollowUp(modelapi.NewUserMessage(text))
 	} else {
-		err = run.Steer(models.NewUserMessage(text))
+		err = run.Steer(modelapi.NewUserMessage(text))
 	}
 	if err != nil {
 		return false, err

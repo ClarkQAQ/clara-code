@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"clara-code/pkg/core"
-	"clara-code/pkg/models"
+	modelapi "clara-code/pkg/model"
 	"clara-code/pkg/util/errs"
 	"clara-code/pkg/util/id"
 	"golang.org/x/sys/unix"
@@ -33,8 +33,8 @@ type Meta struct {
 	ID, Project, Cwd, Parent, FirstPrompt string
 	Model, Effort                         string
 	Updated                               time.Time
-	LastUsage                             *models.Usage `json:",omitempty"`
-	TotalUsage                            models.Usage
+	LastUsage                             *modelapi.Usage `json:",omitempty"`
+	TotalUsage                            modelapi.Usage
 	UsageIncomplete                       bool
 	UsageCursor                           uint64
 }
@@ -198,7 +198,7 @@ func (s *Store) Save(ctx context.Context, state core.State) error {
 		inputCount := 1
 		for _, event := range state.Events {
 			if event.RunID == state.ActiveRun && event.Kind == "run.started" {
-				var input []models.Message
+				var input []modelapi.Message
 				if json.Unmarshal(event.Data, &input) == nil && len(input) > 0 {
 					inputCount = len(input)
 				}
@@ -227,7 +227,7 @@ func (s *Store) Save(ctx context.Context, state core.State) error {
 		if len(state.Staged) > 0 && !turn.Staged {
 			var text strings.Builder
 			for _, message := range state.Staged {
-				if message.Role == models.MessageRoleAssistant {
+				if message.Role == modelapi.MessageRoleAssistant {
 					text.WriteString(Text(message))
 				}
 			}
@@ -273,7 +273,7 @@ func collectUsage(meta *Meta, events []core.Event) {
 		}
 		meta.UsageCursor = event.Sequence
 		if event.Kind == "step.completed" {
-			var response models.Response
+			var response modelapi.Response
 			if json.Unmarshal(event.Data, &response) == nil {
 				usage := response.Usage
 				if usage.TotalTokens == 0 {
@@ -334,7 +334,7 @@ func (s *Store) InvalidateContext() error {
 
 // ReplaceHistory is called with the Core session idle. Reopen the Core
 // session after it succeeds so its in-memory revision matches the store.
-func (s *Store) ReplaceHistory(ctx context.Context, messages []models.Message) error {
+func (s *Store) ReplaceHistory(ctx context.Context, messages []modelapi.Message) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -410,7 +410,7 @@ func (s *Store) Fork(ctx context.Context, index int) (*Store, error) {
 	}
 	meta := s.data.Meta
 	meta.Parent, meta.ID = meta.ID, ""
-	meta.LastUsage, meta.TotalUsage, meta.UsageCursor, meta.UsageIncomplete = nil, models.Usage{}, 0, false
+	meta.LastUsage, meta.TotalUsage, meta.UsageCursor, meta.UsageIncomplete = nil, modelapi.Usage{}, 0, false
 	messages, turns := s.data.State.Messages, s.data.Turns
 	if index >= 0 {
 		if index >= len(turns) || !safeID.MatchString(turns[index]) {

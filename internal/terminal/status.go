@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"clara-code/internal/localtime"
 	"clara-code/pkg/core/prompt"
+	"clara-code/pkg/util/localtime"
 )
 
 func tokenCount(count int64) string {

@@ -11,13 +11,13 @@ import (
 	"strings"
 	"time"
 
-	"clara-code/pkg/tools"
-	corefs "clara-code/pkg/tools/fs"
+	"clara-code/pkg/tool"
+	corefs "clara-code/pkg/tool/fs"
 	"clara-code/pkg/util/errs"
 )
 
-func (w Workspace) files() *tools.Files {
-	files := tools.NewFiles(w.toolFS(), nil)
+func (w Workspace) files() *tool.Files {
+	files := tool.NewFiles(w.toolFS(), nil)
 	files.SearchSource = w.searchSource
 	files.InstructionsSource = w.targetRules
 	return files

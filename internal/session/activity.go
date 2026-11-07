@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"clara-code/pkg/models"
+	"clara-code/pkg/model"
 )
 
 type ToolActivity struct {
@@ -52,7 +52,7 @@ type RetryStatus struct {
 	Message string `json:"message"`
 }
 
-func NewToolActivity(call models.ToolCallContent, now time.Time) ToolActivity {
+func NewToolActivity(call model.ToolCallContent, now time.Time) ToolActivity {
 	activity := ToolActivity{CallID: call.ToolCallID, Name: call.ToolName, Arguments: excerpt(call.Input, 16<<10), Status: "running", Started: now}
 	var args struct {
 		Command, Path, Query, Pattern, Input, Name, From, To string
@@ -139,16 +139,16 @@ func PreviewOutput(text string, limit int) (string, int) {
 	return head + "\n…\n" + tail, omitted
 }
 
-func (t ToolActivity) WithResult(result models.ToolResultContent, now time.Time) ToolActivity {
+func (t ToolActivity) WithResult(result model.ToolResultContent, now time.Time) ToolActivity {
 	t.Status = "succeeded"
 	t.Error = ""
 	t.Finished = now
 	t.DurationMS = max(0, now.Sub(t.Started).Milliseconds())
 	var output string
-	if text, ok := models.AsToolResultOutputType[models.ToolResultOutputContentText](result.Result); ok {
+	if text, ok := model.AsToolResultOutputType[model.ToolResultOutputContentText](result.Result); ok {
 		output = text.Text
 	}
-	if failure, ok := models.AsToolResultOutputType[models.ToolResultOutputContentError](result.Result); ok {
+	if failure, ok := model.AsToolResultOutputType[model.ToolResultOutputContentError](result.Result); ok {
 		t.Status = "failed"
 		if failure.Error != nil {
 			t.Error = excerpt(failure.Error.Error(), 1000)

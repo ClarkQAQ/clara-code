@@ -17,8 +17,8 @@ import (
 	"clara-code/examples/internal/host"
 	"clara-code/pkg/core"
 	"clara-code/pkg/core/prompt"
-	"clara-code/pkg/models"
-	"clara-code/pkg/tools"
+	"clara-code/pkg/model"
+	"clara-code/pkg/tool"
 )
 
 func main() {
@@ -57,7 +57,7 @@ func run() (err error) {
 	}
 	config.Compact.BudgetBytes = *budget
 	var conversation *host.Conversation
-	questions := host.Questions{Publish: func(ctx context.Context, qs []tools.Question) error {
+	questions := host.Questions{Publish: func(ctx context.Context, qs []tool.Question) error {
 		return conversation.Session.Emit(ctx, "input.requested", qs)
 	}}
 	config.Ask = questions.Ask
@@ -130,7 +130,7 @@ func run() (err error) {
 				}
 			case "/follow":
 				if active := conversation.Session.Active(); active != nil {
-					commandErr = active.FollowUp(models.NewUserMessage(argument))
+					commandErr = active.FollowUp(model.NewUserMessage(argument))
 				} else {
 					last, commandErr = conversation.Start(ctx, mode, argument)
 				}
@@ -158,7 +158,7 @@ func run() (err error) {
 				}
 			default:
 				if active := conversation.Session.Active(); active != nil {
-					commandErr = active.Steer(models.NewUserMessage(line))
+					commandErr = active.Steer(model.NewUserMessage(line))
 				} else {
 					last, commandErr = conversation.Start(ctx, mode, line)
 				}
@@ -198,7 +198,7 @@ func display(ctx context.Context, conversation *core.Session, finished chan stri
 		cursor = event.Sequence
 		switch event.Kind {
 		case "text_delta":
-			var part models.StreamPart
+			var part model.StreamPart
 			if json.Unmarshal(event.Data, &part) == nil {
 				fmt.Print(part.Delta)
 			}

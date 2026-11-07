@@ -13,12 +13,12 @@ import (
 	"strings"
 	"time"
 
-	"clara-code/pkg/models"
-	"clara-code/pkg/tools"
-	corefs "clara-code/pkg/tools/fs"
-	"clara-code/pkg/tools/fs/host"
-	"clara-code/pkg/tools/fs/local"
-	"clara-code/pkg/tools/fs/mount"
+	"clara-code/pkg/model"
+	"clara-code/pkg/tool"
+	corefs "clara-code/pkg/tool/fs"
+	"clara-code/pkg/tool/fs/host"
+	"clara-code/pkg/tool/fs/local"
+	"clara-code/pkg/tool/fs/mount"
 	"github.com/pelletier/go-toml/v2"
 	"go.yaml.in/yaml/v3"
 )
@@ -88,10 +88,10 @@ func (w Workspace) Branch(ctx context.Context) string {
 
 type runner struct {
 	workspace Workspace
-	local     *tools.Local
+	local     *tool.Local
 }
 
-func (r runner) Start(ctx context.Context, spec tools.Spec) (tools.Process, error) {
+func (r runner) Start(ctx context.Context, spec tool.Spec) (tool.Process, error) {
 	resolved, err := r.workspace.Native.ResolvePath(spec.Workdir)
 	if err != nil {
 		return nil, err
@@ -156,7 +156,7 @@ type skillHeader struct {
 	Description string `yaml:"description" toml:"description"`
 }
 
-func (w Workspace) skills(ctx context.Context, home string) ([]Skill, []models.AgentTool, error) {
+func (w Workspace) skills(ctx context.Context, home string) ([]Skill, []model.AgentTool, error) {
 	roots := []string{filepath.Join(home, "skills")}
 	for _, dir := range w.directories() {
 		roots = append(roots, filepath.Join(dir, ".agents", "skills"))
@@ -222,39 +222,39 @@ func (w Workspace) skills(ctx context.Context, home string) ([]Skill, []models.A
 	if len(skills) == 0 {
 		return nil, nil, nil
 	}
-	resourceTool := tools.Func(tools.Definition{Name: "read_skill_resource", Description: "Read a text resource relative to an available skill directory. Use name and path from the skill instructions.", Effects: []tools.Effect{tools.EffectRead}, ParallelSafe: true},
+	resourceTool := tool.Func(tool.Definition{Name: "read_skill_resource", Description: "Read a text resource relative to an available skill directory. Use name and path from the skill instructions.", Effects: []tool.Effect{tool.EffectRead}, ParallelSafe: true},
 		func(ctx context.Context, in struct {
 			Name string `json:"name"`
 			Path string `json:"path"`
-		}) (tools.Result, error) {
+		}) (tool.Result, error) {
 			storage, ok := resources[in.Name]
 			if !ok {
-				return tools.ErrorResult("unknown skill"), nil
+				return tool.ErrorResult("unknown skill"), nil
 			}
 			if filepath.IsAbs(in.Path) {
-				return tools.ErrorResult("resource path must be relative to the skill directory"), nil
+				return tool.ErrorResult("resource path must be relative to the skill directory"), nil
 			}
 			path, err := corefs.Clean(in.Path)
 			if err != nil {
-				return tools.ErrorResult(err.Error()), nil
+				return tool.ErrorResult(err.Error()), nil
 			}
 			info, err := storage.Stat(ctx, path)
 			if err != nil {
-				return tools.ErrorResult(err.Error()), nil
+				return tool.ErrorResult(err.Error()), nil
 			}
 			if !info.Mode.IsRegular() || info.Size > 256<<10 {
-				return tools.ErrorResult("resource must be a text file smaller than 256 KiB"), nil
+				return tool.ErrorResult("resource must be a text file smaller than 256 KiB"), nil
 			}
 			body, err := storage.ReadFile(ctx, path, 256<<10)
 			if err != nil {
-				return tools.ErrorResult(err.Error()), nil
+				return tool.ErrorResult(err.Error()), nil
 			}
 			if strings.ContainsRune(string(body), 0) {
-				return tools.ErrorResult("resource is binary"), nil
+				return tool.ErrorResult("resource is binary"), nil
 			}
-			return tools.TextResult(string(body)), nil
+			return tool.TextResult(string(body)), nil
 		})
-	return skills, []models.AgentTool{tools.ReadSkill(mounted, paths), resourceTool}, nil
+	return skills, []model.AgentTool{tool.ReadSkill(mounted, paths), resourceTool}, nil
 }
 
 func parseSkill(body string) (skillHeader, bool) {

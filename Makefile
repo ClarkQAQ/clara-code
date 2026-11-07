@@ -1,4 +1,4 @@
-.PHONY: test race vet lint build examples check fmt conformance-openresponses conformance-acp
+.PHONY: test race vet lint build examples check fmt
 
 test:
 	go test ./...
@@ -29,9 +29,3 @@ check:
 	golangci-lint run ./...
 	go build -o clara-code .
 	go build ./examples/...
-
-conformance-openresponses:
-	bash test/conformance/openresponses.sh
-
-conformance-acp:
-	bash test/conformance/acp.sh

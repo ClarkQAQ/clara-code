@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"clara-code/pkg/models"
+	"clara-code/pkg/model"
 	"clara-code/pkg/util/errs"
 )
 
@@ -46,15 +46,15 @@ func (s *Session) emitLocked(kind string, payload any) error {
 	s.sequence++
 	ev := Event{Sequence: s.sequence, SessionID: s.state.ID, RunID: s.state.ActiveRun, Kind: kind, At: time.Now().UTC(), Data: raw}
 	switch item := payload.(type) {
-	case models.StreamPart:
-		if item.Type == models.StreamPartTypeToolInputDelta {
+	case model.StreamPart:
+		if item.Type == model.StreamPartTypeToolInputDelta {
 			ev.ToolCallID = item.ID
 		} else if s.active != nil {
 			ev.MessageID = fmt.Sprintf("%s:%d:%s:%s", ev.RunID, s.active.step, item.Type, item.ID)
 		}
-	case models.ToolCallContent:
+	case model.ToolCallContent:
 		ev.ToolCallID = item.ToolCallID
-	case models.ToolResultContent:
+	case model.ToolResultContent:
 		ev.ToolCallID = item.ToolCallID
 	}
 	if len(raw) > 1<<20 {

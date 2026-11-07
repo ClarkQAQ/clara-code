@@ -13,8 +13,8 @@ import (
 
 	"clara-code/pkg/core"
 	"clara-code/pkg/core/prompt"
-	"clara-code/pkg/models"
-	"clara-code/pkg/tools"
+	"clara-code/pkg/model"
+	toolapi "clara-code/pkg/tool"
 	"golang.org/x/term"
 
 	"clara-code/internal/coding"
@@ -523,7 +523,7 @@ func (a *app) onRunEvent(update runEvent) {
 		a.activity.failure = nil
 	case "text_start":
 		a.activity.quiet = true
-		var part models.StreamPart
+		var part model.StreamPart
 		if json.Unmarshal(event.Data, &part) == nil {
 			if a.streamID != "" && a.streamID != part.ID {
 				a.flushStream()
@@ -533,7 +533,7 @@ func (a *app) onRunEvent(update runEvent) {
 		}
 	case "text_delta":
 		a.activity.quiet = true
-		var chunk models.StreamPart
+		var chunk model.StreamPart
 		if json.Unmarshal(event.Data, &chunk) == nil {
 			if a.streamID != "" && a.streamID != chunk.ID {
 				a.flushStream()
@@ -544,13 +544,13 @@ func (a *app) onRunEvent(update runEvent) {
 			a.sawText = a.sawText || chunk.Delta != ""
 		}
 	case "text_end":
-		var part models.StreamPart
+		var part model.StreamPart
 		if json.Unmarshal(event.Data, &part) == nil && (a.streamID == part.ID || a.streamID == "") {
 			a.flushStream()
 			a.streamID = ""
 		}
 	case "reasoning_delta", "reasoning_end":
-		var part models.StreamPart
+		var part model.StreamPart
 		if json.Unmarshal(event.Data, &part) == nil && len(part.ProviderMetadata.ReasoningSummary) > 0 {
 			title := summaryTitle(strings.Join(part.ProviderMetadata.ReasoningSummary, "\n"))
 			if title != "" {
@@ -578,7 +578,7 @@ func (a *app) onRunEvent(update runEvent) {
 		a.view.message("notice", "Compacted conversation context")
 	case "step.completed":
 		a.activity.retry = nil
-		var response models.Response
+		var response model.Response
 		if json.Unmarshal(event.Data, &response) == nil {
 
 			if !a.sawText {
@@ -588,13 +588,13 @@ func (a *app) onRunEvent(update runEvent) {
 		a.flushStream()
 		a.sawText = false
 	case "tool.result":
-		var result models.ToolResultContent
+		var result model.ToolResultContent
 		if json.Unmarshal(event.Data, &result) == nil && result.ToolName == "request_user_input" {
 			cell := session.ToolOutput(result)
 			a.view.message(cell.Kind, cell.Text)
 		}
 	case "plan.updated":
-		var plan tools.PlanState
+		var plan toolapi.PlanState
 		if json.Unmarshal(event.Data, &plan) == nil && len(plan.Steps) > 0 {
 			var lines []string
 			for _, step := range plan.Steps {

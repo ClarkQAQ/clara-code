@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"clara-code/pkg/core"
-	"clara-code/pkg/models"
+	"clara-code/pkg/model"
 	"clara-code/pkg/util/id"
 )
 
@@ -19,14 +19,14 @@ func TestNewRunAfterIncompleteFinalCheckpoint(t *testing.T) {
 	firstRun := id.New("run")
 	state.Revision++
 	state.ActiveRun = firstRun
-	state.Messages = []models.Message{models.NewUserMessage("first prompt")}
+	state.Messages = []model.Message{model.NewUserMessage("first prompt")}
 	if err := store.Save(t.Context(), state); err != nil {
 		t.Fatal(err)
 	}
 	secondRun := id.New("run")
 	state.Revision++
 	state.ActiveRun = secondRun
-	state.Messages = append(state.Messages, models.NewUserMessage("second prompt"))
+	state.Messages = append(state.Messages, model.NewUserMessage("second prompt"))
 	if err := store.Save(t.Context(), state); err != nil {
 		t.Fatal(err)
 	}

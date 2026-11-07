@@ -13,9 +13,9 @@ import (
 
 	"clara-code/examples/internal/host"
 	"clara-code/pkg/core/prompt"
-	"clara-code/pkg/models"
-	"clara-code/pkg/tools/fs"
-	"clara-code/pkg/tools/fs/local"
+	"clara-code/pkg/model"
+	"clara-code/pkg/tool/fs"
+	"clara-code/pkg/tool/fs/local"
 )
 
 func CodingLoop(ctx context.Context, output io.Writer) (err error) {
@@ -63,13 +63,13 @@ func CodingLoop(ctx context.Context, output io.Writer) (err error) {
 		cursor = event.Sequence
 		switch event.Kind {
 		case "tool.call":
-			var call models.ToolCallContent
+			var call model.ToolCallContent
 			if err := json.Unmarshal(event.Data, &call); err != nil {
 				return err
 			}
 			fmt.Fprintf(output, "> %s %s\n", call.ToolName, call.Input)
 		case "tool.result":
-			var result models.ToolResultContent
+			var result model.ToolResultContent
 			if err := json.Unmarshal(event.Data, &result); err != nil {
 				return err
 			}
@@ -84,21 +84,21 @@ func CodingLoop(ctx context.Context, output io.Writer) (err error) {
 	}
 }
 
-func toolOutput(value models.ToolResultOutputContent) string {
-	if text, ok := models.AsToolResultOutputType[models.ToolResultOutputContentText](value); ok {
+func toolOutput(value model.ToolResultOutputContent) string {
+	if text, ok := model.AsToolResultOutputType[model.ToolResultOutputContentText](value); ok {
 		return text.Text
 	}
-	if failure, ok := models.AsToolResultOutputType[models.ToolResultOutputContentError](value); ok {
+	if failure, ok := model.AsToolResultOutputType[model.ToolResultOutputContentError](value); ok {
 		return failure.Error.Error()
 	}
 	return ""
 }
 
-func codingReply(_ context.Context, call models.Call) (models.Response, error) {
+func codingReply(_ context.Context, call model.Call) (model.Response, error) {
 	var outputs []string
 	for _, msg := range call.Prompt {
 		for _, part := range msg.Content {
-			if result, ok := models.AsMessagePart[models.ToolResultPart](part); ok {
+			if result, ok := model.AsMessagePart[model.ToolResultPart](part); ok {
 				outputs = append(outputs, toolOutput(result.Output))
 			}
 		}
@@ -110,33 +110,33 @@ func codingReply(_ context.Context, call models.Call) (models.Response, error) {
 		tool, input = "exec_command", map[string]any{"command": "go test ./...", "yield_seconds": 30}
 	case 1:
 		if !strings.Contains(outputs[0], "incorrect sum") {
-			return models.Response{}, errors.New("expected the fixture test to fail")
+			return model.Response{}, errors.New("expected the fixture test to fail")
 		}
 		tool, input = "grep", map[string]any{"query": "return a - b"}
 	case 2:
 		if !strings.Contains(outputs[1], "calc.go") {
-			return models.Response{}, errors.New("expected grep to find calc.go")
+			return model.Response{}, errors.New("expected grep to find calc.go")
 		}
 		tool, input = "read", map[string]any{"path": "calc.go", "anchored": true}
 	case 3:
 		header, _, _ := strings.Cut(outputs[2], "\n")
 		if !strings.HasPrefix(header, "[/calc.go#") {
-			return models.Response{}, errors.New("expected an anchored snapshot")
+			return model.Response{}, errors.New("expected an anchored snapshot")
 		}
 		tool, input = "edit", map[string]any{"input": header + "\nPUT 3.=3:\n+func Add(a, b int) int { return a + b }"}
 	case 5:
 		if !strings.Contains(outputs[4], "exit_code: 0") {
-			return models.Response{}, errors.New("the test did not pass after the edit")
+			return model.Response{}, errors.New("the test did not pass after the edit")
 		}
 		return Text("Fixed Add in calc.go. go test ./... passed."), nil
 	default:
-		return models.Response{}, errors.New("unexpected coding fixture step")
+		return model.Response{}, errors.New("unexpected coding fixture step")
 	}
 	body, err := json.Marshal(input)
 	if err != nil {
-		return models.Response{}, err
+		return model.Response{}, err
 	}
-	return models.Response{Content: models.ResponseContent{models.ToolCallContent{
+	return model.Response{Content: model.ResponseContent{model.ToolCallContent{
 		ToolCallID: fmt.Sprintf("demo_%d", len(outputs)+1), ToolName: tool, Input: string(body),
-	}}, FinishReason: models.FinishReasonToolCalls}, nil
+	}}, FinishReason: model.FinishReasonToolCalls}, nil
 }

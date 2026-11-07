@@ -5,17 +5,17 @@ import (
 	"errors"
 	"sync"
 
-	"clara-code/pkg/tools"
+	"clara-code/pkg/tool"
 )
 
 // Questions bridges a tool request to a UI. Each conversation has one active prompt.
 type Questions struct {
 	mu      sync.Mutex
 	pending chan map[string]string
-	Publish func(context.Context, []tools.Question) error
+	Publish func(context.Context, []tool.Question) error
 }
 
-func (q *Questions) Ask(ctx context.Context, questions []tools.Question) (map[string]string, error) {
+func (q *Questions) Ask(ctx context.Context, questions []tool.Question) (map[string]string, error) {
 	replies := make(chan map[string]string, 1)
 	q.mu.Lock()
 	if q.pending != nil {

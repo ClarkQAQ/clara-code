@@ -4,20 +4,20 @@ import (
 	"encoding/json"
 	"strings"
 
-	"clara-code/pkg/models"
+	"clara-code/pkg/model"
 )
 
 type pathTool struct {
-	models.AgentTool
-	info models.ToolInfo
+	model.AgentTool
+	info model.ToolInfo
 }
 
-func (t pathTool) Info() models.ToolInfo {
+func (t pathTool) Info() model.ToolInfo {
 	return t.info
 }
 
-func hostPathTools(items []models.AgentTool) []models.AgentTool {
-	out := make([]models.AgentTool, 0, len(items))
+func hostPathTools(items []model.AgentTool) []model.AgentTool {
+	out := make([]model.AgentTool, 0, len(items))
 	for _, tool := range items {
 		info := tool.Info()
 		switch info.Name {
@@ -27,7 +27,7 @@ func hostPathTools(items []models.AgentTool) []models.AgentTool {
 			continue
 		}
 		data, _ := json.Marshal(info)
-		var copy models.ToolInfo
+		var copy model.ToolInfo
 		_ = json.Unmarshal(data, &copy)
 		copy.Description = "Use real host paths: absolute paths are native, relative paths start at the current working directory, ~/ starts at home. " + strings.ReplaceAll(info.Description, `"path":"/`, `"path":"`)
 		for _, name := range []string{"path", "from", "to"} {
