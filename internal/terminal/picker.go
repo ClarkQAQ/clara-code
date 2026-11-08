@@ -56,7 +56,18 @@ func (a *app) handlePicker(input key) bool {
 		return false
 	}
 	if p.kind == "attachments" && (input.code == "delete" || input.code == "backspace") {
-		a.attachments = append(a.attachments[:p.selected], a.attachments[p.selected+1:]...)
+		index := 0
+		for _, span := range a.editor.images {
+			if span.pending {
+				continue
+			}
+			if index == p.selected {
+				a.editor.delete(span.start, span.end)
+				break
+			}
+			index++
+		}
+		a.syncDraftImages()
 		a.picker = nil
 		if len(a.attachments) > 0 {
 			a.manageAttachments()

@@ -37,11 +37,8 @@ func (a *app) handle(input key) bool {
 				if err != nil {
 					a.notice(err)
 					a.editor.insert(input.text)
-				} else {
-					a.attachmentPasteBefore = a.editor.text
-					a.loadAttachments(paths, false)
+				} else if !a.loadAttachments(paths, false, input.text) {
 					a.editor.insert(input.text)
-					a.attachmentPasteText = a.editor.text
 				}
 				return false
 			}
@@ -119,6 +116,7 @@ func (a *app) handle(input key) bool {
 			a.hint = "Wait for the image to finish loading"
 			return false
 		}
+		a.syncDraftImages()
 		line := strings.TrimSpace(a.editor.text)
 		if line == "" && len(a.attachments) == 0 {
 			return false
@@ -129,7 +127,7 @@ func (a *app) handle(input key) bool {
 		return a.submit(line)
 	case "up", "down":
 		width := max(1, a.view.width-2)
-		if strings.Contains(a.editor.text, "\n") || len(wrap(a.editor.text, width)) > 1 {
+		if len(a.editor.images) > 0 || strings.Contains(a.editor.text, "\n") || len(wrap(a.editor.text, width)) > 1 {
 			direction := 1
 			if input.code == "up" {
 				direction = -1
@@ -143,6 +141,7 @@ func (a *app) handle(input key) bool {
 		return false
 	}
 	a.editor.key(input)
+	a.syncDraftImages()
 	return false
 }
 
@@ -232,13 +231,15 @@ func (a *app) submit(line string) bool {
 		} else if paths, ok, err := coding.ImagePaths(arg, a.space.Cwd); err != nil {
 			a.notice(err)
 		} else if ok {
-			a.loadAttachments(paths, false)
-			if a.attachmentResults != nil {
-				a.attachmentPasteBefore = ""
-				a.attachmentPasteText = line
+			a.editor.replace("")
+			if !a.loadAttachments(paths, false, line) {
+				a.editor.replace(line)
 			}
 		} else {
-			a.loadAttachments([]string{arg}, false)
+			a.editor.replace("")
+			if !a.loadAttachments([]string{arg}, false, line) {
+				a.editor.replace(line)
+			}
 		}
 	case "/plan":
 		a.mode = prompt.Plan
@@ -337,18 +338,24 @@ func (a *app) steer(text string, follow bool) {
 	files, fileErr := coding.AttachmentFiles(a.host.Config.Home, a.attachments, a.host.Config.Images)
 	if fileErr != nil {
 		a.notice(fileErr)
-		a.editor.replace(text)
+		a.setDraft(text, a.attachments)
 		return
 	}
 	accepted, err := a.conv.QueueFiles(a.ctx, a.run, text, follow, files)
 	if err != nil && !accepted {
 		if a.conv.Session.Active() == nil {
+			var draft editor
+			draft.restoreImages(text, a.attachments)
+			if !a.pendingDraft.appendDraft(draft) {
+				a.setDraft(text, a.attachments)
+				a.notice(errors.New("queued input exceeds the input size limit"))
+				return
+			}
 			a.pendingInput = append(a.pendingInput, text)
-			a.pendingAttachments = append(a.pendingAttachments, a.attachments...)
 			a.attachments = nil
 			return
 		}
-		a.editor.replace(text)
+		a.setDraft(text, a.attachments)
 		a.notice(err)
 		return
 	}

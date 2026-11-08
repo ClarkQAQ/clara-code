@@ -20,23 +20,32 @@ type attachmentResult struct {
 	err         error
 }
 
-func (a *app) loadAttachments(paths []string, fromClipboard bool) {
+func (a *app) loadAttachments(paths []string, fromClipboard bool, original ...string) bool {
 	if a.conv == nil {
-		return
+		return false
 	}
 	if !fromClipboard && !a.conv.SupportsImages() {
 		a.notice(errors.New("this model does not support image inputs; switch models before attaching images"))
-		return
+		return false
 	}
 	if a.attachmentResults != nil {
 		a.hint = "An image is already loading"
-		return
+		return false
 	}
 	home, cwd, limits := a.host.Config.Home, a.space.Cwd, a.host.Config.Images.Defaults()
 	owner := a.conv.Session.ID()
 	out := make(chan attachmentResult, 1)
 	a.attachmentResults = out
 	ctx := a.ctx
+	text := ""
+	if len(original) > 0 {
+		text = original[0]
+	}
+	if !a.editor.insertPending(text) {
+		a.attachmentResults = nil
+		a.notice(errors.New("not enough room in the input for an image"))
+		return false
+	}
 	go func() {
 		result := attachmentResult{owner: owner}
 		if fromClipboard {
@@ -87,56 +96,72 @@ func (a *app) loadAttachments(paths []string, fromClipboard bool) {
 		}
 		out <- result
 	}()
+	return true
 }
 func (a *app) acceptAttachments(result attachmentResult) {
 	a.attachmentResults = nil
-	pasteAfter, pasteBefore := a.attachmentPasteText, a.attachmentPasteBefore
-	a.attachmentPasteText = ""
-	a.attachmentPasteBefore = ""
 	if a.conv == nil || result.owner != a.conv.Session.ID() {
 		return
 	}
-	if result.err != nil {
-		a.editor.insert(result.fallback)
-		a.notice(result.err)
+	pending := -1
+	for i, span := range a.editor.images {
+		if span.pending {
+			pending = i
+			break
+		}
+	}
+	if pending < 0 {
 		return
 	}
-	if result.text != "" {
-		a.editor.insert(result.text)
-		return
-	}
+	span := a.editor.images[pending]
 	combined := append(append([]session.Attachment(nil), a.attachments...), result.items...)
-	if _, err := coding.AttachmentFiles(a.host.Config.Home, combined, a.host.Config.Images); err != nil {
-		a.editor.insert(result.fallback)
-		a.notice(err)
-		return
+	if result.err == nil && len(result.items) > 0 {
+		_, result.err = coding.AttachmentFiles(a.host.Config.Home, combined, a.host.Config.Images)
+		if result.err == nil && !a.conv.SupportsImages() {
+			result.err = errors.New("this model does not support image inputs; switch models and attach again")
+		}
 	}
-	if !a.conv.SupportsImages() {
-		a.editor.insert(result.fallback)
-		a.notice(errors.New("this model does not support image inputs; switch models and attach again"))
-		return
+	if result.err == nil && len(result.items) > 0 {
+		needed := len(a.editor.text) - (span.end - span.start)
+		for _, current := range a.editor.images {
+			if !current.pending {
+				needed -= current.end - current.start
+			}
+		}
+		for i := range len(combined) {
+			needed += len(imageLabel(i))
+		}
+		if needed > inputLimit {
+			result.err = errors.New("not enough room in the input for images")
+		}
 	}
-	a.attachments = combined
-	if pasteAfter != "" && a.editor.text == pasteAfter {
-		a.editor.replace(pasteBefore)
+	before := a.editor.at
+	text := result.text
+	if result.err != nil {
+		text = span.original
+		if text == "" {
+			text = result.fallback
+		}
 	}
-	if len(result.items) > 0 {
-		a.hint = fmt.Sprintf("%d image attachment(s) · %s to manage", len(a.attachments), a.host.Config.TUI.Hint("composer", "attachments"))
+	a.editor.delete(span.start, span.end)
+	a.editor.insert(text)
+	if result.err == nil {
+		for _, item := range result.items {
+			a.editor.insertImage(item)
+		}
+	}
+	end := a.editor.at
+	if before <= span.start {
+		a.editor.at = before
+	} else if before >= span.end {
+		a.editor.at = before + end - span.end
+	}
+	a.syncDraftImages()
+	if result.err != nil {
+		a.notice(result.err)
 	}
 }
-func (a *app) attachmentRows() []string {
-	var rows []string
-	for i, item := range a.attachments {
-		rows = append(rows, a.view.style(dim, truncate(fmt.Sprintf("  [Image #%d] %s · %dx%d", i+1, item.Filename, item.Width, item.Height), a.view.width)))
-	}
-	if a.attachmentResults != nil {
-		rows = append(rows, a.view.style(dim, "  Loading image…"))
-	}
-	if len(rows) > 0 {
-		rows = append(rows, "")
-	}
-	return rows
-}
+
 func (a *app) manageAttachments() {
 	p := &picker{kind: "attachments", title: "Image attachments · " + a.host.Config.TUI.Hint("picker", "delete_attachment") + " removes selected image"}
 	for i, item := range a.attachments {
@@ -229,10 +254,14 @@ func (a *app) hints(text string) string {
 }
 func (a *app) restoreDraft(text string, items []session.Attachment) {
 	if a.editor.text == "" {
-		a.editor.replace(text)
+		a.setDraft(text, items)
+		return
 	}
 	if len(a.attachments) == 0 {
-		a.attachments = append([]session.Attachment(nil), items...)
+		for _, item := range items {
+			a.editor.insertImage(item)
+		}
+		a.syncDraftImages()
 	}
 }
 func (a *app) bindKey(input key) key {

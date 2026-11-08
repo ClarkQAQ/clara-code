@@ -353,6 +353,7 @@ func wrap(text string, width int) []row {
 }
 
 type editor struct {
+	images         []imageSpan
 	text           string
 	at             int
 	verticalColumn int
@@ -361,6 +362,7 @@ type editor struct {
 
 func (e *editor) replace(text string) {
 	e.text, e.at = "", 0
+	e.images = nil
 	e.insert(text)
 }
 
@@ -374,12 +376,26 @@ func (e *editor) insert(text string) {
 		}
 		text = text[:room]
 	}
+	for i := range e.images {
+		if e.images[i].start >= e.at {
+			e.images[i].start += len(text)
+			e.images[i].end += len(text)
+		}
+	}
 	e.text = e.text[:e.at] + text + e.text[e.at:]
 	e.at += len(text)
 	e.at = e.boundary(e.at, 1)
 }
 
 func (e *editor) boundary(at, direction int) int {
+	for _, span := range e.images {
+		if span.start < at && at < span.end {
+			if direction < 0 {
+				return span.start
+			}
+			return span.end
+		}
+	}
 	it := uniseg.NewGraphemes(e.text)
 	for it.Next() {
 		start, end := it.Positions()
@@ -398,10 +414,10 @@ func (e *editor) next(direction int) int {
 	for iterator.Next() {
 		start, end := iterator.Positions()
 		if direction < 0 && end >= e.at {
-			return start
+			return e.boundary(start, -1)
 		}
 		if direction > 0 && end > e.at {
-			return end
+			return e.boundary(end, 1)
 		}
 	}
 	return e.at
@@ -409,6 +425,23 @@ func (e *editor) next(direction int) int {
 
 func (e *editor) delete(start, end int) {
 	e.verticalSet = false
+	for _, span := range e.images {
+		if start < span.end && end > span.start {
+			start, end = min(start, span.start), max(end, span.end)
+		}
+	}
+	images := e.images[:0]
+	for _, span := range e.images {
+		if start < span.end && end > span.start {
+			continue
+		}
+		if span.start >= end {
+			span.start -= end - start
+			span.end -= end - start
+		}
+		images = append(images, span)
+	}
+	e.images = images
 	e.text = e.text[:start] + e.text[end:]
 	e.at = e.boundary(start, -1)
 }
@@ -466,7 +499,7 @@ func (e *editor) key(input key) bool {
 	case "word-right":
 		e.at = e.word(1)
 	case "home", "ctrl-a":
-		e.at = strings.LastIndex(e.text[:e.at], "\n") + 1
+		e.at = e.boundary(strings.LastIndex(e.text[:e.at], "\n")+1, -1)
 	case "end", "ctrl-e":
 		offset := strings.Index(e.text[e.at:], "\n")
 		if offset < 0 {
@@ -474,6 +507,7 @@ func (e *editor) key(input key) bool {
 		} else {
 			e.at += offset
 		}
+		e.at = e.boundary(e.at, 1)
 	case "backspace":
 		if e.at > 0 {
 			e.delete(e.next(-1), e.at)
@@ -524,6 +558,7 @@ func (e *editor) vertical(direction, width int) {
 		e.at = line.start + end
 		column += it.Width()
 	}
+	e.at = e.boundary(e.at, direction)
 }
 
 func (p *painter) cellRows(cell session.Cell) []string {

@@ -31,33 +31,32 @@ type Options struct {
 }
 
 type app struct {
-	runHistoryStart                            int
-	resyncNeeded                               bool
-	ctx                                        context.Context
-	options                                    Options
-	view                                       painter
-	host                                       coding.Host
-	space                                      coding.Workspace
-	conv                                       *coding.Conversation
-	ask                                        *coding.Questions
-	editor                                     editor
-	mode                                       prompt.Mode
-	run                                        *core.Run
-	events                                     <-chan runEvent
-	stopRun                                    context.CancelFunc
-	op                                         <-chan operationResult
-	stopOp                                     context.CancelFunc
-	opLabel                                    string
-	picker                                     *picker
-	question                                   *questionForm
-	backgroundEvents                           <-chan struct{}
-	stopTerminalResults                        chan error
-	stoppingTerminals                          bool
-	attachments                                []session.Attachment
-	submittedAttachments                       []session.Attachment
-	pendingAttachments                         []session.Attachment
-	attachmentResults                          <-chan attachmentResult
-	attachmentPasteText, attachmentPasteBefore string
+	runHistoryStart      int
+	resyncNeeded         bool
+	ctx                  context.Context
+	options              Options
+	view                 painter
+	host                 coding.Host
+	space                coding.Workspace
+	conv                 *coding.Conversation
+	ask                  *coding.Questions
+	editor               editor
+	mode                 prompt.Mode
+	run                  *core.Run
+	events               <-chan runEvent
+	stopRun              context.CancelFunc
+	op                   <-chan operationResult
+	stopOp               context.CancelFunc
+	opLabel              string
+	picker               *picker
+	question             *questionForm
+	backgroundEvents     <-chan struct{}
+	stopTerminalResults  chan error
+	stoppingTerminals    bool
+	attachments          []session.Attachment
+	submittedAttachments []session.Attachment
+	pendingDraft         editor
+	attachmentResults    <-chan attachmentResult
 
 	prompts        []string
 	historyAt      int
@@ -335,7 +334,7 @@ func (a *app) install(result operationResult) error {
 	a.picker = nil
 	a.commandMenu = commandMenu{}
 	a.activity.retry = nil
-	a.editor.replace(result.draft)
+	a.setDraft(result.draft, result.attachments)
 	a.view.welcome(a.options.Version, modelLabel(a.conv.Store.Meta()), a.space.Cwd)
 	a.prompts = nil
 	if a.conv.Store.Meta().LegacyPathContext {
@@ -413,14 +412,14 @@ func (a *app) start(text string, review bool) {
 	if fileErr != nil {
 		cancel()
 		a.notice(fileErr)
-		a.editor.replace(text)
+		a.setDraft(text, a.attachments)
 		return
 	}
 	run, err := a.conv.StartWithFiles(ctx, a.mode, text, review, files)
 	if err != nil {
 		cancel()
 		a.notice(err)
-		a.editor.replace(text)
+		a.setDraft(text, a.attachments)
 		return
 	}
 	a.run, a.stopRun = run, cancel
@@ -534,11 +533,24 @@ func (a *app) onRunEvent(update runEvent) {
 		}
 		a.branch = a.space.Branch(a.ctx)
 		if len(a.pendingInput) > 0 {
-			next := strings.Join(a.pendingInput, "\n")
+			draft := a.editor
+			a.editor = editor{}
+			next := a.pendingDraft
 			a.pendingInput = nil
-			a.attachments = append(a.pendingAttachments, a.attachments...)
-			a.pendingAttachments = nil
-			a.start(next, false)
+			a.pendingDraft = editor{}
+			a.attachments = next.imageAttachments()
+			a.start(next.text, false)
+			if a.run != nil {
+				a.editor = draft
+				a.syncDraftImages()
+			} else if !a.editor.appendDraft(draft) {
+				a.pendingDraft = a.editor
+				a.pendingInput = []string{a.editor.text}
+				a.editor = draft
+				a.syncDraftImages()
+			} else {
+				a.syncDraftImages()
+			}
 		}
 		return
 	}
@@ -713,14 +725,21 @@ func (a *app) pane() layout {
 	if a.question != nil {
 		return a.question.layout(p)
 	}
+	matches := a.menuMatches()
 	chrome := min(3, max(0, p.height-1))
+	if len(matches) == 0 && p.height > 4 {
+		chrome++
+	}
 	input := p.inputLayout(a.editor, "Run /review on my current changes", min(7, max(1, p.height-chrome)))
 	var footer []string
-	if matches := a.menuMatches(); len(matches) > 0 {
+	if len(matches) > 0 {
 		menuHeight := max(0, p.height-min(2, chrome)-len(input.rows))
 		footer = a.commandRows(menuHeight)
 	} else if p.height > 3 {
 		footer = []string{a.statusLine()}
+		if p.height > 4 {
+			footer = append(footer, "")
+		}
 	}
 	var lines []string
 	hasActivity := false
@@ -735,7 +754,6 @@ func (a *app) pane() layout {
 	if summary := a.backgroundSummary(); summary != "" && !hasActivity {
 		lines = append(lines, p.style(dim, truncate("  "+summary, p.width)), "")
 	}
-	lines = append(lines, a.attachmentRows()...)
 	borderRows := min(2, max(0, p.height-1))
 	if maxRows := max(0, p.height-borderRows-len(input.rows)-len(footer)); len(lines) > maxRows {
 		lines = lines[len(lines)-maxRows:]

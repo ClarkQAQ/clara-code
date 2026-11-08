@@ -12,6 +12,7 @@ import (
 
 	"clara-code/internal/session"
 	"clara-code/internal/setting"
+	"clara-code/pkg/core/prompt"
 	"clara-code/pkg/model"
 )
 
@@ -30,16 +31,17 @@ func TestImagePasteDraftDeleteAndCapabilityChange(t *testing.T) {
 	if a.attachmentResults == nil {
 		t.Fatal("path paste did not start loading")
 	}
+	a.handle(key{code: "text", text: "after"})
 	select {
 	case result := <-a.attachmentResults:
 		a.acceptAttachments(result)
 	case <-t.Context().Done():
 		t.Fatal(t.Context().Err())
 	}
-	if a.editor.text != "Explain this: " || len(a.attachments) != 1 {
+	if a.editor.text != "Explain this: [Image #1]after" || len(a.attachments) != 1 {
 		t.Fatal("image conversion lost draft", a.editor.text, a.attachments)
 	}
-	if rows := a.attachmentRows(); len(rows) != 2 || !strings.Contains(rows[0], "7x5") {
+	if rows := a.pane().rows; !strings.Contains(strings.Join(rows, "\n"), "❯ Explain this: [Image #1]after") {
 		t.Fatal(rows)
 	}
 	original := append([]session.Attachment(nil), a.attachments...)
@@ -49,7 +51,7 @@ func TestImagePasteDraftDeleteAndCapabilityChange(t *testing.T) {
 		t.Fatal("attachment deletion failed")
 	}
 	a.restoreDraft("retry text", original)
-	if a.editor.text != "Explain this: " || len(a.attachments) != 1 {
+	if a.editor.text != "Explain this: [Image #1]after" || len(a.attachments) != 1 {
 		t.Fatal("retry replaced a newer draft")
 	}
 	a.host.Config.Models["text"] = setting.Model{ID: "text", InputModalities: []string{"text"}}
@@ -58,11 +60,11 @@ func TestImagePasteDraftDeleteAndCapabilityChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.start(a.editor.text, false)
-	if a.run != nil || len(a.attachments) != 1 || a.editor.text != "Explain this: " {
+	if a.run != nil || len(a.attachments) != 1 || a.editor.text != "Explain this: [Image #1]after" {
 		t.Fatal("unsupported submit destroyed the draft")
 	}
 	a.acceptAttachments(attachmentResult{owner: a.conv.Session.ID(), err: errors.New("bad image")})
-	if len(a.attachments) != 1 || a.editor.text != "Explain this: " {
+	if len(a.attachments) != 1 || a.editor.text != "Explain this: [Image #1]after" {
 		t.Fatal("failed loading destroyed draft")
 	}
 }
@@ -104,8 +106,49 @@ func TestNoReasoningModelStillHasSelectableDefault(t *testing.T) {
 func TestInvalidClipboardPathKeepsOriginalText(t *testing.T) {
 	a := testApp(t)
 	a.editor.replace("existing ")
+	a.editor.insertPending("")
 	a.acceptAttachments(attachmentResult{owner: a.conv.Session.ID(), fallback: "/missing/image.png", err: errors.New("missing image")})
 	if a.editor.text != "existing /missing/image.png" {
 		t.Fatal("invalid clipboard path was discarded", a.editor.text)
+	}
+}
+
+func TestLateImageSubmissionKeepsTheNextComposerDraft(t *testing.T) {
+	a := testApp(t)
+	var data bytes.Buffer
+	if err := png.Encode(&data, image.NewRGBA(image.Rect(0, 0, 4, 3))); err != nil {
+		t.Fatal(err)
+	}
+	image, err := session.SaveAttachment(a.host.Config.Home, session.Attachment{Filename: "late.png", MediaType: "image/png"}, data.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := a.conv.Start(t.Context(), prompt.Execute, "initial", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.Wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	a.run = run
+	a.stopRun = func() {}
+	a.setDraft("late [Image #1]", []session.Attachment{image})
+	a.handle(key{code: "enter"})
+	next := image
+	next.Filename = "unsent.png"
+	a.setDraft("unsent [Image #1] text", []session.Attachment{next})
+	a.onRunEvent(runEvent{done: true})
+	if a.run == nil || a.run == run {
+		t.Fatal("late image did not start a new turn")
+	}
+	if _, err := a.run.Wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	turn, err := a.conv.Store.ReadTurn(1)
+	if err != nil || turn.Prompt != "late [Image #1]" || len(turn.Attachments) != 1 || turn.Attachments[0].Filename != "late.png" {
+		t.Fatal("late turn consumed a different draft", turn, err)
+	}
+	if a.editor.text != "unsent [Image #1] text" || len(a.attachments) != 1 || a.attachments[0].Filename != "unsent.png" {
+		t.Fatal("unsubmitted draft was lost", a.editor.text, a.attachments)
 	}
 }
