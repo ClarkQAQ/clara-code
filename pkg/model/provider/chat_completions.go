@@ -230,6 +230,9 @@ func (o languageModel) Provider() string {
 }
 
 func (o languageModel) prepareParams(call yuzu.Call) (*openai.ChatCompletionNewParams, []yuzu.CallWarning, error) {
+	if err := validatePromptRoles(call.Prompt); err != nil {
+		return nil, nil, err
+	}
 	params := &openai.ChatCompletionNewParams{}
 	messages, warnings := o.toPromptFunc(call.Prompt, o.provider, o.modelID)
 	if call.TopK != nil {

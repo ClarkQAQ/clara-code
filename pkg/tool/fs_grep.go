@@ -18,7 +18,7 @@ func (s *Files) Grep() Tool {
 		IncludeIgnored bool     `json:"include_ignored,omitempty" description:"include files excluded by the host search policy; default false"`
 	}
 	return Func(Definition{
-		Name: "grep", Description: `Search ordinary text files and return path:line:text. Use query for the literal text, include for file globs. Example: {"path":"/internal","query":"cursorPosition","include":["*.go"]}. Binary and special files are skipped. Check incomplete-search warnings before concluding text is absent.`,
+		Name: "grep", Description: `Search ordinary text files and return path:line:text. Use query for the literal text, include for file globs. Example: {"path":"internal","query":"cursorPosition","include":["*.go"]}. Binary and special files are skipped. Check incomplete-search warnings before concluding text is absent.`,
 		Effects: []Effect{EffectRead}, ParallelSafe: true,
 	}, func(ctx context.Context, in input) (Result, error) {
 		root, err := s.cleanPath(in.Path)

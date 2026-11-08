@@ -14,6 +14,8 @@ type Usage struct {
 	TotalTokens     int64 `json:"total_tokens"`
 	ReasoningTokens int64 `json:"reasoning_tokens"`
 	CacheReadTokens int64 `json:"cache_read_tokens"`
+	// CacheReadReported distinguishes an explicit zero cache hit from unavailable usage.
+	CacheReadReported bool `json:"cache_read_reported,omitempty"`
 }
 
 func (u Usage) String() string {

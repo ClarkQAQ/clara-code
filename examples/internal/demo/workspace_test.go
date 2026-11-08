@@ -34,10 +34,20 @@ func TestLocalWorkspaceUsesLogicalPaths(t *testing.T) {
 	}
 
 	config.Model = Model{Reply: func(_ context.Context, call model.Call) (model.Response, error) {
-		state, _ := model.AsMessagePart[model.TextPart](call.Prompt[len(call.Prompt)-1].Content[0])
-		if !strings.Contains(state.Text, "workspace root in file tools is /") ||
-			!strings.Contains(state.Text, "Follow the root rules.") || strings.Contains(state.Text, root) {
-			return model.Response{}, fmt.Errorf("unexpected workspace context: %s", state.Text)
+		var state strings.Builder
+		for _, message := range call.Prompt {
+			if message.Metadata == nil || message.Metadata.Kind != "context" {
+				continue
+			}
+			for _, part := range message.Content {
+				if text, ok := model.AsMessagePart[model.TextPart](part); ok {
+					state.WriteString(text.Text)
+				}
+			}
+		}
+		if !strings.Contains(state.String(), "workspace root in file tools is /") ||
+			!strings.Contains(state.String(), "Follow the root rules.") || strings.Contains(state.String(), root) {
+			return model.Response{}, fmt.Errorf("unexpected workspace context: %s", state.String())
 		}
 		return model.Response{
 			FinishReason: model.FinishReasonToolCalls,

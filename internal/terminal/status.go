@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"clara-code/internal/session"
 	"clara-code/pkg/core/prompt"
 	"clara-code/pkg/util/localtime"
 )
@@ -82,6 +83,12 @@ func (a *app) status() string {
 		fields = []string{"state", "model", "context", "directory", "git_branch"}
 	}
 	labels := map[string]string{"state": state, "model": strings.TrimSpace(meta.Model + " " + a.conv.ModeEffort(a.mode)), "context": a.contextLabel(), "directory": filepath.Base(a.space.Root), "git_branch": a.branch}
+	labels["session_cache_efficiency"] = cacheLabel("Session cache", meta.SessionCache)
+	round := "Last round cache"
+	if a.run != nil {
+		round = "Round cache"
+	}
+	labels["round_cache_efficiency"] = cacheLabel(round, meta.RoundCache)
 	var items []string
 	for _, field := range fields {
 		if label := labels[field]; label != "" {
@@ -148,8 +155,16 @@ func (a *app) showStatus() {
 		fmt.Sprintf("Capabilities  reasoning=%v · output=%d · parallel=%s · summary=%s · verbosity=%s", profile.Levels(), profile.MaxOutputTokens, parallelLabel(profile.SupportsParallelToolCalls), profile.DefaultReasoningSummary, profile.DefaultVerbosity),
 		fmt.Sprintf("Provider authentication  configured=%t", auth),
 		"Configuration sources  " + strings.Join(a.host.Config.Sources, " → "), "Mode  " + mode, "Context  " + a.contextLabel(), "Total usage  " + total + " tokens",
+		cacheLabel("Session cache", meta.SessionCache), cacheLabel("Round / last round cache", meta.RoundCache),
 		fmt.Sprintf("MCP  %d configured servers", len(a.conv.MCPStatuses())),
 	}, "\n"))
+}
+
+func cacheLabel(label string, usage session.CacheUsage) string {
+	if efficiency, ok := usage.Efficiency(); ok {
+		return fmt.Sprintf("%s %.1f%%", label, efficiency)
+	}
+	return label + " unknown"
 }
 
 func parallelLabel(value *bool) string {

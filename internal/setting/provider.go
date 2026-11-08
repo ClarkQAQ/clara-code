@@ -48,7 +48,15 @@ func (c Config) Factory() (func(context.Context, string) (model.LanguageModel, e
 	if key == "" && len(c.Providers) == 0 {
 		key = os.Getenv("CLARA_CODE_API_KEY")
 	}
-	client, err := provider.New(provider.WithBaseURL(p.BaseURL), provider.WithAPI(api), provider.WithAPIKey(key), provider.WithHeaders(resolveHeaders(p.HTTPHeaders, p.EnvHTTPHeaders)), provider.WithHTTPClient(requestClient{timeout: time.Duration(p.RequestTimeoutMS) * time.Millisecond, idle: time.Duration(p.StreamIdleTimeoutMS) * time.Millisecond}))
+	reasoningModels := []string{c.DefaultModel}
+	for name, profile := range p.Models {
+		if profile.ID != "" {
+			name = profile.ID
+		}
+		reasoningModels = append(reasoningModels, name)
+	}
+	slices.Sort(reasoningModels)
+	client, err := provider.New(provider.WithBaseURL(p.BaseURL), provider.WithAPI(api), provider.WithAPIKey(key), provider.WithHeaders(resolveHeaders(p.HTTPHeaders, p.EnvHTTPHeaders)), provider.WithReasoningModels(reasoningModels...), provider.WithSystemInstructions(true), provider.WithHTTPClient(requestClient{timeout: time.Duration(p.RequestTimeoutMS) * time.Millisecond, idle: time.Duration(p.StreamIdleTimeoutMS) * time.Millisecond}))
 	if err != nil {
 		return nil, errors.New("invalid provider connection settings")
 	}

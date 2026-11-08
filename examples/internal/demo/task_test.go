@@ -20,8 +20,12 @@ func TestTaskScopeClampsToolsAndVisibility(t *testing.T) {
 	write := tool.NewFiles(storage, nil).Write()
 	manager := tool.NewTaskManager(func(context.Context, tool.TaskSpec, *tool.TaskScope) (tool.TaskSetup, error) {
 		return tool.TaskSetup{
-			Model: Model{Reply: ToolThenText("write", `{"path":"escaped","content":"data"}`)},
-			Tools: []tool.Tool{write},
+			Model:            Model{Reply: ToolThenText("write", `{"path":"escaped","content":"data"}`)},
+			Tools:            []tool.Tool{write},
+			DynamicToolNames: []string{"write"},
+			PrepareStep: func(ctx context.Context, _ core.PrepareStepFunctionOptions) (context.Context, core.PrepareStepResult, error) {
+				return ctx, core.PrepareStepResult{Tools: []core.AgentTool{write}}, nil
+			},
 		}, nil
 	}, 4, 3)
 	scope := manager.Scope(ctx, "main", tool.ScopeOptions{AllowedTools: []string{"read"}})

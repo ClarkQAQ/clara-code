@@ -24,7 +24,7 @@ func (DemoModel) Generate(ctx context.Context, call model.Call) (*model.Response
 		if message.Role == model.MessageRoleSystem && text == prompt.Default("compact") {
 			return demoText("Earlier conversation summarized."), nil
 		}
-		if message.Role == model.MessageRoleUser && !strings.HasPrefix(text, "# Current workspace state") {
+		if message.Role == model.MessageRoleUser && (message.Metadata == nil || message.Metadata.Kind != "context") && !strings.HasPrefix(text, "# Current workspace state") {
 			last = text
 		}
 	}

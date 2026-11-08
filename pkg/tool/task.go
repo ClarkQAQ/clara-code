@@ -44,12 +44,14 @@ type TaskBackend interface {
 }
 
 type TaskSetup struct {
-	MaxRetries   *int
-	Model        model.LanguageModel
-	Tools        []Tool
-	Instructions string
-	PrepareStep  core.PrepareStepFunction
-	Authorize    core.ToolAuthorizer
+	MaxRetries *int
+	Model      model.LanguageModel
+	Tools      []Tool
+	// DynamicToolNames permits preparation-time tools, bounded by the parent scope.
+	DynamicToolNames []string
+	Instructions     string
+	PrepareStep      core.PrepareStepFunction
+	Authorize        core.ToolAuthorizer
 }
 
 type TaskFactory func(context.Context, TaskSpec, *TaskScope) (TaskSetup, error)
@@ -113,25 +115,29 @@ func (s *TaskScope) Spawn(ctx context.Context, spec TaskSpec) (TaskInfo, error) 
 		return TaskInfo{}, err
 	}
 	if s.depth >= s.manager.maxDepth {
-		return TaskInfo{}, errs.New(errs.CodeLimit, "delegation depth reached")
+		return TaskInfo{}, errs.New(errs.CodeLimit, "delegation depth reached; complete this task with the available tools instead of spawning another child")
 	}
-	if !taskNameValid(spec.Name) || spec.Role == "" || strings.TrimSpace(spec.Message) == "" || len(spec.Message) > 256<<10 {
-		return TaskInfo{}, errs.New(errs.CodeInvalidArgument, "invalid delegated task")
+	if err := validateTaskSpec(spec); err != nil {
+		return TaskInfo{}, err
 	}
 	m := s.manager
 	if m.build == nil {
 		return TaskInfo{}, errs.ErrUnsupported
 	}
 	m.mu.Lock()
-	if len(m.tasks) >= 256 || s.lookupLocked(spec.Name) != nil {
+	if s.lookupLocked(spec.Name) != nil {
 		m.mu.Unlock()
-		return TaskInfo{}, errs.ErrConflict
+		return TaskInfo{}, errs.New(errs.CodeConflict, "task_name is already in use; reuse its returned id with followup_task, or choose a different task_name")
+	}
+	if len(m.tasks) >= 256 {
+		m.mu.Unlock()
+		return TaskInfo{}, errs.New(errs.CodeLimit, "task registry is full; close finished tasks before spawning another")
 	}
 	select {
 	case m.slots <- struct{}{}:
 	default:
 		m.mu.Unlock()
-		return TaskInfo{}, errs.ErrBusy
+		return TaskInfo{}, errs.New(errs.CodeBusy, "all child agent slots are occupied; wait_agent for an existing task before spawning another")
 	}
 	info := TaskInfo{ID: id.New("task"), Name: spec.Name, Role: spec.Role, Status: "starting"}
 	entry := &taskEntry{parent: s.id, info: info, done: make(chan struct{})}
@@ -160,6 +166,11 @@ func (s *TaskScope) Spawn(ctx context.Context, spec TaskSpec) (TaskInfo, error) 
 	}
 	initial := s.filter(setup.Tools)
 	child.options.AllowedTools = toolNames(initial)
+	for _, name := range setup.DynamicToolNames {
+		if slices.Contains(s.options.AllowedTools, name) && !slices.Contains(child.options.AllowedTools, name) {
+			child.options.AllowedTools = append(child.options.AllowedTools, name)
+		}
+	}
 	authorize := func(ctx context.Context, tool model.ToolInfo, call model.ToolCall) error {
 		if !slices.Contains(child.options.AllowedTools, tool.Name) {
 			return errs.ErrForbidden
@@ -234,6 +245,22 @@ func toolNames(items []Tool) []string {
 		out = append(out, item.Info().Name)
 	}
 	return out
+}
+
+func validateTaskSpec(spec TaskSpec) error {
+	if !taskNameValid(spec.Name) {
+		return errs.New(errs.CodeInvalidArgument, "task_name must match ^[a-z0-9_]{1,100}$; use repo_survey, not repo-survey. No task was started")
+	}
+	if strings.TrimSpace(spec.Role) == "" {
+		return errs.New(errs.CodeInvalidArgument, "role must be a non-empty host-supported role; consult the host's available roles. No task was started")
+	}
+	if strings.TrimSpace(spec.Message) == "" {
+		return errs.New(errs.CodeInvalidArgument, "message must contain a complete, non-blank task brief. No task was started")
+	}
+	if len(spec.Message) > 256<<10 {
+		return errs.New(errs.CodeInvalidArgument, "message must be at most 262144 UTF-8 bytes (256 KiB). No task was started")
+	}
+	return nil
 }
 
 func taskNameValid(name string) bool {

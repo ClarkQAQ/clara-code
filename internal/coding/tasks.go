@@ -49,7 +49,12 @@ func (c *Conversation) buildTask(ctx context.Context, spec tool.TaskSpec, scope 
 		return tool.TaskSetup{}, errs.New(errs.CodeInvalidArgument, "use general, explorer, reviewer or a configured external ACP role")
 	}
 	items = hostPathTools(items)
-	result := tool.TaskSetup{MaxRetries: c.CurrentConfig().Connection().RequestMaxRetries, Model: model, Tools: items, PrepareStep: c.prepare(mode, role, model, items, nil, false)}
+	assignment := prompt.Fragment{Kind: "task_assignment", Source: "host task manager", Scope: spec.Name, Lifecycle: "session", Role: modelapi.MessageRoleUser, Text: jsonText(struct {
+		Name, Role    string
+		ForkedHistory bool
+	}{spec.Name, role, spec.Fork})}
+	result := tool.TaskSetup{MaxRetries: c.CurrentConfig().Connection().RequestMaxRetries, Model: model, Tools: items, PrepareStep: c.prepare(mode, role, model, items, nil, false, preparation{assignment: &assignment})}
+	result.DynamicToolNames = []string{"image_view", "read_skill", "read_skill_resource"}
 	if mode == prompt.Plan {
 		result.Authorize = tool.PlanOnly
 	}
@@ -71,7 +76,7 @@ func (r *taskRouter) Spawn(ctx context.Context, spec tool.TaskSpec) (tool.TaskIn
 	}
 	for _, task := range tasks {
 		if task.Name == spec.Name && task.Status != "closed" {
-			return tool.TaskInfo{}, errs.ErrConflict
+			return tool.TaskInfo{}, errs.New(errs.CodeConflict, "task_name is already in use; reuse its existing id with followup_task, or choose a different task_name")
 		}
 	}
 	if _, ok := r.external.Agents[spec.Role]; ok {

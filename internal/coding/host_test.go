@@ -149,10 +149,10 @@ func TestPlanOnlyAndProjectInstructions(t *testing.T) {
 	writeTestFile(t, root, ".agents/skills/example/SKILL.md", "---\nname: example\ndescription: project skill\n---\nroot secret")
 	writeTestFile(t, root, "sub/.agents/skills/example/SKILL.md", "---\nname: example\ndescription: nearer skill\n---\nonly load on request")
 	model := fixtureModel{reply: func(call modelapi.Call) (*modelapi.Response, error) {
-		if !strings.Contains(session.Text(call.Prompt[len(call.Prompt)-1]), "global instructions") {
+		if !strings.Contains(contextText(call.Prompt), "global instructions") {
 			return nil, fmt.Errorf("missing global instructions")
 		}
-		dynamic := session.Text(call.Prompt[len(call.Prompt)-1])
+		dynamic := contextText(call.Prompt)
 		for _, expected := range []string{"project instructions", "nearby instructions", "nearer skill"} {
 			if !strings.Contains(dynamic, expected) {
 				return nil, fmt.Errorf("missing %s", expected)
@@ -205,7 +205,7 @@ func TestResumeLockAndForkAfterCompaction(t *testing.T) {
 	if err := c.Compact(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if history := c.Session.Messages(); len(history) != 1 || !strings.Contains(session.Text(history[0]), "summarized") {
+	if history := c.Session.Messages(); len(history) != 3 || !strings.Contains(session.Text(history[0]), "summarized") || session.Text(history[1]) != "second prompt" {
 		t.Fatalf("unexpected compacted history: %v", history)
 	}
 	child, err := c.Store.Fork(t.Context(), 1)

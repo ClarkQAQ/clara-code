@@ -96,10 +96,11 @@ func MaxTokensUsed(maxTokens int64) StopCondition {
 
 // PrepareStepFunctionOptions contains the options for preparing a step in an agent execution.
 type PrepareStepFunctionOptions struct {
-	Steps      []StepResult
-	StepNumber int
-	Model      LanguageModel
-	Messages   []Message
+	Steps        []StepResult
+	StepNumber   int
+	Model        LanguageModel
+	Messages     []Message
+	ContextState json.RawMessage
 }
 
 // PrepareStepResult contains the result of preparing a step in an agent execution.
@@ -114,6 +115,8 @@ type PrepareStepResult struct {
 	ActiveTools     []string
 	DisableAllTools bool
 	Tools           []AgentTool
+	// ContextState checkpoints host state; nil keeps it, JSON null clears it.
+	ContextState json.RawMessage
 }
 
 // ToolCallRepairOptions contains the options for repairing a tool call.
@@ -313,8 +316,9 @@ type AgentStreamCall struct {
 	OnStepFinish    OnStepFinishFunc      // Called when a step finishes
 	OnHistory       func([]Message) error // Checkpoint an intentional history replacement.
 	OnModelMessages func([]Message) error // Checkpoint the model response before dispatch.
-	OnFinish        OnFinishFunc          // Called when entire agent completes
-	OnError         OnErrorFunc           // Called when an error occurs
+	OnContextState  func(json.RawMessage) error
+	OnFinish        OnFinishFunc // Called when entire agent completes
+	OnError         OnErrorFunc  // Called when an error occurs
 
 	// Stream part callbacks - called for each corresponding stream part type
 	OnChunk          OnChunkFunc          // Called for each stream part (catch-all)
@@ -702,6 +706,7 @@ func (a *agent) run(ctx context.Context, opts AgentStreamCall, generate bool) (f
 	var responseMessages []Message
 	var steps []StepResult
 	var totalUsage Usage
+	var contextState json.RawMessage
 	stepCleanup := func() {}
 
 	// Start agent stream
@@ -741,10 +746,11 @@ func (a *agent) run(ctx context.Context, opts AgentStreamCall, generate bool) (f
 		// Apply step preparation if provided
 		if call.PrepareStep != nil {
 			updatedCtx, prepared, err := call.PrepareStep(ctx, PrepareStepFunctionOptions{
-				Model:      stepModel,
-				Steps:      steps,
-				StepNumber: stepNumber,
-				Messages:   stepInputMessages,
+				Model:        stepModel,
+				Steps:        steps,
+				StepNumber:   stepNumber,
+				Messages:     stepInputMessages,
+				ContextState: slices.Clone(contextState),
 			})
 			if err != nil {
 				return nil, err
@@ -771,6 +777,17 @@ func (a *agent) run(ctx context.Context, opts AgentStreamCall, generate bool) (f
 			}
 			if prepared.Messages != nil {
 				stepInputMessages = prepared.Messages
+			}
+			if prepared.ContextState != nil {
+				if len(prepared.ContextState) > MaxContextStateBytes || !json.Valid(prepared.ContextState) {
+					return nil, errors.New("invalid or oversized host context state")
+				}
+				contextState = slices.Clone(prepared.ContextState)
+				if opts.OnContextState != nil {
+					if err := opts.OnContextState(slices.Clone(contextState)); err != nil {
+						return nil, err
+					}
+				}
 			}
 			if prepared.Model != nil {
 				stepModel = prepared.Model
@@ -1633,11 +1650,12 @@ func (a *agent) processStepStream(ctx context.Context, stream StreamResponse, op
 
 func addUsage(a, b Usage) Usage {
 	return Usage{
-		InputTokens:     a.InputTokens + b.InputTokens,
-		OutputTokens:    a.OutputTokens + b.OutputTokens,
-		TotalTokens:     a.TotalTokens + b.TotalTokens,
-		ReasoningTokens: a.ReasoningTokens + b.ReasoningTokens,
-		CacheReadTokens: a.CacheReadTokens + b.CacheReadTokens,
+		InputTokens:       a.InputTokens + b.InputTokens,
+		OutputTokens:      a.OutputTokens + b.OutputTokens,
+		TotalTokens:       a.TotalTokens + b.TotalTokens,
+		ReasoningTokens:   a.ReasoningTokens + b.ReasoningTokens,
+		CacheReadTokens:   a.CacheReadTokens + b.CacheReadTokens,
+		CacheReadReported: (a.CacheReadReported || a.CacheReadTokens > 0 || a == (Usage{})) && (b.CacheReadReported || b.CacheReadTokens > 0),
 	}
 }
 

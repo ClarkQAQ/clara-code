@@ -38,6 +38,9 @@ func (m capabilityModel) options(call model.Call) model.Call {
 	if call.ProviderOptions.ReasoningSummary == nil && m.profile.DefaultReasoningSummary != "" {
 		call.ProviderOptions.ReasoningSummary = new(m.profile.DefaultReasoningSummary)
 	}
+	if call.ProviderOptions.ReasoningSummary != nil && *call.ProviderOptions.ReasoningSummary == "none" {
+		call.ProviderOptions.ReasoningSummary = nil
+	}
 	if call.ProviderOptions.TextVerbosity == nil && m.profile.DefaultVerbosity != "" {
 		call.ProviderOptions.TextVerbosity = new(m.profile.DefaultVerbosity)
 	}
@@ -109,10 +112,10 @@ func (t configuredTool) Info() model.ToolInfo {
 		info.Parallel = false
 	}
 	if info.Name == "exec_command" {
+		info.Description = "Run a shell command. A command still running after yield_seconds returns a session_id. Use write_stdin to read more output, send input, or wait. timeout_seconds " + commandTimeout(t.exec) + "."
 		info.Parameters = maps.Clone(info.Parameters)
 		defaults := map[string]string{"timeout_seconds": "total runtime limit in seconds; omitted: unlimited; maximum 600"}
 		if t.exec.TimeoutSeconds != nil {
-			info.Description = strings.ReplaceAll(info.Description, "Omitted timeout_seconds sets no total deadline in this host.", fmt.Sprintf("Omitted timeout_seconds uses the configured %d-second total deadline.", *t.exec.TimeoutSeconds))
 			defaults["timeout_seconds"] = fmt.Sprintf("total runtime limit in seconds; default %d, maximum 600", *t.exec.TimeoutSeconds)
 		}
 		if t.exec.YieldSeconds > 0 {

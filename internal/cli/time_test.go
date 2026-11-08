@@ -39,31 +39,39 @@ func TestACPModelClockAndPTYStatusFollowTZ(t *testing.T) {
 	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
 		var payload struct {
-			Messages []struct{ Role, Content string }
+			Messages []struct {
+				Role    string
+				Content json.RawMessage
+			}
 		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Error(err)
 		}
 		var clock string
 		for _, message := range payload.Messages {
-			if strings.HasPrefix(message.Content, "# Current workspace state") {
-				clock = message.Content
+			var text string
+			if json.Unmarshal(message.Content, &text) != nil {
+				var blocks []struct{ Text string }
+				if err := json.Unmarshal(message.Content, &blocks); err != nil {
+					t.Error(err)
+				}
+				for _, block := range blocks {
+					text += block.Text + "\n"
+				}
+			}
+			if strings.Contains(text, "<environment_context>") {
+				clock = text
 			}
 		}
-		var stamp string
-		for _, line := range strings.Split(clock, "\n") {
-			if raw, ok := strings.CutPrefix(line, "RFC3339 timestamp: "); ok {
-				stamp = raw
-			}
-		}
-		at, err := time.Parse(time.RFC3339Nano, stamp)
+		zone, err := time.LoadLocation("Asia/Shanghai")
 		if err != nil {
-			t.Errorf("ACP lost current clock: %q %v", stamp, err)
-		} else {
-			_, offset := at.Zone()
-			if offset != 8*3600 || at.Before(before) || at.After(time.Now()) || !strings.Contains(clock, "Local date-time: "+at.Format(time.DateTime)) || !strings.Contains(clock, "Asia/Shanghai (UTC+08:00)") {
-				t.Error("ACP model received incorrect local time", clock)
-			}
+			t.Fatal(err)
+		}
+		if !strings.Contains(clock, "<current_date>"+before.In(zone).Format(time.DateOnly)+"</current_date>") && !strings.Contains(clock, "<current_date>"+time.Now().In(zone).Format(time.DateOnly)+"</current_date>") {
+			t.Error("ACP model received incorrect local date", clock)
+		}
+		if !strings.Contains(clock, "Asia/Shanghai (UTC+08:00)") || strings.Contains(clock, "<timestamp>") || strings.Contains(clock, "<local_datetime>") || strings.Contains(clock, "<message_context>") {
+			t.Error("ACP model environment contains an unexpected clock", clock)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, "data: "+`{"id":"clock","choices":[{"index":0,"delta":{"content":"Local clock verified."},"finish_reason":"stop"}]}`+"\n\ndata: [DONE]\n\n")

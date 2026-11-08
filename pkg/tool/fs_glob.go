@@ -15,7 +15,7 @@ func (s *Files) Glob() Tool {
 		IncludeIgnored bool   `json:"include_ignored,omitempty" description:"include files excluded by the host search policy; default false"`
 	}
 	return Func(Definition{
-		Name: "glob", Description: `Find ordinary files. * and ? match within a component, [abc] matches characters, and a whole ** component matches zero or more directories. Relative patterns with / start at path. Example: {"path":"/internal","pattern":"**/*.go"}. Check incomplete-search warnings before concluding a file does not exist.`,
+		Name: "glob", Description: `Find ordinary files. * and ? match within a component, [abc] matches characters, and a whole ** component matches zero or more directories. Relative patterns with / start at path. Example: {"path":"internal","pattern":"**/*.go"}. Check incomplete-search warnings before concluding a file does not exist.`,
 		Effects: []Effect{EffectRead}, ParallelSafe: true,
 	}, func(ctx context.Context, in input) (Result, error) {
 		root, err := s.cleanPath(in.Path)

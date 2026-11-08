@@ -250,8 +250,9 @@ func (a *app) submit(line string) bool {
 	case "/model":
 		a.chooseModel(arg)
 	case "/compact":
+		mode := a.mode
 		a.operation("Compacting", func(ctx context.Context) operationResult {
-			err := a.conv.Compact(ctx)
+			err := a.conv.Compact(ctx, mode)
 			return operationResult{err: err, label: "Compacted conversation context"}
 		})
 	case "/new":

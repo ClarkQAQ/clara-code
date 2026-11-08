@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"clara-code/pkg/core/prompt"
 	"clara-code/pkg/model"
 	"clara-code/pkg/tool"
 	corefs "clara-code/pkg/tool/fs"
@@ -123,27 +124,35 @@ func (w Workspace) directories() []string {
 	return dirs
 }
 
-func (w Workspace) rules(ctx context.Context, home string) (string, error) {
-	var global string
-	for _, name := range []string{"AGENTS.override.md", "AGENTS.md"} {
-		path := filepath.Join(home, name)
-		body, err := boundedFile(path, 32<<10)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
+func (w Workspace) instructionFragments(ctx context.Context, home string) ([]prompt.Fragment, error) {
+	var fragments []prompt.Fragment
+	remaining := int64(32 << 10)
+	for index, dir := range append([]string{home}, w.directories()...) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-		if err != nil {
-			return "", err
+		if index == 1 {
+			remaining = 32 << 10
 		}
-		global = path + "\n" + string(body)
-		break
+		for _, name := range []string{"AGENTS.override.md", "AGENTS.md"} {
+			path := filepath.Join(dir, name)
+			body, err := boundedFile(path, remaining)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			remaining -= int64(len(body))
+			kind, scope := "workspace_instructions", dir
+			if index == 0 {
+				kind, scope = "global_instructions", "all workspaces"
+			}
+			fragments = append(fragments, prompt.Fragment{Kind: kind, Source: path, Scope: scope, Lifecycle: "step", Role: model.MessageRoleUser, Text: string(body)})
+			break
+		}
 	}
-	rel, err := filepath.Rel(w.Root, w.Cwd)
-	if err != nil {
-		return "", err
-	}
-	target := corefs.Path("/" + filepath.ToSlash(filepath.Join(rel, ".clara-code-context")))
-	project, err := corefs.Instructions(ctx, w.FS, target)
-	return strings.TrimSpace(strings.Join([]string{global, project}, "\n\n")), err
+	return fragments, nil
 }
 
 type Skill struct {

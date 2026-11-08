@@ -3615,8 +3615,9 @@ type ResponseUsage struct {
 }
 
 type ResponseUsageInputTokensDetails struct {
-	CacheWriteTokens int64 `json:"cache_write_tokens"`
-	CachedTokens     int64 `json:"cached_tokens"`
+	CacheWriteTokens     int64 `json:"cache_write_tokens"`
+	CachedTokens         int64 `json:"cached_tokens"`
+	CachedTokensReported bool  `json:"-"`
 }
 
 type ResponseUsageOutputTokensDetails struct {

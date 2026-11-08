@@ -23,6 +23,8 @@ type State struct {
 	Pending   []Pending
 	Staged    []model.Message
 	ActiveRun string
+	// ContextState is optional host-owned model-window state, separate from Messages.
+	ContextState json.RawMessage `json:",omitempty"`
 }
 
 // Store persists generic state. Save replaces the previous revision atomically.
@@ -32,6 +34,8 @@ type Store interface {
 }
 
 const MaxStateBytes = 48 << 20
+
+const MaxContextStateBytes = 8 << 20
 
 type MemoryStore struct {
 	mu        sync.Mutex

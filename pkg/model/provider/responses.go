@@ -29,8 +29,9 @@ type responsesLanguageModel struct {
 	replayReasoning bool
 	// reasoningModel marks a model this deployment declared as one that takes a
 	// reasoning setting, whatever its name looks like.
-	reasoningModel bool
-	headerFunc     LanguageModelHeaderFunc
+	reasoningModel     bool
+	systemInstructions bool
+	headerFunc         LanguageModelHeaderFunc
 }
 
 // newResponsesLanguageModel implements a responses api model.
@@ -152,6 +153,29 @@ const (
 )
 
 func (o responsesLanguageModel) prepareParams(call yuzu.Call) (*openai.ResponseNewParams, []yuzu.CallWarning, error) {
+	if o.systemInstructions {
+		var texts []string
+		cut := 0
+		for cut < len(call.Prompt) && call.Prompt[cut].Role == yuzu.MessageRoleSystem {
+			for _, part := range call.Prompt[cut].Content {
+				text, ok := yuzu.AsMessagePart[yuzu.TextPart](part)
+				if !ok {
+					return nil, nil, errors.New("responses instructions require text-only system messages")
+				}
+				texts = append(texts, text.Text)
+			}
+			cut++
+		}
+		if cut > 0 {
+			if call.ProviderOptions.Instructions == nil {
+				call.ProviderOptions.Instructions = new(strings.Join(texts, "\n\n"))
+			}
+			call.Prompt = call.Prompt[cut:]
+		}
+	}
+	if err := validatePromptRoles(call.Prompt); err != nil {
+		return nil, nil, err
+	}
 	var warnings []yuzu.CallWarning
 	params := &openai.ResponseNewParams{}
 
@@ -179,6 +203,15 @@ func (o responsesLanguageModel) prepareParams(call yuzu.Call) (*openai.ResponseN
 	}
 
 	providerOptions := call.ProviderOptions
+	if providerOptions.ReasoningSummary != nil {
+		switch *providerOptions.ReasoningSummary {
+		case "", "none":
+			providerOptions.ReasoningSummary = nil
+		case "auto", "concise", "detailed":
+		default:
+			return nil, nil, errors.New("reasoning.summary must be auto, concise, detailed, or none (disabled)")
+		}
+	}
 	warnings = append(warnings, settingsWarnings(unsupportedResponsesSettings(providerOptions))...)
 
 	if providerOptions.Store != nil {
@@ -317,7 +350,7 @@ func (o responsesLanguageModel) prepareParams(call yuzu.Call) (*openai.ResponseN
 				Details: "topP is not supported for reasoning models",
 			})
 		}
-	} else {
+	} else if !o.reasoningModel {
 		if providerOptions.ReasoningEffort != nil {
 			warnings = append(warnings, yuzu.CallWarning{
 				Type:    yuzu.CallWarningTypeUnsupportedSetting,
@@ -369,7 +402,7 @@ func (o responsesLanguageModel) prepareParams(call yuzu.Call) (*openai.ResponseN
 func validatePreviousResponseIDPrompt(prompt yuzu.Prompt) error {
 	for _, msg := range prompt {
 		switch msg.Role {
-		case yuzu.MessageRoleSystem, yuzu.MessageRoleUser:
+		case yuzu.MessageRoleSystem, yuzu.MessageRoleDeveloper, yuzu.MessageRoleUser:
 			continue
 		default:
 			return errors.New(previousResponseIDHistoryError)
@@ -386,9 +419,10 @@ func responsesUsage(resp openai.Response) yuzu.Usage {
 	// OpenAI reports input_tokens INCLUDING cached tokens. Subtract to avoid double-counting.
 	inputTokens := max(resp.Usage.InputTokens-resp.Usage.InputTokensDetails.CachedTokens, 0)
 	usage := yuzu.Usage{
-		InputTokens:  inputTokens,
-		OutputTokens: resp.Usage.OutputTokens,
-		TotalTokens:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
+		InputTokens:       inputTokens,
+		OutputTokens:      resp.Usage.OutputTokens,
+		TotalTokens:       resp.Usage.InputTokens + resp.Usage.OutputTokens,
+		CacheReadReported: resp.Usage.InputTokensDetails.CachedTokensReported || resp.Usage.InputTokensDetails.CachedTokens > 0,
 	}
 	if resp.Usage.OutputTokensDetails.ReasoningTokens != 0 {
 		usage.ReasoningTokens = resp.Usage.OutputTokensDetails.ReasoningTokens
@@ -420,8 +454,9 @@ func toResponsesPrompt(prompt yuzu.Prompt, options responsesPromptOptions) (open
 
 	for _, msg := range prompt {
 		switch msg.Role {
-		case yuzu.MessageRoleSystem:
+		case yuzu.MessageRoleSystem, yuzu.MessageRoleDeveloper:
 			var systemText string
+			var blocks openai.ResponseInputMessageContentListParam
 			for _, c := range msg.Content {
 				if c.GetType() != yuzu.ContentTypeText {
 					warnings = append(warnings, yuzu.CallWarning{
@@ -440,6 +475,7 @@ func toResponsesPrompt(prompt yuzu.Prompt, options responsesPromptOptions) (open
 				}
 				if strings.TrimSpace(textPart.Text) != "" {
 					systemText += textPart.Text
+					blocks = append(blocks, openai.ResponseInputContentUnionParam{OfInputText: &openai.ResponseInputTextParam{Type: "input_text", Text: textPart.Text}})
 				}
 			}
 
@@ -451,7 +487,12 @@ func toResponsesPrompt(prompt yuzu.Prompt, options responsesPromptOptions) (open
 				continue
 			}
 
-			switch systemMessageMode {
+			mode := systemMessageMode
+			if msg.Role == yuzu.MessageRoleDeveloper {
+				input = append(input, openai.ResponseInputItemParamOfMessage(blocks, openai.EasyInputMessageRoleDeveloper))
+				continue
+			}
+			switch mode {
 			case "system":
 				input = append(input, openai.ResponseInputItemParamOfMessage(systemText, openai.EasyInputMessageRoleSystem))
 			case "developer":

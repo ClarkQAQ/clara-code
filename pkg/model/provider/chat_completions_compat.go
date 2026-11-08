@@ -152,7 +152,7 @@ func DefaultToPrompt(prompt yuzu.Prompt, _, _ string) ([]openai.ChatCompletionMe
 
 	for _, msg := range prompt {
 		switch msg.Role {
-		case yuzu.MessageRoleSystem:
+		case yuzu.MessageRoleSystem, yuzu.MessageRoleDeveloper:
 			var blocks []openai.ChatCompletionContentPartTextParam
 			useArrayForm := false
 
@@ -189,7 +189,17 @@ func DefaultToPrompt(prompt yuzu.Prompt, _, _ string) ([]openai.ChatCompletionMe
 				continue
 			}
 
-			if useArrayForm {
+			if msg.Role == yuzu.MessageRoleDeveloper {
+				if useArrayForm || len(blocks) > 1 {
+					messages = append(messages, openai.DeveloperMessage(blocks))
+				} else {
+					texts := make([]string, len(blocks))
+					for i, block := range blocks {
+						texts[i] = block.Text
+					}
+					messages = append(messages, openai.DeveloperMessage(strings.Join(texts, "\n")))
+				}
+			} else if useArrayForm {
 				messages = append(messages, openai.SystemMessage(blocks))
 			} else {
 				texts := make([]string, len(blocks))

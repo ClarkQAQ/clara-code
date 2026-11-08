@@ -18,3 +18,15 @@ The wire types of the yuzu/openai package are derived from the OpenAI Go SDK
 (https://github.com/openai/openai-go), which is licensed under the Apache
 License, Version 2.0. Their field names and JSON encodings are kept identical
 so that requests and responses stay compatible with the OpenAI API.
+
+---
+
+The base prompt in pkg/core/prompt/base.md is adapted from OpenAI Codex,
+crates/models-manager/prompt.md, as present in the local Gulugulu Codex
+revision 75bf850427054ad7ed144324f35ca8120405c7d5.
+OpenAI Codex
+Copyright 2025 OpenAI
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+Adaptations include Clara identity, actual tools, progress messages, native-path
+editing, authorization and host-specific conventions. No reference-project
+instruction file is used as authority for Clara's runtime configuration.

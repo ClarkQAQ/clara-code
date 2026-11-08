@@ -66,6 +66,20 @@ The module currently uses the short path `clara-code`. Independent projects can 
 - `tool.PlanOnly` enforces authorization at execution, while `tool.PlanTools` filters tool definitions. Execution checklists use a separate `PlanStore`. Hosts integrate `Goal` through `Start`, `NextTurn`, and `Charge`. A `TaskManager` factory creates child sessions, with each scope restricted by its parent's allowed tool list.
 - `pkg/core/prompt` supplies embedded fragments, dynamic context, and optional compaction. Terminal and Web examples enable compaction with `-context-bytes`. Custom hosts can use `Compactor` in `PrepareStep`. Plan, Goal, and subtask state in these examples belong to the current host process. Persisted sessions retain the generic transcript and events.
 
+For layered prompts, use `prompt.Instructions` for stable base text and `prompt.Policy` for capability sections. Load a `prompt.Window` with `prompt.LoadWindow(step.ContextState)`, call `Window.Prepare` with the durable transcript and current `Fragment` values, and return the marshalled candidate through `PrepareStepResult.ContextState`. Unchanged rules remain in the initial prefix; changes are anchored at safe transcript boundaries. The `prompt.Prepare` helper supplies this flow. The stateless `Assemble` and string-based entry points remain available for existing hosts.
+
+`core.State.ContextState` is optional opaque JSON, bounded to 8 MiB and stored separately from `Messages`. The session checkpoints it before model dispatch and exposes a copy through `Session.ContextState()`. Persistence failure prevents dispatch and retains the previous checkpoint. JSON null resets host context. `model.NewDeveloperMessage` is supported by both protocols; management metadata stays off wire. Keep `PrepareStepResult.Messages` request-only and use `History` only for durable transcript replacement. Transcript replacement resets the old context window before installing its replacement.
+
+`provider.WithSystemInstructions(true)` moves leading Responses system text to the top-level `instructions` field and removes the duplicate input messages. An explicit `ProviderOptions.Instructions` takes precedence. Clara enables the option; other hosts retain the default mapping and Completions is unchanged.
+
+A task factory can declare `TaskSetup.DynamicToolNames` for tools added later by `PrepareStep`, such as discovered skills. Names are intersected with the parent scope's allowlist and execution authorization still applies. Undeclared or parent-forbidden tools remain unavailable; declaring a name does not itself add a tool definition.
+
+`prompt.Compactor` supports `BudgetTokens`, `BudgetBytes`, request-only `Context`, modality `Project`, and explicit `Force`. Token limits exclude the caller's output reservation. `prompt.Measure` returns conservative byte/token estimates, separately from actual usage. Compaction preserves the latest turn and media, rejects incomplete summaries and unpaired tools, and returns a replacement only after validation. See [Prompt and Context Architecture](PROMPTS.md) for composition, compatibility and the local Codex comparison.
+
+Window-based hosts use `Compactor.Assemble` to budget the complete rendered request and `Compactor.Transcript` with `Window.Prefix` to restore historical context for summarization. The latter excludes updates belonging to the retained recent turn. Internal message metadata is removed from the serialized summary transcript. After successful compaction, install a fresh window for the replacement history; ordinary recovery can reuse a window whose transcript fingerprint still matches.
+
+`model.Usage.InputTokens` excludes `CacheReadTokens`; add them for the full input denominator. Optional `CacheReadReported` distinguishes an explicit zero cache hit from omitted usage. Positive cache counts in older records remain usable evidence of reporting. Both provider protocols preserve this distinction. Step-completion events are saved with their transcript checkpoint so host usage views can update before the next model request. Clara's cache rollups are application state, not Core policy.
+
 Model tools require strict JSON objects as arguments. Structured streaming previews are emitted only after the accumulated content passes JSON and schema validation; the final result is validated again after a normal termination event. Hosts can explicitly configure `RepairToolCall` or `RepairText`. Session files and event JSON formats remain compatible.
 
 ACP entry points live in `clara-code/pkg/core`; the task adapter is `tool.NewACPTaskBackend`. Import MCP connection management from `clara-code/pkg/tool/mcp` and Relay from `clara-code/pkg/model/relay`.
@@ -92,7 +106,7 @@ Search reads only regular text files and skips symbolic links, sockets, FIFOs, d
 
 Core does not depend on Git or apply ignore rules by default. Hosts can set `Files.SearchSource` before using the tools to supply a filtered filesystem for each search. The model tool's `include_ignored` value is passed to that policy; without a policy, the search scope is unchanged. Direct reads and file mutations do not use the search policy. Argument validation remains strict and reports the tool name, error reason, allowed fields, and required fields. The model or host must explicitly correct failed calls.
 
-The `stat` tool's `modified` value uses RFC3339Nano with `Z` or an explicit offset, preserving the file timestamp's instant and fractional-second precision. Structured timestamps for events, files, and background terminals continue to use `time.Time` RFC3339 JSON encoding. Hosts handle UI localization and provide the current clock to the model. The default compaction prompt preserves the meaning of historical dates and time zones and prevents old clock snapshots from becoming the summary's current time. PDF creation dates retain their dedicated format with an explicit UTC marker ([ISO 32000-1 section 7.9.4](https://opensource.adobe.com/dc-acrobat-sdk-docs/standards/pdfstandards/pdf/PDF32000_2008.pdf)).
+The `stat` tool's `modified` value uses RFC3339Nano with `Z` or an explicit offset, preserving the file timestamp's instant and fractional-second precision. Structured timestamps for events, files, and background terminals continue to use `time.Time` RFC3339 JSON encoding. Hosts handle UI localization and decide which date/time context to supply to the model. The public base prompt uses the latest supplied date and time zone without inventing an exact current time or message sending times. The default compaction prompt preserves the meaning of historical dates and time zones and prevents old clock snapshots from becoming the summary's current time. PDF creation dates retain their dedicated format with an explicit UTC marker ([ISO 32000-1 section 7.9.4](https://opensource.adobe.com/dc-acrobat-sdk-docs/standards/pdfstandards/pdf/PDF32000_2008.pdf)).
 
 ## Examples and Checks
 
@@ -116,3 +130,56 @@ make check
 `model.FilePart` and media tool results carry standard bytes and MIME types. Core does not know about Clara attachment directories. Hosts may normalize new input with the optional `ACPBinding.PrepareInput` hook before an ACP prompt is accepted. Image-only prompts are valid. Hosts should reject unsupported new images and project historical media into text-only request copies without changing persisted history.
 
 Model capabilities, provider catalogs, layered TOML configuration, clipboard adapters, and content-addressed storage are Clara application policy in `internal`. Public providers continue to accept ordinary `model.Call` options for output limits, reasoning, summaries, verbosity, and parallel calls. `tool.TaskSetup.MaxRetries` optionally supplies a child agent's retry budget; nil retains Core defaults. Neither hook requires application imports from public packages.
+
+
+## Reusable environment context
+
+`prompt.Environment` contains optional `Cwd`, `Shell`, `CurrentDate`, `Timezone`,
+`WorkspaceRoots`, and `FileSystemAccess` fields. Hosts discover their own values;
+the package does not inspect the OS, read Clara configuration, or choose access
+policy. `FileSystemAccess` describes the enforced boundary (Clara uses
+`unrestricted` or `read_only`), while roots describe the workspace rather than
+limiting native paths. This is model context, not an authorization mechanism.
+
+```go
+environment := prompt.Environment{
+    Cwd: "/work/repo", Shell: "bash",
+    CurrentDate: "2026-11-09", Timezone: "Asia/Shanghai (UTC+08:00)",
+    WorkspaceRoots: []string{"/work/repo"}, FileSystemAccess: "read_only",
+}
+fragments := append(prompt.Policy(config), environment.Fragments()...)
+messages, next, err := window.Prepare(history, fragments)
+```
+
+Fields have deterministic order, empty values are omitted, and text values are
+escaped, including roots inside the filesystem block. `Window` compares fields
+independently and emits only actual changes. Keep the same environment date
+throughout a local day; do not add precision to trigger a new delta every step.
+Other existing Fragment/Window and string-based prompt APIs remain available.
+
+
+## Delegated task contracts
+
+`tool.SpawnAgent` starts a child asynchronously; `tool.RunTask` starts one and
+waits for its result. Both expose the same schema: `task_name` matches
+`^[a-z0-9_]{1,100}$` (for example `repo_survey`, never `repo-survey`), `role`
+is a required host-supported role, and `message` is a non-blank complete brief
+of at most 262144 UTF-8 bytes. `TaskScope.Spawn` enforces these constraints for
+direct callers too. Invalid calls identify the rejected field and start no child;
+names are never silently normalized. Duplicate names within a scope require
+reusing the existing child or choosing another name.
+
+Model and reasoning overrides are optional; omit them for host defaults.
+`fork_history` defaults to false. A history fork copies conversation, not tools,
+permissions or live processes. Hosts define their own roles and authorization.
+Clara offers `general` for implementation and `explorer`/`reviewer` for read-only
+file inspection without Shell. Configured external ACP roles do not support
+model, reasoning or history overrides.
+
+Use the returned task ID as `target` for control tools. `wait_agent.timeout_ms`
+is milliseconds, capped at 600000; omitted/non-positive uses 10 minutes.
+A wait timeout does not cancel the child. `list_agents` locates existing tasks;
+retry waiting instead of spawning duplicate work. `send_message` steers a running
+turn; `followup_task` also restarts finished children. `interrupt_agent` retains
+the session for follow-up; `close_agent` cancels and releases it and descendants.
+Collect and verify results before closing. `subagent_task` does not close children.

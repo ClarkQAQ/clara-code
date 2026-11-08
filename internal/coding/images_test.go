@@ -105,6 +105,7 @@ func TestImageAttachmentRecoveryForkAndTextModelProjection(t *testing.T) {
 	if !bytes.Equal(restored.Session.Messages()[0].Content[1].(model.FilePart).Data, files[0].Data) {
 		t.Fatal("image did not survive recovery")
 	}
+	finish(t, restored, prompt.Execute, "Continue with these findings.")
 	if err := restored.Compact(t.Context()); err != nil {
 		t.Fatal(err)
 	}

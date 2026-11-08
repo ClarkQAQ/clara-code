@@ -155,13 +155,12 @@ func (h *Conversation) prepare(mode prompt.Mode, role string, registered []core.
 			items = tool.PlanTools(items)
 		}
 		config := prompt.Config{Mode: mode, Tools: items, Role: role}
-		system := prompt.System(config)
+		system, _ := prompt.Instructions(config)
 		state := prompt.Context{Workspace: h.config.Workspace}
 		rules, err := fs.Instructions(ctx, h.storage, "/")
 		if err != nil {
 			return ctx, core.PrepareStepResult{}, err
 		}
-		state.Rules = rules
 		if plan != nil {
 			checklist, err := plan.GetPlan(ctx)
 			if err != nil {
@@ -186,21 +185,37 @@ func (h *Conversation) prepare(mode prompt.Mode, role string, registered []core.
 				state.Tasks = asJSON(tasks)
 			}
 		}
-		dynamic := state.Message()
+		fragments := append(prompt.Policy(config), []prompt.Fragment{
+			{Kind: "workspace_instructions", Source: "fs_instructions", Scope: h.config.Workspace, Lifecycle: "step", Role: modelapi.MessageRoleUser, Text: rules},
+			{Kind: "workspace_state", Source: "example host", Lifecycle: "step", Role: modelapi.MessageRoleUser, Text: state.Message().Content[0].(modelapi.TextPart).Text},
+		}...)
+		window, err := prompt.LoadWindow(step.ContextState)
+		if err != nil {
+			return ctx, core.PrepareStepResult{}, err
+		}
+		request, next, err := window.Prepare(step.Messages, fragments)
+		if err != nil {
+			return ctx, core.PrepareStepResult{}, err
+		}
 		compactor := h.config.Compact
-		if compactor.BudgetBytes > 0 {
-			if size := len(asJSON(dynamic)); size >= compactor.BudgetBytes {
-				return ctx, core.PrepareStepResult{}, errors.New("workspace state exceeds prompt budget")
-			} else {
-				compactor.BudgetBytes -= size
-			}
+		compactor.Transcript = next.Prefix
+		compactor.Assemble = func(history []modelapi.Message) ([]modelapi.Message, error) {
+			messages, _, err := window.Prepare(history, fragments)
+			return messages, err
 		}
 		history, err := compactor.Fit(ctx, step.Model, system, step.Messages, items)
-		replacement := history
-		if history == nil {
-			history = step.Messages
+		if err != nil {
+			return ctx, core.PrepareStepResult{}, err
 		}
-		return ctx, core.PrepareStepResult{System: &system, Tools: items, History: replacement, Messages: append(history, dynamic)}, err
+		replacement := history
+		if history != nil {
+			request, next, err = (prompt.Window{}).Prepare(history, fragments)
+			if err != nil {
+				return ctx, core.PrepareStepResult{}, err
+			}
+		}
+		checkpoint, err := next.Marshal()
+		return ctx, core.PrepareStepResult{System: &system, Tools: items, History: replacement, Messages: request, ContextState: checkpoint}, err
 	}
 }
 

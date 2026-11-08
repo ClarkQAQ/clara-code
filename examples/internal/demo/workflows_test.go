@@ -28,6 +28,19 @@ func TestPlanAndGoalUseHostHooks(t *testing.T) {
 	storage := memory.New()
 	asked := false
 	model := Model{Reply: func(_ context.Context, call modelapi.Call) (modelapi.Response, error) {
+		planning := false
+		for _, message := range call.Prompt {
+			if message.Role == modelapi.MessageRoleUser && (message.Metadata == nil || message.Metadata.Kind != "context") {
+				for _, part := range message.Content {
+					if text, ok := modelapi.AsMessagePart[modelapi.TextPart](part); ok {
+						planning = strings.Contains(text.Text, "Plan an implementation.")
+					}
+				}
+			}
+		}
+		if !planning {
+			return Text("continue"), nil
+		}
 		for _, message := range call.Prompt {
 			for _, part := range message.Content {
 				if text, ok := modelapi.AsMessagePart[modelapi.TextPart](part); ok && strings.Contains(text.Text, "Plan Mode") {

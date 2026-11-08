@@ -122,7 +122,7 @@ func (h Host) Open(ctx context.Context, workspace Workspace, store *session.Stor
 	for _, tool := range append(slices.Clone(c.items), taskTools(&toolapi.TaskScope{})...) {
 		allowed = append(allowed, tool.Info().Name)
 	}
-	allowed = append(allowed, "image_view")
+	allowed = append(allowed, "image_view", "read_skill", "read_skill_resource")
 	c.tasks = manager.Scope(lifetime, "", toolapi.ScopeOptions{
 		AllowedTools: allowed,
 		History: func() []modelapi.Message {
@@ -348,7 +348,7 @@ func (c *Conversation) StartWithFiles(ctx context.Context, mode prompt.Mode, tex
 		return nil, err
 	}
 	if session.MediaBytes(c.Session.Messages()) > 16<<20 {
-		if err := c.Compact(ctx); err != nil {
+		if err := c.Compact(ctx, mode); err != nil {
 			return nil, err
 		}
 	}
@@ -361,48 +361,36 @@ func (c *Conversation) StartWithFiles(ctx context.Context, mode prompt.Mode, tex
 	return c.Session.Start(ctx, call)
 }
 
-func (c *Conversation) prepare(mode prompt.Mode, role string, model modelapi.LanguageModel, registered []modelapi.AgentTool, plan *toolapi.MemoryPlan, foreground bool) core.PrepareStepFunction {
-	var inputs *promptInputs
+type preparation struct {
+	compact    bool
+	assignment *prompt.Fragment
+}
+
+func (c *Conversation) prepare(mode prompt.Mode, role string, model modelapi.LanguageModel, registered []modelapi.AgentTool, plan *toolapi.MemoryPlan, foreground bool, options ...preparation) core.PrepareStepFunction {
+	var previousEstimate int64
 	return func(ctx context.Context, step core.PrepareStepFunctionOptions) (context.Context, core.PrepareStepResult, error) {
-		if inputs == nil || step.StepNumber == 0 {
-			rules, err := c.Workspace.rules(ctx, c.Host.Config.Home)
-			if err != nil {
-				return ctx, core.PrepareStepResult{}, err
-			}
-			skills, skillTool, err := c.Workspace.skills(ctx, c.Host.Config.Home)
-			if err != nil {
-				return ctx, core.PrepareStepResult{}, err
-			}
-			inputs = &promptInputs{rules, skills, skillTool}
+		rules, err := c.Workspace.instructionFragments(ctx, c.Host.Config.Home)
+		if err != nil {
+			return ctx, core.PrepareStepResult{}, err
+		}
+		skills, skillTools, err := c.Workspace.skills(ctx, c.Host.Config.Home)
+		if err != nil {
+			return ctx, core.PrepareStepResult{}, err
 		}
 		profile := profileOf(model)
 		items := slices.Clone(registered)
 		if profile.Images() {
 			items = append(items, c.imageTool(profile))
 		}
-		if inputs.tool != nil {
-			items = append(items, inputs.tool...)
+		if skillTools != nil {
+			items = append(items, skillTools...)
 		}
 		if foreground && mode == prompt.Execute {
 			items = append(items, c.mcp.Tools()...)
 		}
 		items = c.configureTools(items, profile)
 		overrides := map[string]string{}
-		for _, fragment := range []string{"search", "hashline", "commands"} {
-			body := strings.ReplaceAll(prompt.Default(fragment), `"path":"/`, `"path":"`)
-			body = strings.ReplaceAll(body, "[/main.go#", "[/absolute/path/main.go#")
-			body = strings.ReplaceAll(body, "logical workspace paths", "real host paths")
-			body = strings.ReplaceAll(body, "workspace root", "system filesystem root")
-			body = strings.ReplaceAll(body, "timeout_seconds defaults to 600 and has a maximum of 600", "timeout_seconds is optional in Clara Code; omission sets no total deadline, and explicit values up to 600 seconds still apply")
-			overrides[fragment] = body
-		}
-		if defaults := c.Host.Config.Tools.Exec; defaults.TimeoutSeconds != nil {
-			overrides["commands"] = strings.ReplaceAll(overrides["commands"], "omission sets no total deadline", fmt.Sprintf("omission uses the configured %d-second total deadline", *defaults.TimeoutSeconds))
-		}
-		if yield := c.Host.Config.Tools.Exec.YieldSeconds; yield > 0 {
-			overrides["commands"] = strings.ReplaceAll(overrides["commands"], "yield_seconds defaults to 5 for exec_command", fmt.Sprintf("yield_seconds defaults to %d for exec_command", yield))
-		}
-		overrides["commands"] += "\nDetached terminals belong to this Clara session, including terminals started by subagents. Canceling a turn or write_stdin wait leaves detached terminals running. Check their latest status before polling or restarting; do not restart a terminal explicitly stopped by the user unless requested. Automatic observation does not consume unread output or start a new turn."
+		overrides["tasks"] = prompt.Default("tasks") + "\n\nClara built-in roles: general can implement changes and run commands; explorer and reviewer are read-only and cannot run Shell commands. Configured external ACP roles are listed separately when available. Do not invent roles such as worker or planner. A minimal read-only delegation is spawn_agent {\"task_name\":\"repo_survey\",\"role\":\"explorer\",\"message\":\"Inspect go.mod and the top-level directories using file tools. Do not modify files. Report the module name and directory responsibilities with supporting paths.\"}. After it returns an id, wait with wait_agent {\"target\":\"<returned id>\",\"timeout_ms\":10000}. Use the returned id, not the placeholder."
 		overrides["workspace_rules"] = prompt.Default("workspace_rules") + "\nClara Code already injects global instructions and current-directory project rules. fs_instructions queries project files only; no project instructions does not mean no global instructions. For new files, query the destination path before writing."
 		if role == "reviewer" && foreground {
 			items = append(items, c.Workspace.reviewTool())
@@ -412,10 +400,12 @@ func (c *Conversation) prepare(mode prompt.Mode, role string, model modelapi.Lan
 		if mode == prompt.Plan {
 			items = toolapi.PlanTools(items)
 		}
-		overrides["base"] = prompt.Default("base") + "\n\nBefore substantial tool work, give a short natural-language update describing your next action. After important findings or tool failures, briefly explain what changed and what you will do next. Keep these updates concise and separate from the final result."
-		overrides["base"] += "\n" + timeInstructions
-		system := prompt.System(prompt.Config{Mode: mode, Role: role, Tools: items, Overrides: overrides})
-		state := prompt.Context{Workspace: c.Workspace.Cwd, Rules: inputs.rules}
+		config := prompt.Config{Mode: mode, Role: role, Tools: items, Overrides: overrides, Parameters: c.promptParameters()}
+		system, _ := prompt.Instructions(config)
+		fragments := append(c.hostPolicies(mode, role, foreground), prompt.Policy(config)...)
+		fragments = append(fragments, rules...)
+		fragments = append(fragments, c.environmentFragments(mode)...)
+		state := prompt.Context{}
 		if plan != nil {
 			list, err := plan.GetPlan(ctx)
 			if err != nil {
@@ -436,16 +426,21 @@ func (c *Conversation) prepare(mode prompt.Mode, role string, model modelapi.Lan
 				state.Tasks = jsonText(tasks)
 			}
 		}
-		dynamic := state.Message()
-		body := session.Text(dynamic)
-		body += timeContext(c.Host.currentTime())
-		body += "\nBackground terminals in this process (old session IDs cannot be resumed after restart):\n" + jsonText(c.terminalSummaries())
-		body += "\nSearch tools follow the target repository Git ignore rules by default. Use include_ignored=true to include ignored files. Default recursive searches skip Git metadata and submodules; an explicit root inside them is allowed. Omitted search paths mean the current working directory.\nProject root: " + c.Workspace.Root + "\nFile tools and Shell use real host paths with current-user OS permissions. Relative paths and workdir start at the current working directory; absolute paths are native; / is the system root; ~/ expands to home. Use the real absolute headers returned by anchored reads for Hashline edits."
-		if c.Store.Meta().LegacyPathContext {
-			body += "\nPath migration: older transcript entries used /foo to mean a file under " + c.Workspace.Root + ". That old virtual mapping no longer applies. Re-resolve the intended target and read it again before editing; old snapshots are invalid. New calls always use native host paths."
+		for _, item := range []struct{ kind, text string }{{"plan", state.Plan}, {"goal", state.Goal}, {"tasks", state.Tasks}} {
+			fragments = append(fragments, prompt.Fragment{Kind: item.kind, Source: "host", Lifecycle: "step", Role: modelapi.MessageRoleUser, Text: item.text})
 		}
-		if len(inputs.skills) > 0 {
-			body += "\n## Available skills\n" + jsonText(inputs.skills)
+		if terminals := c.terminalSummaries(); len(terminals) > 0 {
+			fragments = append(fragments, prompt.Fragment{Kind: "background_terminals", Source: "current process", Lifecycle: "step", Role: modelapi.MessageRoleUser, Text: jsonText(terminals)})
+		}
+		if c.Store.Meta().LegacyPathContext {
+			fragments = append(fragments, prompt.Fragment{Kind: "path_migration", Source: "host", Lifecycle: "session", Role: modelapi.MessageRoleUser, Text: "Older transcript entries used /foo to mean a file under " + c.Workspace.Root + ". That old virtual mapping no longer applies. Re-resolve the target and read it again before editing; old snapshots are invalid. New calls use native host paths."})
+		}
+		if len(skills) > 0 {
+			var catalog strings.Builder
+			for _, skill := range skills {
+				fmt.Fprintf(&catalog, "- %s: %s (source: %s)\n", skill.Name, skill.Description, skill.Source)
+			}
+			fragments = append(fragments, prompt.Fragment{Kind: "skills", Source: "skill discovery", Scope: c.Workspace.Cwd, Lifecycle: "step", Role: modelapi.MessageRoleUser, Text: catalog.String()})
 		}
 		if foreground && mode == prompt.Execute && len(c.Host.Config.ACP) > 0 {
 			names := make([]string, 0, len(c.Host.Config.ACP))
@@ -453,35 +448,71 @@ func (c *Conversation) prepare(mode prompt.Mode, role string, model modelapi.Lan
 				names = append(names, name)
 			}
 			slices.Sort(names)
-			body += "\n## Configured external ACP task roles\n" + jsonText(names)
+			fragments = append(fragments, prompt.Fragment{Kind: "external_agents", Source: "host configuration", Lifecycle: "step", Role: modelapi.MessageRoleUser, Text: jsonText(names)})
 		}
-		dynamic = modelapi.NewUserMessage(body)
 		history := step.Messages
-		var compacted []modelapi.Message
-		if budget := c.Host.Config.ContextBytes; budget > 0 {
-			budget -= len(jsonText(dynamic))
-			if budget <= 0 {
-				return ctx, core.PrepareStepResult{}, errors.New("workspace context exceeds the context budget")
+		if len(options) > 0 && options[0].assignment != nil {
+			fragments = append(fragments, *options[0].assignment)
+		}
+		compactor := c.compactor(profile)
+		compactor.Force = len(options) > 0 && options[0].compact
+		window, err := prompt.LoadWindow(step.ContextState)
+		if err != nil {
+			return ctx, core.PrepareStepResult{}, err
+		}
+		window = migrateEnvironmentWindow(window)
+		current := fragments
+		if compactor.Force && window.Matches(history) {
+			current = window.Snapshot
+		}
+		request, nextWindow, err := window.Prepare(history, current)
+		if err != nil {
+			return ctx, core.PrepareStepResult{}, err
+		}
+		compactor.Transcript = nextWindow.Prefix
+		compactor.Assemble = func(messages []modelapi.Message) ([]modelapi.Message, error) {
+			if slices.EqualFunc(messages, history, func(a, b modelapi.Message) bool { return jsonText(a) == jsonText(b) }) {
+				return request, nil
 			}
-			var err error
-			summaryHistory := session.SummaryMessages(history)
-			compacted, err = (prompt.Compactor{BudgetBytes: budget}).Fit(ctx, model, system, summaryHistory, items)
+			fresh, _, err := (prompt.Window{}).Prepare(messages, fragments)
+			return fresh, err
+		}
+		if len(step.Steps) > 0 {
+			compactor.UsageTokens = step.Steps[len(step.Steps)-1].Usage.TotalTokens
+			compactor.UsageEstimate = previousEstimate
+		} else if usage := c.Store.Meta().LastUsage; foreground && !compactor.Force && usage != nil {
+			baselineRequest, _, err := window.Prepare(history[:prompt.ActiveTurn(history)], fragments)
 			if err != nil {
 				return ctx, core.PrepareStepResult{}, err
 			}
-			if compacted != nil {
-				history = compacted
+			baseline, err := prompt.Measure(system, baselineRequest, toolDefinitions(items))
+			if err != nil {
+				return ctx, core.PrepareStepResult{}, err
+			}
+			compactor.UsageTokens, compactor.UsageEstimate = usage.TotalTokens, baseline.Tokens
+		}
+		compacted, err := compactor.Fit(ctx, model, system, history, items)
+		if err != nil {
+			return ctx, core.PrepareStepResult{}, err
+		}
+		if compacted != nil {
+			history = compacted
+			request, nextWindow, err = (prompt.Window{}).Prepare(history, fragments)
+			if err != nil {
+				return ctx, core.PrepareStepResult{}, err
 			}
 		}
-		request := append(slices.Clone(history), dynamic)
-		return ctx, core.PrepareStepResult{Model: model, System: &system, Tools: items, Messages: request, History: compacted}, nil
+		estimate, err := prompt.Measure(system, request, toolDefinitions(items))
+		if err != nil {
+			return ctx, core.PrepareStepResult{}, err
+		}
+		previousEstimate = estimate.Tokens
+		checkpoint, err := nextWindow.Marshal()
+		if err != nil {
+			return ctx, core.PrepareStepResult{}, err
+		}
+		return ctx, core.PrepareStepResult{Model: model, System: &system, Tools: items, Messages: request, History: compacted, ContextState: checkpoint}, nil
 	}
-}
-
-type promptInputs struct {
-	rules  string
-	skills []Skill
-	tool   []modelapi.AgentTool
 }
 
 func jsonText(value any) string {
@@ -501,7 +532,7 @@ func (c *Conversation) MCPStatuses() []mcp.Status {
 	return c.mcp.Statuses()
 }
 
-func (c *Conversation) Compact(ctx context.Context) error {
+func (c *Conversation) Compact(ctx context.Context, modes ...prompt.Mode) error {
 	old := c.Session
 	if old.Active() != nil {
 		return errors.New("finish or cancel the current turn before compacting")
@@ -510,25 +541,18 @@ func (c *Conversation) Compact(ctx context.Context) error {
 	if len(history) == 0 {
 		return errors.New("there is no conversation to compact")
 	}
-	body, err := json.Marshal(session.SummaryMessages(history))
+	mode := prompt.Execute
+	if len(modes) > 0 {
+		mode = modes[0]
+	}
+	_, result, err := c.prepare(mode, "", c.model, c.items, c.plan, true, preparation{compact: true})(ctx, core.PrepareStepFunctionOptions{Messages: history, ContextState: old.ContextState()})
 	if err != nil {
 		return err
 	}
-	limit := int64(2048)
-	result, err := c.model.Generate(ctx, modelapi.Call{Prompt: []modelapi.Message{
-		modelapi.NewSystemMessage(prompt.Default("compact")), modelapi.NewUserMessage(string(body)),
-	}, MaxOutputTokens: &limit})
-	if err != nil {
-		return err
+	if result.History == nil {
+		return errors.New("there are no complete old turns to compact")
 	}
-	if result == nil || strings.TrimSpace(result.Content.Text()) == "" || result.FinishReason == modelapi.FinishReasonLength {
-		return errors.New("compaction did not return a complete summary")
-	}
-	summary := []modelapi.Message{modelapi.NewUserMessage("Prior conversation handoff:\n" + result.Content.Text())}
-	if budget := c.Host.Config.ContextBytes; budget > 0 && len(jsonText(summary)) >= budget {
-		return errors.New("compaction summary exceeds the context budget")
-	}
-	if err := c.Store.ReplaceHistory(ctx, summary); err != nil {
+	if err := c.Store.ReplaceHistory(ctx, result.History, result.ContextState); err != nil {
 		return err
 	}
 	next, err := core.OpenSession(context.WithoutCancel(ctx), core.NewAgent(c.model), c.Store, old.ID())

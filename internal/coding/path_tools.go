@@ -2,7 +2,6 @@ package coding
 
 import (
 	"encoding/json"
-	"strings"
 
 	"clara-code/pkg/model"
 )
@@ -29,7 +28,7 @@ func hostPathTools(items []model.AgentTool) []model.AgentTool {
 		data, _ := json.Marshal(info)
 		var copy model.ToolInfo
 		_ = json.Unmarshal(data, &copy)
-		copy.Description = "Use real host paths: absolute paths are native, relative paths start at the current working directory, ~/ starts at home. " + strings.ReplaceAll(info.Description, `"path":"/`, `"path":"`)
+		copy.Description = "Use real host paths: absolute paths are native, relative paths start at the current working directory, ~/ starts at home. " + info.Description
 		for _, name := range []string{"path", "from", "to"} {
 			if property, ok := copy.Parameters[name].(map[string]any); ok {
 				property["description"] = "Real host path. Absolute paths, ../ and ~/ are allowed; relative paths start at the current working directory."

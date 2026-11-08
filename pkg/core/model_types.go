@@ -14,6 +14,7 @@ type (
 	ToolResponse                 = model.ToolResponse
 	Schema                       = model.Schema
 	MessageRole                  = model.MessageRole
+	MessageMetadata              = model.MessageMetadata
 	ProviderOptions              = model.ProviderOptions
 	ProviderMetadata             = model.ProviderMetadata
 	Usage                        = model.Usage
@@ -59,6 +60,7 @@ type (
 
 const (
 	MessageRoleSystem            = model.MessageRoleSystem
+	MessageRoleDeveloper         = model.MessageRoleDeveloper
 	StreamPartTypeWarnings       = model.StreamPartTypeWarnings
 	StreamPartTypeTextStart      = model.StreamPartTypeTextStart
 	StreamPartTypeTextDelta      = model.StreamPartTypeTextDelta
@@ -96,6 +98,8 @@ func NewUserMessage(text string, files ...FilePart) Message {
 	return model.NewUserMessage(text, files...)
 }
 func NewSystemMessage(text ...string) Message { return model.NewSystemMessage(text...) }
+
+func NewDeveloperMessage(text ...string) Message { return model.NewDeveloperMessage(text...) }
 
 func NewAgentTool[Input any](name, description string, run func(context.Context, Input, ToolCall) (ToolResponse, error)) AgentTool {
 	return model.NewAgentTool(name, description, run)

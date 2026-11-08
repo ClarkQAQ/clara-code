@@ -42,6 +42,8 @@ type MessageRole string
 const (
 	// MessageRoleSystem represents a system message.
 	MessageRoleSystem MessageRole = "system"
+	// MessageRoleDeveloper represents host policy below the system instructions.
+	MessageRoleDeveloper MessageRole = "developer"
 	// MessageRoleUser represents a user message.
 	MessageRoleUser MessageRole = "user"
 	// MessageRoleAssistant represents an assistant message.
@@ -52,9 +54,16 @@ const (
 
 // Message represents a message in a prompt.
 type Message struct {
-	Role            MessageRole     `json:"role"`
-	Content         []MessagePart   `json:"content"`
-	ProviderOptions ProviderOptions `json:"provider_options"`
+	Role            MessageRole      `json:"role"`
+	Content         []MessagePart    `json:"content"`
+	ProviderOptions ProviderOptions  `json:"provider_options"`
+	Metadata        *MessageMetadata `json:"metadata,omitempty"`
+}
+
+// MessageMetadata describes transcript boundaries without changing provider wire formats.
+type MessageMetadata struct {
+	Kind   string `json:"kind,omitempty"`
+	TurnID string `json:"turn_id,omitempty"`
 }
 
 // AsContentType converts a Content interface to a specific content type.
@@ -540,4 +549,11 @@ func NewSystemMessage(prompt ...string) Message {
 		Role:    MessageRoleSystem,
 		Content: content,
 	}
+}
+
+// NewDeveloperMessage creates text-only host instructions.
+func NewDeveloperMessage(text ...string) Message {
+	message := NewSystemMessage(text...)
+	message.Role = MessageRoleDeveloper
+	return message
 }

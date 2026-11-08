@@ -224,11 +224,12 @@ func DefaultUsageFunc(response openai.ChatCompletion) (yuzu.Usage, yuzu.Provider
 	inputTokens := max(response.Usage.PromptTokens-promptTokenDetails.CachedTokens, 0)
 	providerMetadata.ExtraFields = ExtractExtraFields(response.Usage.ExtraFields)
 	return yuzu.Usage{
-		InputTokens:     inputTokens,
-		OutputTokens:    response.Usage.CompletionTokens,
-		TotalTokens:     response.Usage.TotalTokens,
-		ReasoningTokens: completionTokenDetails.ReasoningTokens,
-		CacheReadTokens: promptTokenDetails.CachedTokens,
+		InputTokens:       inputTokens,
+		OutputTokens:      response.Usage.CompletionTokens,
+		TotalTokens:       response.Usage.TotalTokens,
+		ReasoningTokens:   completionTokenDetails.ReasoningTokens,
+		CacheReadTokens:   promptTokenDetails.CachedTokens,
+		CacheReadReported: cacheReadReported(response.Usage.RawJSON()),
 	}, providerMetadata
 }
 
@@ -244,11 +245,12 @@ func DefaultStreamUsageFunc(chunk openai.ChatCompletionChunk, _ map[string]any, 
 	// OpenAI reports prompt_tokens INCLUDING cached tokens. Subtract to avoid double-counting.
 	inputTokens := max(chunk.Usage.PromptTokens-promptTokenDetails.CachedTokens, 0)
 	usage := yuzu.Usage{
-		InputTokens:     inputTokens,
-		OutputTokens:    chunk.Usage.CompletionTokens,
-		TotalTokens:     chunk.Usage.TotalTokens,
-		ReasoningTokens: completionTokenDetails.ReasoningTokens,
-		CacheReadTokens: promptTokenDetails.CachedTokens,
+		InputTokens:       inputTokens,
+		OutputTokens:      chunk.Usage.CompletionTokens,
+		TotalTokens:       chunk.Usage.TotalTokens,
+		ReasoningTokens:   completionTokenDetails.ReasoningTokens,
+		CacheReadTokens:   promptTokenDetails.CachedTokens,
+		CacheReadReported: cacheReadReported(chunk.Usage.RawJSON()),
 	}
 
 	// Add prediction tokens if available

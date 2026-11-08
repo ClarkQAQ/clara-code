@@ -112,7 +112,24 @@ Model catalogs drive `/model` provider/model/effort selectors and request behavi
 
 `[tui]` controls color, Markdown, animation, hints, preview size, and ordered status fields. `[tui.keymap.<context>]` remaps existing actions for `composer`, `picker`, `question`, and `rewind`; the example lists every action. Same-context conflicts fail startup. Printable text, IME, and bracketed paste keep their normal input path. Hints use configured keys. Tool call deadlines can be set globally or per tool; command yield/runtime defaults are separate, and explicit model arguments take precedence. MCP servers can be disabled and have separate connection and call deadlines; stdio/HTTP, headers, environment, and external ACP agents remain supported.
 
-`context_bytes` is the serialized byte budget for automatic compaction; set it to `0` to disable automatic compaction. `context_window` is the model's raw token limit. The status bar uses 95% of that limit as the effective window by default; change it with `effective_context_window_percent`. Current context usage comes from the most recent valid request's total tokens. The percentage calculation subtracts a fixed 12,000-token baseline, following the reference Codex implementation. Cumulative usage appears separately in `/status`; unavailable usage is shown as unknown. Put global rules in `AGENTS.md` in the data directory and global skills in `skills/<name>/SKILL.md`. Project rules load from the Git root downward; project skills live in `.agents/skills/` at the applicable directory. Skill files declare `name` and `description` in YAML or TOML front matter.
+`tui.status_line` selects and orders `state`, `model`, `context`, `directory`, `git_branch`, `session_cache_efficiency`, and `round_cache_efficiency`. An empty array hides the left status fields. For example:
+
+```toml
+[tui]
+status_line = ["state", "model", "context", "session_cache_efficiency", "round_cache_efficiency"]
+```
+
+Cache efficiency is cached input tokens divided by all input tokens; output/reasoning tokens are excluded. Session efficiency sums this conversation's model requests. Round efficiency sums every model step in the current agent run, including tool continuations and steering, and shows the most recent run while idle. Ratios are weighted by tokens, not averages of request percentages. Counters survive recovery, model changes and compaction; a new or forked session starts fresh. Missing cache reports, incomplete legacy accounting, and an empty input denominator display `unknown`; an explicitly reported zero displays `0.0%`. `/status` also shows both metrics. Existing configurations keep their default field list.
+
+Configured model IDs are declared to the Responses provider, including custom deployment aliases, so explicit Agent/Plan reasoning effort is transmitted even when the model name is absent from the built-in reasoning-model catalog.
+
+`default_reasoning_summary = "none"` disables summaries by omitting `reasoning.summary` from requests. The wire values are `auto`, `concise`, and `detailed`; `none` is a local configuration value and does not change the reasoning effort.
+
+`context_window` is the model's raw token limit. Its effective window defaults to 95%; change it with `effective_context_window_percent`. Automatic compaction uses this window minus output reservation, calibrated by recent model usage and conservative estimates. Explicit `context_bytes` adds a byte ceiling; `0` disables that ceiling. Models without a declared window retain the 512 KiB fallback unless overridden. Compaction preserves the latest turn and its images; `/compact` requires an older complete turn. Failed or truncated summaries preserve the original working history. See [Prompt and Context Architecture](PROMPTS.md) for details and the Codex comparison.
+
+Current context usage in the status bar comes from the most recent valid request's total tokens, independently of budget estimates. The percentage calculation subtracts a fixed 12,000-token baseline, following the reference Codex implementation. Cumulative usage appears separately in `/status`; unavailable usage is shown as unknown. Put global rules in `AGENTS.md` in the data directory and global skills in `skills/<name>/SKILL.md`. Project rules load from the Git root downward; project skills live in `.agents/skills/` at the applicable directory. Skill files declare `name` and `description` in YAML or TOML front matter. Rules are checked each model step, provided in full in the initial prefix, and updated only when changed or removed. Skill bodies load only when requested.
+
+Clara uses a Codex-derived base prompt (see NOTICE), with native-path and actual-tool adaptations. Responses sends this base through top-level `instructions`; Completions keeps its system message. Developer policy and initial rules/environment stay at the front. Later requests retain that prefix and append only context changes, including environment updates only when its date, time zone, paths or permissions change. Readable AGENTS headings and `<environment_context>` replace management JSON wrappers. An independent, optional model-window checkpoint preserves prefix placement across recovery; branching and successful compaction rebuild a fresh prefix. Context management is excluded from raw conversation and terminal replay. Provider caching depends on the endpoint, so stable prefixes do not guarantee a particular cache hit rate.
 
 ## Images
 
@@ -166,9 +183,9 @@ Interactive questions contain numbered choices and descriptions. Use Up/Down or 
 
 File tools and Shell use real host paths. Relative paths start at the current working directory, `..` can access adjacent directories, absolute paths keep their system meaning, `/` is the system root, and `~/` expands to the current user's home. File tools return real absolute paths, including Hashline headers. Shell `workdir` follows the same rules and supports directories outside the project.
 
-Full date-times in the UI use local `time.DateTime`, formatted as `YYYY-MM-DD HH:mm:ss`; dates use `YYYY-MM-DD`. `/status` shows the current local time and time zone. The time zone follows the process's system settings and `TZ`. When a region name is unavailable, the UI shows the UTC offset instead of guessing from abbreviations such as CST. Main agents, subagents, Plan, Review, and ACP receive a fresh date, time, RFC3339 timestamp, and offset at each model step, including after date changes, recovery, and compaction. These clock snapshots belong only to the current request and are not saved in conversation context. Compaction preserves the original meaning of historical dates and time zones.
+Full date-times in the UI use local `time.DateTime`, formatted as `YYYY-MM-DD HH:mm:ss`; dates use `YYYY-MM-DD`. `/status` shows the current local time and time zone. The time zone follows the process's system settings and `TZ`. When a region name is unavailable, the UI shows the UTC offset instead of guessing from abbreviations such as CST. Main agents, subagents, Plan, Review, and ACP receive the local date and time zone in a compact environment block. The host checks these each step but emits an update only when a value changes; passing seconds do not add messages. No precise clock or per-message sending timestamp is injected. Environment context stays in the separate model-window checkpoint, outside the raw conversation and terminal replay. Compaction preserves the original meaning of historical dates and time zones.
 
-Session, event, and background-terminal metadata use RFC3339 JSON timestamps with `Z` or an explicit offset, retaining fractional-second precision without rewriting old records. `stat.modified` uses RFC3339Nano. ACP diagnostic logs also include time zones and go only to standard error. Session and terminal IDs remain compatible; their embedded time fragments should not be used to infer the current date. The current step's clock snapshot is the model's time reference. Elapsed times and timeouts continue to use durations. Dedicated fields in formats such as PDF follow their own date specifications.
+Session, event, and background-terminal metadata use RFC3339 JSON timestamps with `Z` or an explicit offset, retaining fractional-second precision without rewriting old records. `stat.modified` uses RFC3339Nano. ACP diagnostic logs also include time zones and go only to standard error. Session and terminal IDs remain compatible; their embedded time fragments should not be used to infer the current date. The latest environment date and time zone are the model's reference for relative dates; they do not provide a precise current clock. Elapsed times and timeouts continue to use durations. Dedicated fields in formats such as PDF follow their own date specifications.
 
 By default, `glob` and `grep` use Git to search tracked files and unignored untracked files, including tracked files that match ignore rules. Set `include_ignored=true` to include ignored files. Recursive searches skip Git metadata and submodules unless explicitly selected as the search root. Searches across projects use the target repository's rules; direct `read` calls are unaffected. Non-Git projects search the full directory tree. Git rules refresh on every search. Git enumeration failures are reported explicitly; narrow the search path when enumeration exceeds 20,000 candidate files or 8 MiB of output.
 
@@ -177,3 +194,20 @@ Glob patterns support `*.go`, `**/*.go`, `?`, and character classes; `**` can ma
 Agent mode uses YOLO permissions: file tools and Shell operate with the current user's OS permissions, without a project-directory boundary. Reads follow symbolic links; overwrite writes and edits update their targets. Moving or deleting a link operates on the link itself. Creating a file does not overwrite an existing link. Old sessions remain resumable. Their original `/foo` paths referred to project-relative files; recovery displays a migration notice. Read targets again under the new semantics before editing; old snapshots are not reused. Plan mode exposes only read-only and interaction tools. Branching restores model context before the selected prompt; prior file changes and command effects remain in the workspace. Each session has an independent lock, so other processes can open different sessions in the same project. Running goals, subagents, and Shell processes end when the owning session closes.
 
 In an ACP-compatible editor, use `clara-code acp` as the stdio agent command. It supports session creation and loading, prompting, streaming updates, and cancellation, using the same project identification and persistence directories.
+
+
+### Delegated tasks
+
+Clara delegates only when authorized by the user or applicable instructions.
+Task names use lowercase ASCII letters, digits and underscores, up to 100
+characters: `repo_survey` is valid, `repo-survey` is not. Every task needs a role
+and a complete brief; children start without parent conversation unless a history
+fork is explicitly requested. Built-in `general` can implement and run commands;
+`explorer` and `reviewer` inspect files read-only without Shell.
+
+`spawn_agent` returns a task ID for subsequent controls. `subagent_task` waits for
+one result without closing the child. Waiting uses `timeout_ms` in milliseconds;
+a timeout leaves the child running, so inspect `list_agents` and wait again.
+`send_message` steers running work, `followup_task` can continue finished work,
+`interrupt_agent` retains its session, and `close_agent` ends it and its descendants.
+Read and verify results before closing. Filesystem changes remain shared.

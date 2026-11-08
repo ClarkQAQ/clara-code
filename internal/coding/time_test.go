@@ -14,11 +14,12 @@ import (
 	"clara-code/pkg/core/prompt"
 	modelapi "clara-code/pkg/model"
 	"clara-code/pkg/tool"
+	"clara-code/pkg/util/localtime"
 
 	"clara-code/internal/session"
 )
 
-func TestClockRefreshesBetweenModelStepsWithoutEnteringHistory(t *testing.T) {
+func TestEnvironmentDateRefreshesBetweenModelStepsWithoutEnteringHistory(t *testing.T) {
 	times := []time.Time{
 		time.Date(2026, 11, 7, 15, 59, 59, 123456789, time.UTC),
 		time.Date(2026, 11, 8, 16, 0, 1, 987654321, time.UTC),
@@ -33,15 +34,16 @@ func TestClockRefreshesBetweenModelStepsWithoutEnteringHistory(t *testing.T) {
 		for _, message := range call.Prompt {
 			text := session.Text(message)
 			if message.Role == modelapi.MessageRoleSystem {
-				if strings.Contains(text, "## Current local time") || !strings.Contains(text, timeInstructions) {
+				if strings.Contains(text, "## Current local time") || !strings.Contains(text, prompt.Default("base")) {
 					return nil, fmt.Errorf("clock snapshot entered stable prompt or time guidance missing")
 				}
 			}
-			if strings.HasPrefix(text, "# Current workspace state") {
+			if message.Metadata != nil && message.Metadata.Kind == "context" {
 				clock += text
 			}
 		}
-		if !strings.Contains(clock, timeContext(times[step])) || strings.Count(clock, "## Current local time") != 1 {
+		stamp := "<current_date>" + times[step].Local().Format(time.DateOnly) + "</current_date>"
+		if !strings.Contains(clock, stamp) || strings.Count(clock, stamp) != 1 || strings.Contains(clock, "<timestamp>") || strings.Contains(clock, "<local_datetime>") {
 			return nil, fmt.Errorf("missing current step clock: %s", clock)
 		}
 		if step == 0 {
@@ -71,7 +73,7 @@ func TestClockSharedByModesAndTasks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, prepare := range []core.PrepareStepFunction{
+	for index, prepare := range []core.PrepareStepFunction{
 		c.Call(prompt.Execute, false).PrepareStep,
 		c.Call(prompt.Plan, false).PrepareStep,
 		c.Call(prompt.Execute, true).PrepareStep,
@@ -81,8 +83,18 @@ func TestClockSharedByModesAndTasks(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(result.Messages) != 1 || !strings.Contains(session.Text(result.Messages[0]), timeContext(now)) {
-			t.Fatal("mode or child agent lost the current clock", result.Messages)
+		body := contextText(result.Messages)
+		access := "read_only"
+		if index == 0 {
+			access = "unrestricted"
+		}
+		if !strings.Contains(body, "<current_date>"+now.Local().Format(time.DateOnly)+"</current_date>") || !strings.Contains(body, "<access>"+access+"</access>") || !strings.Contains(body, "<timezone>"+localtime.Zone(now)+"</timezone>") {
+			t.Fatal("mode or child agent lost date, zone or permissions", body)
+		}
+		for _, field := range []string{"project_root", "model", "image_input", "effective_context_window", "local_datetime", "timestamp", "message_context"} {
+			if strings.Contains(body, "<"+field+">") {
+				t.Fatal("removed environment field survived", field)
+			}
 		}
 	}
 }
@@ -92,6 +104,7 @@ func TestClockRefreshesAfterCompactionForkAndResume(t *testing.T) {
 	old := time.Date(2026, 11, 7, 23, 59, 59, 0, time.UTC)
 	c.Host.now = func() time.Time { return old }
 	finish(t, c, prompt.Execute, "Historical appointment: 2026-11-07T23:00:00+08:00.")
+	finish(t, c, prompt.Execute, "Continue the appointment discussion.")
 	if err := c.Compact(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -102,12 +115,12 @@ func TestClockRefreshesAfterCompactionForkAndResume(t *testing.T) {
 	check := func(c *Conversation) {
 		t.Helper()
 		messages := c.Session.Messages()
-		_, result, err := c.Call(prompt.Execute, false).PrepareStep(t.Context(), core.PrepareStepFunctionOptions{Messages: messages})
+		_, result, err := c.Call(prompt.Execute, false).PrepareStep(t.Context(), core.PrepareStepFunctionOptions{Messages: messages, ContextState: c.Session.ContextState()})
 		if err != nil {
 			t.Fatal(err)
 		}
-		clock := session.Text(result.Messages[len(result.Messages)-1])
-		if !strings.Contains(clock, timeContext(now)) || strings.Contains(clock, old.Format(time.RFC3339)) {
+		clock := contextText(result.Messages)
+		if !strings.Contains(clock, now.Local().Format(time.DateOnly)) || strings.LastIndex(clock, now.Local().Format(time.DateOnly)) < strings.LastIndex(clock, old.Local().Format(time.DateOnly)) || strings.Contains(clock, "<timestamp>") {
 			t.Fatal("old clock survived a context transition", clock)
 		}
 	}
@@ -150,7 +163,10 @@ func TestCurrentClockReachesBothModelProtocols(t *testing.T) {
 					t.Error(err)
 				}
 				body := fmt.Sprint(payload)
-				if !strings.Contains(body, timeContext(now)) || !strings.Contains(body, timeInstructions) {
+				if !strings.Contains(body, "role:developer") {
+					t.Error("wire payload lost developer policy")
+				}
+				if !strings.Contains(body, "<current_date>"+now.Local().Format(time.DateOnly)+"</current_date>") || !strings.Contains(body, prompt.Default("base")) {
 					t.Error("wire payload lacks clock or time policy")
 				}
 				if protocol == "completions" {

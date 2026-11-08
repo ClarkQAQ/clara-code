@@ -39,6 +39,9 @@ type Meta struct {
 	TotalUsage                            modelapi.Usage
 	UsageIncomplete                       bool
 	UsageCursor                           uint64
+	SessionCache                          CacheUsage `json:",omitzero"`
+	RoundCache                            CacheUsage `json:",omitzero"`
+	CacheRunID                            string     `json:",omitempty"`
 }
 
 type Cell struct {
@@ -273,20 +276,36 @@ func (s *Store) Save(ctx context.Context, state core.State) error {
 }
 
 func collectUsage(meta *Meta, events []core.Event) {
-	if meta.UsageCursor == 0 && len(events) > 0 && events[0].Sequence > 1 {
+	gap := len(events) > 0 && events[0].Sequence > meta.UsageCursor+1
+	if gap {
 		meta.UsageIncomplete = true
+		meta.SessionCache.Incomplete, meta.RoundCache.Incomplete = true, true
+	}
+	if meta.SessionCache.Requests == 0 && meta.TotalUsage.TotalTokens > 0 {
+		meta.SessionCache.Incomplete = true
 	}
 	for _, event := range events {
 		if event.Sequence <= meta.UsageCursor {
 			continue
 		}
 		meta.UsageCursor = event.Sequence
+		if event.Kind == "run.started" {
+			meta.CacheRunID = event.RunID
+			meta.RoundCache = CacheUsage{}
+			gap = false
+		}
 		if event.Kind == "step.completed" {
 			var response modelapi.Response
 			if json.Unmarshal(event.Data, &response) == nil {
 				usage := response.Usage
+				if meta.CacheRunID != event.RunID {
+					meta.CacheRunID, meta.RoundCache = event.RunID, CacheUsage{Incomplete: gap}
+				}
+				meta.SessionCache.add(usage)
+				meta.RoundCache.add(usage)
+				meta.TotalUsage.CacheReadReported = !meta.SessionCache.Incomplete
 				if usage.TotalTokens == 0 {
-					usage.TotalTokens = max(0, usage.InputTokens) + max(0, usage.OutputTokens)
+					usage.TotalTokens = max(0, usage.InputTokens) + max(0, usage.OutputTokens) + max(0, usage.CacheReadTokens)
 				}
 				meta.LastUsage = nil
 				if usage.TotalTokens == 0 {
@@ -300,12 +319,18 @@ func collectUsage(meta *Meta, events []core.Event) {
 					meta.TotalUsage.ReasoningTokens += usage.ReasoningTokens
 					meta.TotalUsage.CacheReadTokens += usage.CacheReadTokens
 				}
+			} else {
+				meta.LastUsage = nil
+				meta.UsageIncomplete = true
+				meta.SessionCache.Incomplete, meta.RoundCache.Incomplete = true, true
+				meta.TotalUsage.CacheReadReported = false
 			}
 		}
 	}
 }
 
 func cloneState(state core.State) core.State {
+	state.ContextState = slices.Clone(state.ContextState)
 	state.Messages = slices.Clone(state.Messages)
 	state.Events = slices.Clone(state.Events)
 	state.Pending = slices.Clone(state.Pending)
@@ -343,7 +368,7 @@ func (s *Store) InvalidateContext() error {
 
 // ReplaceHistory is called with the Core session idle. Reopen the Core
 // session after it succeeds so its in-memory revision matches the store.
-func (s *Store) ReplaceHistory(ctx context.Context, messages []modelapi.Message) error {
+func (s *Store) ReplaceHistory(ctx context.Context, messages []modelapi.Message, contextState ...json.RawMessage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -355,6 +380,10 @@ func (s *Store) ReplaceHistory(ctx context.Context, messages []modelapi.Message)
 		return errs.ErrBusy
 	}
 	state.Messages = messages
+	state.ContextState = nil
+	if len(contextState) > 0 {
+		state.ContextState = slices.Clone(contextState[0])
+	}
 	state.Revision++
 	next.State = state
 	next.Meta.LastUsage = nil
@@ -420,6 +449,7 @@ func (s *Store) Fork(ctx context.Context, index int) (*Store, error) {
 	meta := s.data.Meta
 	meta.Parent, meta.ID = meta.ID, ""
 	meta.LastUsage, meta.TotalUsage, meta.UsageCursor, meta.UsageIncomplete = nil, modelapi.Usage{}, 0, false
+	meta.SessionCache, meta.RoundCache, meta.CacheRunID = CacheUsage{}, CacheUsage{}, ""
 	messages, turns := s.data.State.Messages, s.data.Turns
 	if index >= 0 {
 		if index >= len(turns) || !safeID.MatchString(turns[index]) {

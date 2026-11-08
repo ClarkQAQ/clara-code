@@ -66,6 +66,19 @@ func TestLayeredConfigurationAndRepeatedOverrides(t *testing.T) {
 		t.Fatal("provider-qualified model collision", err)
 	}
 }
+
+func TestStatusLineCacheFields(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	t.Setenv("CLARA_CODE_HOME", home)
+	configFile(t, filepath.Join(home, "config.toml"), exampleConfig)
+	cfg, err := LoadWith(t.Context(), LoadOptions{Cwd: root, Root: root, Overrides: []string{`tui.status_line=["session_cache_efficiency","state","round_cache_efficiency"]`}})
+	if err != nil || len(cfg.TUI.StatusLine) != 3 || cfg.TUI.StatusLine[0] != "session_cache_efficiency" {
+		t.Fatal("cache fields not accepted", err)
+	}
+	if _, err := LoadWith(t.Context(), LoadOptions{Cwd: root, Root: root, Overrides: []string{`tui.status_line=["unknown_cache_field"]`}}); err == nil {
+		t.Fatal("unknown status field accepted")
+	}
+}
 func TestQuotedKeysAndUnknownFieldsAreActionable(t *testing.T) {
 	home, root := t.TempDir(), t.TempDir()
 	t.Setenv("CLARA_CODE_HOME", home)

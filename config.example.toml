@@ -28,7 +28,7 @@ max_output_tokens = 16384
 input_modalities = ["text", "image"] # defaults to text/image when omitted
 default_reasoning_level = "high"
 supported_reasoning_levels = ["low", "high", "max"]
-default_reasoning_summary = "auto" # auto, concise, detailed, none
+default_reasoning_summary = "auto" # auto, concise, detailed; none disables summaries (omitted on wire)
 default_verbosity = "low" # low, medium, high
 supports_parallel_tool_calls = true
 
@@ -52,6 +52,8 @@ animations = true
 show_tooltips = true
 tool_output_lines = 12 # head/tail preview; 0 hides output
 status_line = ["state", "model", "context", "directory", "git_branch"]
+# Optional fields: "session_cache_efficiency", "round_cache_efficiency".
+# The latter sums the current agent run, or the most recent run while idle.
 
 # Each section configures an interaction context. Same-context conflicts fail startup.
 [tui.keymap.composer]

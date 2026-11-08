@@ -72,6 +72,13 @@ func (s *Session) ID() string {
 	return s.state.ID
 }
 
+// ContextState returns a copy of the host-owned model-window checkpoint.
+func (s *Session) ContextState() json.RawMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.state.ContextState)
+}
+
 func (s *Session) Messages() []model.Message {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -117,8 +124,10 @@ func (r *Run) queue(message model.Message, follow bool) error {
 		return errs.New(errs.CodeLimit, "turn input queue is full")
 	}
 	if follow {
+		message.Metadata = &model.MessageMetadata{Kind: "followup", TurnID: id.New("turn")}
 		r.follow = append(r.follow, message)
 	} else {
+		message.Metadata = &model.MessageMetadata{Kind: "steering", TurnID: r.ID}
 		r.steering = append(r.steering, message)
 	}
 	return nil
@@ -166,6 +175,12 @@ func (s *Session) Start(ctx context.Context, call AgentStreamCall) (*Run, error)
 		call.Prompt = ""
 		call.Files = nil
 	}
+	for i := len(input) - 1; i >= 0; i-- {
+		if input[i].Role == model.MessageRoleUser && input[i].Metadata == nil {
+			input[i].Metadata = &model.MessageMetadata{Kind: "user", TurnID: id.New("turn")}
+			break
+		}
+	}
 	call.Messages = append(slices.Clone(s.state.Messages), input...)
 	previous := s.state
 	sequence, eventBytes := s.sequence, s.eventBytes
@@ -192,6 +207,32 @@ func (s *Session) Start(ctx context.Context, call AgentStreamCall) (*Run, error)
 
 func (s *Session) execute(ctx context.Context, run *Run, call AgentStreamCall) {
 	defer run.cancel()
+	prepare, onContext := call.PrepareStep, call.OnContextState
+	if prepare != nil {
+		call.PrepareStep = func(ctx context.Context, step PrepareStepFunctionOptions) (context.Context, PrepareStepResult, error) {
+			step.ContextState = s.ContextState()
+			return prepare(ctx, step)
+		}
+	}
+	call.OnContextState = func(state json.RawMessage) error {
+		s.mu.Lock()
+		previous := s.state.ContextState
+		s.state.ContextState = slices.Clone(state)
+		persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		err := s.saveLocked(persist)
+		cancel()
+		if err != nil {
+			s.state.ContextState = previous
+		}
+		s.mu.Unlock()
+		if err != nil {
+			return err
+		}
+		if onContext != nil {
+			return onContext(slices.Clone(state))
+		}
+		return nil
+	}
 	hostChunk, hostCall, hostResult, hostStep := call.OnChunk, call.OnToolCall, call.OnToolResult, call.OnStepFinish
 	hostModel, hostHistory := call.OnModelMessages, call.OnHistory
 	hostStepStart := call.OnStepStart
@@ -239,7 +280,7 @@ func (s *Session) execute(ctx context.Context, run *Run, call AgentStreamCall) {
 		return nil
 	}
 	call.OnHistory = func(history []model.Message) error {
-		if err := s.commit(ctx, func() { s.state.Messages = slices.Clone(history) }); err != nil {
+		if err := s.commit(ctx, func() { s.state.Messages = slices.Clone(history); s.state.ContextState = nil }); err != nil {
 			return err
 		}
 		if hostHistory != nil {
@@ -294,15 +335,17 @@ func (s *Session) execute(ctx context.Context, run *Run, call AgentStreamCall) {
 		return nil
 	}
 	call.OnStepFinish = func(step StepResult) error {
+		var eventErr error
 		if err := s.commit(ctx, func() {
 			s.state.Messages = append(s.state.Messages, step.Messages...)
 			s.state.Pending = nil
 			s.state.Staged = nil
+			eventErr = s.emitLocked("step.completed", step.Response)
 		}); err != nil {
 			return err
 		}
-		if err := s.Emit(ctx, "step.completed", step.Response); err != nil {
-			return err
+		if eventErr != nil {
+			return eventErr
 		}
 		if hostStep != nil {
 			return hostStep(step)
@@ -379,6 +422,7 @@ func (s *Session) commit(ctx context.Context, update func()) error {
 
 func (s *Session) saveLocked(ctx context.Context) error {
 	state := s.state
+	state.ContextState = slices.Clone(s.state.ContextState)
 	state.Revision++
 	if err := s.store.Save(ctx, state); err != nil {
 		return err

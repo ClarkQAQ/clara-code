@@ -24,7 +24,7 @@ func (m Model) Generate(ctx context.Context, call model.Call) (*model.Response, 
 	}
 	var lines []string
 	for _, msg := range call.Prompt {
-		if msg.Role == model.MessageRoleUser {
+		if msg.Role == model.MessageRoleUser && (msg.Metadata == nil || msg.Metadata.Kind != "context") {
 			for _, part := range msg.Content {
 				if text, ok := model.AsMessagePart[model.TextPart](part); ok && !strings.HasPrefix(text.Text, "# Current workspace state") {
 					lines = append(lines, text.Text)

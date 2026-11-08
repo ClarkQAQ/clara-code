@@ -722,6 +722,7 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 		Role            MessageRole       `json:"role"`
 		Content         []json.RawMessage `json:"content"`
 		ProviderOptions ProviderOptions   `json:"provider_options"`
+		Metadata        *MessageMetadata  `json:"metadata,omitempty"`
 	}
 
 	if err := json.Unmarshal(data, &aux); err != nil {
@@ -740,6 +741,7 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 	}
 
 	m.ProviderOptions = aux.ProviderOptions
+	m.Metadata = aux.Metadata
 
 	return nil
 }

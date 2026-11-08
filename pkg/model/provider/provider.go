@@ -47,7 +47,8 @@ type options struct {
 	// replayReasoning replays assistant reasoning items on the Responses API.
 	// Providers that require the chain of thought back (DeepSeek thinking
 	// mode) reject continuations that carry tools without it.
-	replayReasoning bool
+	replayReasoning    bool
+	systemInstructions bool
 	// reasoningModels names models this deployment declares as reasoning models,
 	// because a compatible endpoint may be served under a name the provider
 	// cannot recognise.
@@ -98,6 +99,12 @@ func WithAPI(api API) Option {
 	return func(o *options) {
 		o.api = api
 	}
+}
+
+// WithSystemInstructions maps leading Responses system messages to instructions.
+// Explicit ProviderOptions.Instructions wins; Completions is unchanged.
+func WithSystemInstructions(enabled bool) Option {
+	return func(o *options) { o.systemInstructions = enabled }
 }
 
 // WithBaseURL sets the base URL for the provider.
@@ -223,7 +230,7 @@ func (p *Provider) LanguageModel(_ context.Context, modelID string) (yuzu.Langua
 	}
 
 	if p.options.api == APIResponses {
-		return newResponsesLanguageModel(
+		model := newResponsesLanguageModel(
 			modelID,
 			Name,
 			client,
@@ -231,7 +238,9 @@ func (p *Provider) LanguageModel(_ context.Context, modelID string) (yuzu.Langua
 			p.options.replayReasoning,
 			p.options.isDeclaredReasoningModel(modelID),
 			languageModelHeaderFunc(p.options.languageModelOptions),
-		), nil
+		)
+		model.systemInstructions = p.options.systemInstructions
+		return model, nil
 	}
 
 	languageModelOptions := append([]LanguageModelOption{}, p.options.languageModelOptions...)

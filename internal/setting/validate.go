@@ -86,7 +86,7 @@ func (c Config) validate() error {
 		return c.invalid("tui.tool_output_lines", "must be between 0 and 1000")
 	}
 	for _, field := range c.TUI.StatusLine {
-		if !slices.Contains([]string{"state", "model", "context", "directory", "git_branch"}, field) {
+		if !slices.Contains([]string{"state", "model", "context", "directory", "git_branch", "session_cache_efficiency", "round_cache_efficiency"}, field) {
 			return c.invalid("tui.status_line", "unknown status field")
 		}
 	}
