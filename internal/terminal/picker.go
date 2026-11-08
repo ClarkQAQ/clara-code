@@ -10,6 +10,7 @@ type choice struct {
 }
 
 type picker struct {
+	skillState             *skillManager
 	kind, title, model     string
 	provider               string
 	items                  []choice
@@ -45,6 +46,9 @@ func listRows(view *painter, title string, items []choice, selected int, help st
 
 func (a *app) handlePicker(input key) bool {
 	p := a.picker
+	if p.kind == "skills" || p.kind == "skill-toggle" {
+		return a.handleSkillPicker(input)
+	}
 	if p.kind == "rewind" || p.kind == "diff" {
 		return a.handleTranscriptPicker(input)
 	}
@@ -131,9 +135,6 @@ func (a *app) handlePicker(input key) bool {
 				next.items = append(next.items, choice{id: string(level), label: label})
 			}
 			a.picker = next
-		case "skill":
-			a.picker = nil
-			a.editor.insert("$" + selected.id + " ")
 		case "effort":
 			a.picker = nil
 			a.applySelection(p.provider, p.model, selected.id)

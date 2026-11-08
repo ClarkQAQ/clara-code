@@ -70,6 +70,7 @@ type app struct {
 	reflow         bool
 	resizeUntil    time.Time
 	commandMenu    commandMenu
+	skillMenu      skillMenu
 	pendingInput   []string
 	operationDraft editor
 	activity       activityState
@@ -710,6 +711,9 @@ func (a *app) draw() error {
 func (a *app) pane() layout {
 	p := &a.view
 	if a.picker != nil {
+		if a.picker.kind == "skills" || a.picker.kind == "skill-toggle" {
+			return a.skillPickerLayout()
+		}
 		if a.picker.kind == "diff" {
 			return layout{rows: a.diffRows()}
 		}
@@ -726,8 +730,9 @@ func (a *app) pane() layout {
 		return a.question.layout(p)
 	}
 	matches := a.menuMatches()
+	skillsVisible := a.skillMatches()
 	chrome := min(3, max(0, p.height-1))
-	if len(matches) == 0 && p.height > 4 {
+	if len(matches) == 0 && !skillsVisible && p.height > 4 {
 		chrome++
 	}
 	input := p.inputLayout(a.editor, "Run /review on my current changes", min(7, max(1, p.height-chrome)))
@@ -735,6 +740,8 @@ func (a *app) pane() layout {
 	if len(matches) > 0 {
 		menuHeight := max(0, p.height-min(2, chrome)-len(input.rows))
 		footer = a.commandRows(menuHeight)
+	} else if skillsVisible {
+		footer = a.skillRows(max(0, p.height-min(2, chrome)-len(input.rows)))
 	} else if p.height > 3 {
 		footer = []string{a.statusLine()}
 		if p.height > 4 {

@@ -8,20 +8,11 @@ import (
 )
 
 func (a *app) chooseSkill() {
-	skills, err := a.conv.Skills(a.ctx)
-	if err != nil {
-		a.notice(err)
-		return
+	if a.editor.at > 0 && a.editor.text[a.editor.at-1] != ' ' && a.editor.text[a.editor.at-1] != '\n' {
+		a.editor.insert(" ")
 	}
-	if len(skills) == 0 {
-		a.view.message("notice", "No skills found")
-		return
-	}
-	p := &picker{kind: "skill", title: "Select a skill"}
-	for _, skill := range skills {
-		p.items = append(p.items, choice{id: skill.Name, label: skill.Name + " · " + skill.Description + " · " + skill.Source})
-	}
-	a.picker = p
+	a.editor.insert("$")
+	a.skillMenu = skillMenu{}
 }
 
 func (a *app) diffPage(section, offset int) {

@@ -154,3 +154,19 @@ loading, child/Plan/Review/ACP dates and permissions, real tool schema errors an
 media projections, compaction rollback, parallel tool pairs, and old-session forks.
 The existing PTY/tmux suite verifies that these changes preserve inline rendering.
 `make check` also runs race tests, vet, lint and builds without external test suites.
+
+
+## Explicit skill mentions and availability
+
+The composer inserts `$skill-name` as a user mention, preserving surrounding text
+and attachments. The public skills template tells the model to load that catalog
+entry with `read_skill` before following its workflow. Selection does not preload
+all skill bodies or promote their instructions to developer policy.
+
+Clara's management UI stores disabled canonical skill-file paths in its data
+directory. Discovery resolves project precedence before filtering disabled entries;
+it never falls back to a shadowed definition because the winning one is disabled.
+Each preparation refreshes availability for the catalog and `read_skill` /
+`read_skill_resource` tools. A change produces the existing catalog replacement or
+removal delta. Already-read conversation text remains historical content; toggles
+are not a new filesystem permission boundary.

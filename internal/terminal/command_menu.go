@@ -11,7 +11,7 @@ type commandSpec struct {
 
 var commands = []commandSpec{
 	{name: "/model", description: "choose what model and reasoning effort to use", args: true},
-	{name: "/skills", description: "use skills to perform specific tasks"},
+	{name: "/skills", description: "list skills or enable/disable skills"},
 	{name: "/attach", description: "attach a local image", args: true, required: true, busy: true},
 	{name: "/review", description: "review current changes and find issues", args: true},
 	{name: "/new", description: "start a new chat"},

@@ -162,7 +162,7 @@ Terminal regression tests cover inline markers, atomic editing, asynchronous ins
 | Review current Git changes without writing | `/review` |
 | Compact model context manually | `/compact` |
 | Run a goal or queue follow-up instructions | `/goal`, `/pause`, `/continue`, `/follow` |
-| View connection status or select a skill | `/mcp`, `/skills` |
+| View connections or manage skills | `/mcp`, `/skills` |
 | Show help or exit | `/help`, `/exit`, `/quit` |
 
 Type `/` to open the two-column command menu. Use Up/Down to select, Tab to complete, Enter to confirm, and Esc to close while retaining the draft. Plan mode appears on the right of the status bar.
@@ -179,7 +179,9 @@ Asynchronous command states are saved separately using atomic writes; completed 
 
 The activity line above the composer shows waiting, execution, compaction, and reconnection states, including elapsed time and the Esc interruption hint. It is temporarily hidden for interactive questions. Public reasoning summaries may supply an activity title; raw reasoning is not displayed as a progress update. Core retries eligible connection-establishment errors up to three times, displaying the attempt, delay, and redacted reason. Interruptions after streaming begins preserve received text and report the error without automatically replaying executed tools. Final failures preserve the current draft; an empty composer is refilled with that turn's prompt for editing and retrying.
 
-Interactive questions contain numbered choices and descriptions. Use Up/Down or number keys to select, Tab to edit notes, Left/Right to switch questions, Enter to submit, and Esc to interrupt. Selecting a skill inserts `$skill-name` into the composer. The model can load skills and their supporting text files with `read_skill` and `read_skill_resource`.
+Interactive questions contain numbered choices and descriptions. Use Up/Down or number keys to select, Tab to edit notes, Left/Right to switch questions, Enter to submit, and Esc to interrupt. Type `$` at a word boundary to open the inline skill menu, type to filter names or descriptions, use Up/Down to select, and Enter or Tab to insert `$skill-name` without submitting. Esc closes the menu; shell expansions such as `$HOME` and `${HOME}` stay ordinary text. Text before and after the mention and image attachments are preserved. The model loads selected skills and supporting text files with `read_skill` and `read_skill_resource`.
+
+`/skills` opens the **Skills** management menu: **List skills** opens the same `$` menu, and **Enable/Disable Skills** opens a searchable checkbox list. Up/Down selects, Space or Enter toggles, and Esc goes back. Changes save automatically in `skills-state.json` under the Clara data directory, without rewriting `config.toml` or skill files. Preferences use canonical `SKILL.md` paths, so disabling a project skill does not disable unrelated skills with the same name. The nearest definition still wins: disabling it does not expose a shadowed global definition. Disabled skills are removed from completion, model catalogs and catalog-reading tools on the next request, for main agents, children and ACP. Re-enabling restores them. This is a discovery preference, not a filesystem access restriction. Atomic saves and a process lock protect concurrent changes.
 
 File tools and Shell use real host paths. Relative paths start at the current working directory, `..` can access adjacent directories, absolute paths keep their system meaning, `/` is the system root, and `~/` expands to the current user's home. File tools return real absolute paths, including Hashline headers. Shell `workdir` follows the same rules and supports directories outside the project.
 

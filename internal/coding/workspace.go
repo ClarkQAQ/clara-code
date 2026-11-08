@@ -158,6 +158,7 @@ func (w Workspace) instructionFragments(ctx context.Context, home string) ([]pro
 type Skill struct {
 	Name, Description string
 	Source            string
+	Enabled           bool
 }
 
 type skillHeader struct {
@@ -166,6 +167,14 @@ type skillHeader struct {
 }
 
 func (w Workspace) skills(ctx context.Context, home string) ([]Skill, []model.AgentTool, error) {
+	return w.skillCatalog(ctx, home, false)
+}
+
+func (w Workspace) skillCatalog(ctx context.Context, home string, includeDisabled bool) ([]Skill, []model.AgentTool, error) {
+	preferences, err := readSkillPreferences(home)
+	if err != nil {
+		return nil, nil, err
+	}
 	roots := []string{filepath.Join(home, "skills")}
 	for _, dir := range w.directories() {
 		roots = append(roots, filepath.Join(dir, ".agents", "skills"))
@@ -218,18 +227,28 @@ func (w Workspace) skills(ctx context.Context, home string) ([]Skill, []model.Ag
 			if err != nil {
 				continue
 			}
-			catalog[header.Name] = Skill{Name: header.Name, Description: header.Description, Source: resource.Root()}
+			file, err := skillFile(resource.Root())
+			if err != nil {
+				continue
+			}
+			catalog[header.Name] = Skill{Name: header.Name, Description: header.Description, Source: resource.Root(), Enabled: !slices.Contains(preferences.Disabled, file)}
 			resources[header.Name] = resource
 			paths[header.Name] = corefs.Path(prefix + "/" + rel)
 		}
 	}
 	var skills []Skill
 	for _, skill := range catalog {
-		skills = append(skills, skill)
+		if includeDisabled || skill.Enabled {
+			skills = append(skills, skill)
+		}
+		if !skill.Enabled {
+			delete(paths, skill.Name)
+			delete(resources, skill.Name)
+		}
 	}
 	slices.SortFunc(skills, func(a, b Skill) int { return strings.Compare(a.Name, b.Name) })
-	if len(skills) == 0 {
-		return nil, nil, nil
+	if len(paths) == 0 {
+		return skills, nil, nil
 	}
 	resourceTool := tool.Func(tool.Definition{Name: "read_skill_resource", Description: "Read a text resource relative to an available skill directory. Use name and path from the skill instructions.", Effects: []tool.Effect{tool.EffectRead}, ParallelSafe: true},
 		func(ctx context.Context, in struct {

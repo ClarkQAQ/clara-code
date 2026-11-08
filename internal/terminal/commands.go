@@ -65,6 +65,9 @@ func (a *app) handle(input key) bool {
 	if a.picker != nil {
 		return a.handlePicker(input)
 	}
+	if a.handleSkillMenu(input) {
+		return false
+	}
 	if handled, exit := a.handleCommandMenu(input); handled {
 		return exit
 	}
@@ -310,7 +313,7 @@ func (a *app) submit(line string) bool {
 		}
 		a.report("MCP servers", "No MCP servers configured", lines)
 	case "/skills":
-		a.chooseSkill()
+		a.skillsMenu()
 
 	default:
 		a.notice(errors.New("unknown command " + command + " · type /help"))
