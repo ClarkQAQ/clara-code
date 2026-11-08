@@ -1,0 +1,155 @@
+# Copy to CLARA_CODE_HOME/config.toml. Secrets below are placeholders.
+model = "coding"
+model_provider = "gateway"
+model_reasoning_effort = "high"
+plan_mode_reasoning_effort = "high"
+context_bytes = 524288
+
+[model_providers.gateway]
+name = "My gateway"
+base_url = "https://gateway.example/v1"
+wire_api = "responses" # responses or completions
+api_key = "REPLACE_ME"
+request_max_retries = 3 # 0 disables retries; at most 5
+request_timeout_ms = 0 # 0 means no total request deadline
+stream_idle_timeout_ms = 120000
+http_headers = { "X-Client" = "clara-code" }
+# env_http_headers = { "X-Organization" = "MY_ORGANIZATION" }
+
+[model_providers.gateway.models.coding]
+id = "your-model" # catalog key and remote model ID may differ
+display_name = "Coding model"
+description = "General coding and screenshot analysis."
+priority = 1
+visibility = "list" # list or hidden
+context_window = 1048576
+effective_context_window_percent = 95
+max_output_tokens = 16384
+input_modalities = ["text", "image"] # defaults to text/image when omitted
+default_reasoning_level = "high"
+supported_reasoning_levels = ["low", "high", "max"]
+default_reasoning_summary = "auto" # auto, concise, detailed, none
+default_verbosity = "low" # low, medium, high
+supports_parallel_tool_calls = true
+
+[model_providers.other]
+name = "Alternate provider"
+base_url = "http://127.0.0.1:8080/v1"
+wire_api = "completions"
+api_key = "REPLACE_ME"
+
+[model_providers.other.models.coding]
+id = "local-model"
+description = "Text-only local model."
+input_modalities = ["text"]
+supported_reasoning_levels = [] # no explicit reasoning levels
+supports_parallel_tool_calls = false
+
+[tui]
+color = "auto" # auto (respects NO_COLOR), always, never
+markdown = true
+animations = true
+show_tooltips = true
+tool_output_lines = 12 # head/tail preview; 0 hides output
+status_line = ["state", "model", "context", "directory", "git_branch"]
+
+# Each section configures an interaction context. Same-context conflicts fail startup.
+[tui.keymap.composer]
+submit = "enter"
+newline = "alt-enter" # Shift+Enter remains an alias when the terminal sends it
+cancel = "esc"
+interrupt = "ctrl-c"
+exit = "ctrl-d"
+cycle_mode = "shift-tab"
+paste_image = "ctrl-v"
+attachments = "ctrl-g"
+history_previous = "up"
+history_next = "down"
+clear_screen = "ctrl-l"
+complete_command = "tab"
+cursor_left = "left"
+cursor_right = "right"
+word_left = "ctrl-left"
+word_right = "ctrl-right"
+line_start = "home"
+line_end = "end"
+emacs_line_start = "ctrl-a"
+emacs_line_end = "ctrl-e"
+backspace = "backspace"
+delete_forward = "delete"
+delete_word = "ctrl-w"
+kill_to_start = "ctrl-u"
+kill_to_end = "ctrl-k"
+
+[tui.keymap.picker]
+confirm = "enter"
+cancel = "esc"
+interrupt = "ctrl-c"
+previous = "up"
+next = "down"
+first = "home"
+last = "end"
+page_up = "page-up"
+page_down = "page-down"
+delete_attachment = "delete"
+
+[tui.keymap.question]
+submit = "enter"
+cancel = "esc"
+interrupt = "ctrl-c"
+notes = "tab"
+previous_question = "left"
+next_question = "right"
+previous = "up"
+next = "down"
+
+[tui.keymap.rewind]
+confirm = "enter"
+cancel = "esc"
+interrupt = "ctrl-c"
+details = "ctrl-t"
+previous = "left"
+next = "right"
+scroll_up = "up"
+scroll_down = "down"
+
+[tools]
+default_timeout_seconds = 0 # 0 retains each tool's native call timeout
+
+[tools.timeouts]
+# Overrides apply to named tools, including MCP tool names.
+grep = 30
+
+[tools.exec_command]
+yield_seconds = 5
+# timeout_seconds = 120 # omit for unlimited total command runtime; maximum 600
+
+[images]
+max_attachments = 4
+max_source_bytes = 16777216
+max_pixels = 64000000
+max_dimension = 2048
+max_total_bytes = 8388608
+
+# Optional services below are disabled until configured.
+[mcp_servers.files]
+enabled = false
+command = "/path/to/mcp-server"
+args = ["--stdio"]
+env = { "EXAMPLE" = "value" }
+required = false
+connect_timeout_sec = 15
+tool_timeout_sec = 60
+
+[mcp_servers.docs]
+enabled = false
+url = "http://127.0.0.1:8765/mcp"
+http_headers = { "X-Client" = "clara-code" }
+env_http_headers = { "Authorization" = "MCP_AUTHORIZATION" }
+connect_timeout_sec = 15
+tool_timeout_sec = 60
+
+[acp_agents.reviewer-external]
+command = "/path/to/another-agent"
+args = ["acp"]
+# env = { "PROVIDER_KEY" = "..." }

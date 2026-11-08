@@ -107,8 +107,12 @@ func (a *app) activityRows(now time.Time) []string {
 	if !a.activity.paused.IsZero() {
 		clock = a.activity.paused
 	}
-	label := singleLine(header) + " (" + elapsedCompact(clock.Sub(started)) + " · esc to interrupt)"
-	prefix := indicator(now) + " "
+	label := singleLine(header) + " (" + elapsedCompact(clock.Sub(started))
+	if hint := a.hints("Esc"); hint != "" {
+		label += " · " + strings.ToLower(hint) + " to interrupt"
+	}
+	label += ")"
+	prefix := p.indicator(now) + " "
 	if p.width < 4 {
 		prefix = ""
 	}

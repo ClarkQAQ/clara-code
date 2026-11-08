@@ -23,16 +23,19 @@ func (c *Conversation) buildTask(ctx context.Context, spec tool.TaskSpec, scope 
 	meta := c.Store.Meta()
 	name, effort := meta.Model, meta.Effort
 	if spec.Model != "" {
-		name, effort = spec.Model, string(c.Host.Config.Models[spec.Model].Effort)
+		name, effort = spec.Model, string(c.CurrentConfig().Models[spec.Model].Effort)
 	}
 	if spec.Reasoning != "" {
 		effort = spec.Reasoning
 	}
-	model, err := c.Host.model(ctx, name, effort)
+	role := strings.ToLower(spec.Role)
+	if (role == "explorer" || role == "reviewer") && spec.Reasoning == "" {
+		effort = c.ModeEffort(prompt.Plan)
+	}
+	model, err := c.currentModel(ctx, name, effort)
 	if err != nil {
 		return tool.TaskSetup{}, err
 	}
-	role := strings.ToLower(spec.Role)
 	files := c.Workspace.files()
 	items := []modelapi.AgentTool{files.List(), files.Stat(), files.Instructions(), files.Read(), files.Glob(), files.Grep()}
 	mode := prompt.Execute
@@ -46,7 +49,7 @@ func (c *Conversation) buildTask(ctx context.Context, spec tool.TaskSpec, scope 
 		return tool.TaskSetup{}, errs.New(errs.CodeInvalidArgument, "use general, explorer, reviewer or a configured external ACP role")
 	}
 	items = hostPathTools(items)
-	result := tool.TaskSetup{Model: model, Tools: items, PrepareStep: c.prepare(mode, role, model, items, nil, false)}
+	result := tool.TaskSetup{MaxRetries: c.CurrentConfig().Connection().RequestMaxRetries, Model: model, Tools: items, PrepareStep: c.prepare(mode, role, model, items, nil, false)}
 	if mode == prompt.Plan {
 		result.Authorize = tool.PlanOnly
 	}

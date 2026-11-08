@@ -23,6 +23,9 @@ type painter struct {
 	cursorRow    int
 	cursorHidden bool
 	color        bool
+	markdown     *bool
+	previewLines *int
+	animate      *bool
 	history      []session.Cell
 	header       *banner
 	sourceBytes  int
@@ -231,7 +234,13 @@ func (p *painter) messageRows(kind, text string) []string {
 	var body []string
 	switch kind {
 	case "assistant":
-		body = p.markdownRows(text, width)
+		if p.markdown != nil && !*p.markdown {
+			for _, row := range wrap(text, width) {
+				body = append(body, row.text)
+			}
+		} else {
+			body = p.markdownRows(text, width)
+		}
 	case "diff":
 		for _, row := range wrap(text, width) {
 			style := ""
@@ -518,6 +527,9 @@ func (e *editor) vertical(direction, width int) {
 }
 
 func (p *painter) cellRows(cell session.Cell) []string {
+	if len(cell.Attachments) > 0 {
+		return p.attachmentHistory(cell.Attachments)
+	}
 	if cell.Tool != nil {
 		return p.toolRows(*cell.Tool, time.Now())
 	}
@@ -527,6 +539,12 @@ func (p *painter) cellRows(cell session.Cell) []string {
 func (p *painter) paintCell(cell session.Cell) { p.commit(p.cellRows(cell)...) }
 
 func (p *painter) cell(cell session.Cell) bool {
+	if len(cell.Attachments) > 0 {
+		p.history = append(p.history, cell)
+		p.trimHistory()
+		p.commit(p.attachmentHistory(cell.Attachments)...)
+		return false
+	}
 	if cell.Tool == nil {
 		p.message(cell.Kind, cell.Text)
 		return false

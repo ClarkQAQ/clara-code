@@ -59,7 +59,7 @@ func (a *app) diffRows() []string {
 	if p.more {
 		help = "More changes · " + help
 	}
-	lines = append(lines, v.style(dim, truncate(help, v.width)))
+	lines = append(lines, v.style(dim, truncate(a.hints(help), v.width)))
 	return lines[:min(len(lines), v.height)]
 }
 
@@ -75,6 +75,7 @@ func (a *app) rewindRows() []string {
 		}
 		start := len(lines)
 		lines = append(lines, v.messageRows("user", turn.Prompt)...)
+		lines = append(lines, v.attachmentHistory(turn.Attachments)...)
 		if i == p.selected {
 			selectedStart = start
 			for j := start; j < len(lines); j++ {
@@ -101,7 +102,7 @@ func (a *app) rewindRows() []string {
 	p.scroll = min(max(0, p.scroll), max(0, len(lines)-height))
 	result := []string{v.style(dim, truncate(fmt.Sprintf("Edit a previous message · %d/%d", p.selected+1, len(a.prompts)), v.width))}
 	result = append(result, lines[p.scroll:min(len(lines), p.scroll+height)]...)
-	result = append(result, v.style(dim, truncate("←/→ Message  ↑/↓ Scroll  Ctrl+T Details  Enter Edit  Esc Cancel", v.width)))
+	result = append(result, v.style(dim, truncate(a.hints("←/→ Message  ↑/↓ Scroll  Ctrl+T Details  Enter Edit  Esc Cancel"), v.width)))
 	return result[:min(len(result), v.height)]
 }
 
@@ -118,6 +119,7 @@ func (a *app) reloadRunDisplay(turn *session.Turn) {
 		}
 	}
 	a.view.remember("user", turn.Prompt)
+	a.replayAttachments(turn.Attachments)
 	for _, cell := range turn.Cells {
 		a.view.cell(cell)
 	}
@@ -186,7 +188,7 @@ func (a *app) handleTranscriptPicker(input key) bool {
 				a.notice(err)
 				return false
 			}
-			a.switchSession("", true, p.selected, turn.Prompt, "Rewound conversation")
+			a.switchSession("", true, p.selected, turn.Prompt, "Rewound conversation", turn.Attachments...)
 		}
 	}
 	return false

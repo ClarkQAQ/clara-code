@@ -32,6 +32,8 @@ type Meta struct {
 	LegacyPathContext                     bool `json:",omitempty"`
 	ID, Project, Cwd, Parent, FirstPrompt string
 	Model, Effort                         string
+	Provider                              string `json:",omitempty"`
+	PlanEffort                            string `json:",omitempty"`
 	Updated                               time.Time
 	LastUsage                             *modelapi.Usage `json:",omitempty"`
 	TotalUsage                            modelapi.Usage
@@ -40,12 +42,14 @@ type Meta struct {
 }
 
 type Cell struct {
-	Kind, Text string
-	Tool       *ToolActivity `json:",omitempty"`
+	Kind, Text  string
+	Attachments []Attachment  `json:",omitempty"`
+	Tool        *ToolActivity `json:",omitempty"`
 }
 
 type Turn struct {
 	ID, Prompt    string
+	Attachments   []Attachment `json:",omitempty"`
 	Cells         []Cell
 	Cursor        uint64
 	Staged        bool
@@ -214,6 +218,11 @@ func (s *Store) Save(ctx context.Context, state core.State) error {
 		next.Active = &Turn{ID: state.ActiveRun}
 		if at := len(before); at < len(state.Messages) {
 			next.Active.Prompt = excerpt(Text(state.Messages[at]), 256<<10)
+			attachments, err := attachmentsFrom(s.home, state.Messages[at])
+			if err != nil {
+				return err
+			}
+			next.Active.Attachments = attachments
 			if next.Active.Prompt == "" {
 				next.Active.Prompt = "[attachment]"
 			}
@@ -522,11 +531,19 @@ func read(path string, maxBytes int64, dst any) error {
 	if int64(len(body)) > maxBytes {
 		return errors.New("session data exceeds the size limit")
 	}
+	body, err = mediaJSON(path, body, true)
+	if err != nil {
+		return err
+	}
 	return json.Unmarshal(body, dst)
 }
 
 func write(path string, value any, maxBytes int) error {
 	body, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	body, err = mediaJSON(path, body, false)
 	if err != nil {
 		return err
 	}
@@ -552,7 +569,8 @@ func write(path string, value any, maxBytes int) error {
 
 // RecordInput persists an input already accepted by the Core run queue.
 // It also handles a run finishing between queue acceptance and this write.
-func (s *Store) RecordInput(runID, text string) error {
+func (s *Store) RecordInput(runID, text string) error { return s.RecordFiles(runID, text, nil) }
+func (s *Store) RecordFiles(runID, text string, attachments []Attachment) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.lock == nil {
@@ -563,6 +581,9 @@ func (s *Store) RecordInput(runID, text string) error {
 		turn := *next.Active
 		turn.Cells = slices.Clone(turn.Cells)
 		turn.append("user", text)
+		if len(attachments) > 0 {
+			turn.Cells = append(turn.Cells, Cell{Kind: "attachments", Attachments: attachments})
+		}
 		next.Active = &turn
 		return s.commit(next)
 	}
@@ -573,6 +594,9 @@ func (s *Store) RecordInput(runID, text string) error {
 				return err
 			}
 			turn.append("user", text)
+			if len(attachments) > 0 {
+				turn.Cells = append(turn.Cells, Cell{Kind: "attachments", Attachments: attachments})
+			}
 			return write(s.object(id, ""), turn, 10<<20)
 		}
 	}

@@ -44,6 +44,7 @@ type TaskBackend interface {
 }
 
 type TaskSetup struct {
+	MaxRetries   *int
 	Model        model.LanguageModel
 	Tools        []Tool
 	Instructions string
@@ -174,7 +175,11 @@ func (s *TaskScope) Spawn(ctx context.Context, spec TaskSpec) (TaskInfo, error) 
 		return nil
 	}
 	child.options.Authorize = authorize
-	engine := core.NewAgent(setup.Model, core.WithTools(initial...), core.WithSystemPrompt(setup.Instructions))
+	options := []core.AgentOption{core.WithTools(initial...), core.WithSystemPrompt(setup.Instructions)}
+	if setup.MaxRetries != nil {
+		options = append(options, core.WithMaxRetries(*setup.MaxRetries))
+	}
+	engine := core.NewAgent(setup.Model, options...)
 	conversation, err := core.NewSession(lifetime, engine, nil)
 	if err != nil {
 		return TaskInfo{}, err

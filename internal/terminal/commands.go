@@ -9,13 +9,45 @@ import (
 	"time"
 
 	"clara-code/pkg/core/prompt"
+	"clara-code/pkg/model"
 	"clara-code/pkg/tool"
 
+	"clara-code/internal/coding"
 	"clara-code/internal/session"
 	"clara-code/pkg/util/localtime"
 )
 
 func (a *app) handle(input key) bool {
+	input = a.bindKey(input)
+	if a.op == nil && a.picker == nil && a.question == nil {
+		if input.code == "ctrl-v" {
+			a.loadAttachments(nil, true)
+			return false
+		}
+		if input.code == "ctrl-g" {
+			a.manageAttachments()
+			return false
+		}
+		if input.code == "paste" {
+			if paths, recognized, err := coding.ImagePaths(input.text, a.space.Cwd); recognized {
+				if a.attachmentResults != nil {
+					a.editor.insert(input.text)
+					return false
+				}
+				if err != nil {
+					a.notice(err)
+					a.editor.insert(input.text)
+				} else {
+					a.attachmentPasteBefore = a.editor.text
+					a.loadAttachments(paths, false)
+					a.editor.insert(input.text)
+					a.attachmentPasteText = a.editor.text
+				}
+				return false
+			}
+		}
+	}
+
 	if a.op != nil {
 		if input.code == "escape" || input.code == "ctrl-c" {
 			a.stopOp()
@@ -48,21 +80,22 @@ func (a *app) handle(input key) bool {
 			a.interrupt()
 			return false
 		}
-		if a.editor.text != "" {
+		if a.editor.text != "" || len(a.attachments) > 0 {
 			a.editor.replace("")
+			a.attachments = nil
 			a.historyAt = -1
 			return false
 		}
 		return true
 	case "ctrl-d":
-		if a.editor.text == "" && a.run == nil {
+		if a.editor.text == "" && len(a.attachments) == 0 && a.run == nil {
 			return true
 		}
 	case "escape":
 		switch {
 		case a.run != nil:
 			a.interrupt()
-		case a.editor.text == "" && len(a.prompts) > 0:
+		case a.editor.text == "" && len(a.attachments) == 0 && len(a.prompts) > 0:
 			if a.primed {
 				a.openRewind()
 				a.primed, a.hint = false, ""
@@ -82,8 +115,12 @@ func (a *app) handle(input key) bool {
 		}
 		return false
 	case "enter":
+		if a.attachmentResults != nil {
+			a.hint = "Wait for the image to finish loading"
+			return false
+		}
 		line := strings.TrimSpace(a.editor.text)
-		if line == "" {
+		if line == "" && len(a.attachments) == 0 {
 			return false
 		}
 		a.editor.replace("")
@@ -151,7 +188,7 @@ func (a *app) submit(line string) bool {
 				lines = append(lines, fmt.Sprintf("%-12s %s", spec.name, spec.description))
 			}
 		}
-		a.view.message("notice", strings.Join(lines, "\n")+"\nShift+Tab switches Agent/Plan. Esc interrupts. Esc Esc previews previous prompts. Alt+Enter adds a line.")
+		a.view.message("notice", strings.Join(lines, "\n")+"\n"+a.hints("Shift+Tab switches Agent/Plan. Esc interrupts. Esc Esc previews previous prompts. Alt+Enter adds a line.")+"\n"+a.host.Config.TUI.Hint("composer", "paste_image")+" pastes an image; "+a.host.Config.TUI.Hint("composer", "attachments")+" manages attachments.")
 		return false
 	}
 	if command == "/pause" {
@@ -159,8 +196,8 @@ func (a *app) submit(line string) bool {
 		return false
 	}
 	if command == "/follow" {
-		if arg == "" {
-			a.notice(errors.New("usage: /follow TEXT"))
+		if arg == "" && len(a.attachments) == 0 {
+			a.notice(errors.New("usage: /follow TEXT or attach an image"))
 		} else if a.run != nil {
 			a.steer(arg, true)
 		} else {
@@ -188,6 +225,21 @@ func (a *app) submit(line string) bool {
 		return false
 	}
 	switch command {
+	case "/attach":
+		a.editor.replace(line)
+		if arg == "" {
+			a.notice(errors.New("usage: /attach PATH"))
+		} else if paths, ok, err := coding.ImagePaths(arg, a.space.Cwd); err != nil {
+			a.notice(err)
+		} else if ok {
+			a.loadAttachments(paths, false)
+			if a.attachmentResults != nil {
+				a.attachmentPasteBefore = ""
+				a.attachmentPasteText = line
+			}
+		} else {
+			a.loadAttachments([]string{arg}, false)
+		}
 	case "/plan":
 		a.mode = prompt.Plan
 	case "/agent":
@@ -282,10 +334,18 @@ func (a *app) report(title, empty string, lines []string) {
 }
 
 func (a *app) steer(text string, follow bool) {
-	accepted, err := a.conv.QueueInput(a.ctx, a.run, text, follow)
+	files, fileErr := coding.AttachmentFiles(a.host.Config.Home, a.attachments, a.host.Config.Images)
+	if fileErr != nil {
+		a.notice(fileErr)
+		a.editor.replace(text)
+		return
+	}
+	accepted, err := a.conv.QueueFiles(a.ctx, a.run, text, follow, files)
 	if err != nil && !accepted {
 		if a.conv.Session.Active() == nil {
 			a.pendingInput = append(a.pendingInput, text)
+			a.pendingAttachments = append(a.pendingAttachments, a.attachments...)
+			a.attachments = nil
 			return
 		}
 		a.editor.replace(text)
@@ -294,6 +354,8 @@ func (a *app) steer(text string, follow bool) {
 	}
 	a.flushStream()
 	a.view.message("user", text)
+	a.replayAttachments(a.attachments)
+	a.attachments = nil
 	if err != nil {
 		a.notice(fmt.Errorf("input accepted, but saving its display record failed: %w", err))
 	}
@@ -371,25 +433,82 @@ func (a *app) chooseModel(arg string) {
 		a.applyModel(name, effort)
 		return
 	}
-	p := &picker{kind: "model", title: "Select model"}
-	var names []string
-	for name := range a.host.Config.Models {
-		names = append(names, name)
+	if len(a.host.Config.Providers) > 1 {
+		p := &picker{kind: "provider", title: "Select provider"}
+		names := make([]string, 0, len(a.host.Config.Providers))
+		for name := range a.host.Config.Providers {
+			names = append(names, name)
+		}
+		slices.Sort(names)
+		for _, name := range names {
+			label := name
+			if display := a.host.Config.Providers[name].Name; display != "" {
+				label = display + " · " + name
+			}
+			p.items = append(p.items, choice{id: name, label: label})
+		}
+		a.picker = p
+		return
 	}
-	slices.Sort(names)
+	a.showModels(a.host.Config.ModelProvider)
+}
+func (a *app) showModels(provider string) {
+	config := a.host.Config
+	if len(config.Providers) > 0 {
+		var err error
+		config, err = config.SelectProvider(provider)
+		if err != nil {
+			a.notice(err)
+			return
+		}
+	}
+	p := &picker{kind: "model", title: "Select model", provider: provider}
+	var names []string
+	for name, m := range config.Models {
+		if m.Visibility != "hidden" {
+			names = append(names, name)
+		}
+	}
+	slices.SortFunc(names, func(a, b string) int {
+		if config.Models[a].Priority != config.Models[b].Priority {
+			return config.Models[a].Priority - config.Models[b].Priority
+		}
+		return strings.Compare(a, b)
+	})
 	for i, name := range names {
-		if name == a.conv.Store.Meta().Model {
+		m := config.Models[name]
+		label := name
+		if m.DisplayName != "" {
+			label = m.DisplayName + " · " + name
+		}
+		if m.Images() {
+			label += " · image"
+		}
+		if m.Description != "" {
+			label += " · " + m.Description
+		}
+		if name == a.conv.Store.Meta().Model && provider == a.conv.Store.Meta().Provider {
 			p.selected = i
 		}
-		p.items = append(p.items, choice{id: name, label: name})
+		p.items = append(p.items, choice{id: name, label: label})
 	}
 	a.picker = p
 }
 
 func (a *app) applyModel(name, effort string) {
-	if err := a.conv.ChangeModel(a.ctx, name, effort); err != nil {
+	a.applySelection(a.host.Config.ModelProvider, name, effort)
+}
+func (a *app) applySelection(provider, name, effort string) {
+	previous := a.conv.Store.Meta()
+	if err := a.conv.ChangeSelection(a.ctx, provider, name, effort, a.mode); err != nil {
 		a.notice(err)
 		return
 	}
-	a.view.message("notice", "Model set to "+modelLabel(a.conv.Store.Meta()))
+	a.host = a.conv.Host
+	a.host.Config = a.conv.CurrentConfig()
+	profile := a.host.Config.Models[name]
+	if !profile.Allows(model.ReasoningEffort(previous.Effort)) || !profile.Allows(model.ReasoningEffort(previous.PlanEffort)) {
+		a.view.message("notice", "Unsupported reasoning settings were reset for the selected model.")
+	}
+	a.view.message("notice", "Model set to "+modelLabel(a.conv.Store.Meta())+" · "+a.conv.ModeEffort(a.mode))
 }

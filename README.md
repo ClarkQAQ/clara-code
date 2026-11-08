@@ -44,7 +44,7 @@ Migrate old imports using the following mapping. Types and behavior remain uncha
 | `clara-core/models/...` | `clara-code/pkg/model/...` |
 | `clara-core/tools/...` | `clara-code/pkg/tool/...` |
 
-An adjacent Clara Core checkout is no longer needed. Existing configuration, environment variables, sessions, and protocol formats remain compatible; the original examples continue to use their `CLARA_CORE_*` settings. `make check` runs formatting checks, tests, race tests, vet, lint, and CLI and example builds. `make build` produces `clara-code` at the repository root. Inject a version with `go build -ldflags '-X main.version=VERSION' .`. The [Development Guide](AGENTS.md) defines placement rules and verification requirements for new features. The original framework's license, attribution, and prompt provenance are preserved.
+An adjacent Clara Core checkout is no longer needed. Saved sessions and protocol formats remain compatible; the new application configuration format intentionally replaces the old format; the original examples continue to use their `CLARA_CORE_*` settings. `make check` runs formatting checks, tests, race tests, vet, lint, and CLI and example builds. `make build` produces `clara-code` at the repository root. Inject a version with `go build -ldflags '-X main.version=VERSION' .`. The [Development Guide](AGENTS.md) defines placement rules and verification requirements for new features. The original framework's license, attribution, and prompt provenance are preserved.
 
 Configure a live model through environment variables:
 
@@ -60,41 +60,71 @@ export CLARA_CODE_API_KEY='your-key'
 
 On Linux, the data directory defaults to `~/.local/share/clara-code`, or `clara-code` under `XDG_DATA_HOME` when set. On macOS, it is `~/Library/Application Support/clara-code`. `CLARA_CODE_HOME` overrides the directory on either platform.
 
-Create `config.toml` in the data directory. Model environment variables take precedence; unspecified connection settings can fall back to the corresponding `CLARA_CORE_*` variables. You can also set `api_key_file` to a key file accessible only to the current user (mode `0600`). Relative paths resolve from the data directory. A key supplied through the environment takes precedence.
+Use [config.example.toml](config.example.toml) for the complete supported schema. The old top-level `endpoint`, `protocol`, `api_key_*`, and `[models]` format is no longer accepted. There are no profiles. Existing saved sessions are not deleted by this configuration change.
+
+Configuration precedence, from lowest to highest:
+
+1. Built-in defaults.
+2. `CLARA_CODE_HOME/config.toml`.
+3. `.agents/clara-code.toml` in each directory from the canonical Git root to the selected working directory. Non-Git workspaces load only their current directory's file.
+4. `CLARA_CODE_*` environment overrides.
+5. Repeated `-c/--config key=value`, applied in order.
+6. Dedicated `-m/--model` options.
+
+`--cwd` is resolved before discovery. Resuming a session reloads configuration for its saved working directory; CLI and environment overrides still apply. Project configuration has full authority under YOLO mode, including commands, providers, headers, and authentication. Only use project configuration you intend to run. Project files cannot redefine the home directory or working directory.
 
 ```toml
-endpoint = "https://gateway.example/v1"
-protocol = "responses"
-api_key_env = "MY_GATEWAY_API_KEY"
-model = "coding"
-context_bytes = 524288
+model = "deepseek-flash"
+model_provider = "gulugulu"
+model_reasoning_effort = "high"
+plan_mode_reasoning_effort = "high"
 
-[models.coding]
-id = "your-model"
-effort = "high"
-context_window = 128000
-effective_context_window_percent = 95
+[model_providers.gulugulu]
+name = "Gulugulu"
+base_url = "https://gateway.example/v1"
+wire_api = "responses" # or completions
+api_key = "REPLACE_ME"
+request_max_retries = 3
+stream_idle_timeout_ms = 120000
 
-[models.fast]
-id = "another-model"
-
-# MCP stdio example
-[mcp_servers.files]
-command = "/path/to/mcp-server"
-args = ["--stdio"]
-required = false
-
-# MCP Streamable HTTP example
-[mcp_servers.docs]
-url = "http://127.0.0.1:8765/mcp"
-
-# External ACP subagent. The model can use reviewer-external as a task role.
-[acp_agents.reviewer-external]
-command = "/path/to/another-agent"
-args = ["acp"]
+[model_providers.gulugulu.models.deepseek-flash]
+context_window = 1048576
+input_modalities = ["text", "image"]
+default_reasoning_level = "high"
+supported_reasoning_levels = ["low", "high", "max"]
 ```
 
+Environment overrides: `CLARA_CODE_MODEL_PROVIDER`, `CLARA_CODE_MODEL`, `CLARA_CODE_MODEL_REASONING_EFFORT` (preferred over `CLARA_CODE_EFFORT`), `CLARA_CODE_PLAN_MODE_REASONING_EFFORT`, and `CLARA_CODE_CONTEXT_BYTES`. `CLARA_CODE_ENDPOINT`, `CLARA_CODE_PROTOCOL`, and `CLARA_CODE_API_KEY` override the provider selected at the environment layer. They are not reused as credentials for other providers. `CLARA_CORE_*` fallback is reserved for standalone framework examples, not application configuration.
+
+```sh
+clara-code --cwd /path/to/project \
+  -c 'model_provider="gulugulu"' \
+  -c 'plan_mode_reasoning_effort="max"' \
+  -c 'tui.status_line=["model","context","directory"]'
+clara-code -c 'model_providers."my.gateway"={base_url="http://localhost:8080/v1",wire_api="completions"}'
+```
+
+Overrides split at the first `=`. Values are parsed as TOML; invalid TOML values become strings. Dotted and quoted keys, arrays, and inline tables are supported. Tables merge by key; arrays replace the entire value. Unknown settings and unsupported values fail with their source and configuration path, without echoing secret values.
+
+Providers authenticate with `api_key` directly in their configuration table. `CLARA_CODE_API_KEY` remains an optional environment override. Keep actual keys out of version control. Providers also support literal and environment-backed HTTP headers, request retries, total request deadlines, and stream idle deadlines. Only requests that fail before streaming starts are eligible for Core's retry policy. Streams are never automatically replayed after output begins. The activity line reports timeouts and connection failures. Authentication is redacted from diagnostics.
+
+Model catalogs drive `/model` provider/model/effort selectors and request behavior. Each model can specify an API `id`, display name, description, priority, visibility, context/output budgets, modalities, reasoning levels, summary, verbosity, and parallel tool calls. Omitted modalities default to text/image; omitted reasoning metadata retains permissive defaults. Explicit unsupported reasoning levels fail. Agent and Plan keep independent session settings; an omitted Plan level inherits Agent. Switching models retains context, resets incompatible saved levels, and reports the reset. UI selection is saved in the session, not written to configuration. `/status` shows the provider, model capabilities, both levels, and loaded configuration sources.
+
+`[tui]` controls color, Markdown, animation, hints, preview size, and ordered status fields. `[tui.keymap.<context>]` remaps existing actions for `composer`, `picker`, `question`, and `rewind`; the example lists every action. Same-context conflicts fail startup. Printable text, IME, and bracketed paste keep their normal input path. Hints use configured keys. Tool call deadlines can be set globally or per tool; command yield/runtime defaults are separate, and explicit model arguments take precedence. MCP servers can be disabled and have separate connection and call deadlines; stdio/HTTP, headers, environment, and external ACP agents remain supported.
+
 `context_bytes` is the serialized byte budget for automatic compaction; set it to `0` to disable automatic compaction. `context_window` is the model's raw token limit. The status bar uses 95% of that limit as the effective window by default; change it with `effective_context_window_percent`. Current context usage comes from the most recent valid request's total tokens. The percentage calculation subtracts a fixed 12,000-token baseline, following the reference Codex implementation. Cumulative usage appears separately in `/status`; unavailable usage is shown as unknown. Put global rules in `AGENTS.md` in the data directory and global skills in `skills/<name>/SKILL.md`. Project rules load from the Git root downward; project skills live in `.agents/skills/` at the applicable directory. Skill files declare `name` and `description` in YAML or TOML front matter.
+
+## Images
+
+Ctrl+V reads an image from the system clipboard in the background and falls back to clipboard text. Ordinary terminal paste still uses bracketed paste. macOS uses AppKit through the system JavaScript bridge; Linux uses `wl-paste` on Wayland or `xclip` on X11. Reads have a four-second timeout and bounded output. Missing clipboard helpers are reported without installing anything; `/attach PATH` remains available.
+
+Paste or drag complete local image paths, including quoted or escaped spaces, multiple paths, and `file://` URLs. Paths inside an ordinary sentence remain text. `/attach <path>` explicitly adds an image. Invalid paths retain the pasted draft and report the failure. Attachments appear as compact numbered filename/dimension cards; Ctrl+G opens the attachment selector and Delete removes one. Pure-image messages, text with multiple images, steering, and `/follow` are supported. Unaccepted and failed submissions retain text and attachments.
+
+Defaults are four images per submission, a 16 MiB source limit per image, a 64 MP decode limit, a 2048-pixel longest side, and an 8 MiB combined normalized payload. `[images]` can lower or adjust the bounded limits. Images use the existing decoder and normalization path. A model explicitly lacking image support rejects new attachments and blocks drafts containing images. Historical images never block model switching: request copies replace them with an explicit omission notice, including images from file/MCP tools. Original history is unchanged, so switching back restores image input. `image_view` is only offered and executable for image-capable models. The same policy applies to main agents, subagents, Plan, Review, and ACP.
+
+Normalized images are stored by content hash under the application data directory's `attachments/`. Session and transcript files contain references instead of base64. Recovery, forks, and prompt rewind retain images without depending on their original paths. Missing/corrupt blobs produce explicit errors. Requests reconstruct standard model media parts; public packages do not depend on Clara's storage layout. Compaction uses image descriptions and findings, retaining original transcript attachments for replay and branching. Back up `attachments/` together with sessions and turns.
+
+Terminal regression tests cover cards, deletion, resize, cursor placement, and native scrollback. Clipboard tests use mocked platform adapters and a private named macOS pasteboard; they do not read or change the user's clipboard. Actual OS IME and clipboard behavior in VS Code and Linux desktop sessions still requires manual acceptance.
 
 ## Interaction
 
@@ -110,6 +140,7 @@ args = ["acp"]
 | Clear the terminal and start a new conversation | `/clear`; the old session remains resumable |
 | View usage, configuration, or the working directory | `/status`, `/pwd` |
 | View changes | `/diff`; Tab switches staged, unstaged, and untracked views; n/p changes pages |
+| Attach or manage images | Ctrl+V, `/attach <path>`, Ctrl+G; Delete removes a selected attachment |
 | Select a model and reasoning effort | `/model [name [effort]]` |
 | Review current Git changes without writing | `/review` |
 | Compact model context manually | `/compact` |

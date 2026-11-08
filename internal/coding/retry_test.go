@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -24,11 +22,7 @@ func remoteFixture(t *testing.T, handler http.HandlerFunc) (*Conversation, strin
 	c.Host.Config.Endpoint = server.URL + "/v1"
 	c.Host.Config.Protocol = "completions"
 	key := "fixture-api-key-should-never-appear"
-	path := filepath.Join(c.Host.Config.Home, "key")
-	if err := os.WriteFile(path, []byte(key), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	c.Host.Config.APIKeyFile = path
+	c.Host.Config.APIKey = key
 	factory, err := c.Host.Config.Factory()
 	if err != nil {
 		t.Fatal(err)

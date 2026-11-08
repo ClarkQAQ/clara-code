@@ -57,6 +57,28 @@ type Conversation struct {
 
 func (h Host) Open(ctx context.Context, workspace Workspace, store *session.Store, ask *Questions, extra []mcp.ServerConfig) (*Conversation, error) {
 	meta := store.Meta()
+	reloaded, err := h.Config.Reload(ctx, workspace.Cwd, workspace.Root)
+	if err != nil {
+		return nil, errors.Join(err, store.Close())
+	}
+	h.Config = reloaded
+	if meta.Provider != "" && len(h.Config.Providers) > 0 {
+		h.Config, err = h.Config.SelectProvider(meta.Provider)
+		if err != nil {
+			return nil, errors.Join(err, store.Close())
+		}
+	}
+	if meta.ID == "" && h.Config.DefaultModel != "" {
+		store.SetInitialModel(h.Config.DefaultModel, string(h.Config.Models[h.Config.DefaultModel].Effort))
+		meta = store.Meta()
+	}
+	if meta.ID == "" || meta.Provider == "" {
+		planEffort := meta.PlanEffort
+		if planEffort == "" {
+			planEffort = string(h.Config.PlanEffort)
+		}
+		store.SetPendingSelection(h.Config.ModelProvider, planEffort)
+	}
 	lifetime, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	c := &Conversation{Host: h, Workspace: workspace, Store: store, Questions: ask,
 		Goal: &toolapi.Goal{}, plan: &toolapi.MemoryPlan{}, cancel: cancel}
@@ -85,7 +107,9 @@ func (h Host) Open(ctx context.Context, workspace Workspace, store *session.Stor
 		slices.Sort(names)
 		configs := make([]mcp.ServerConfig, 0, len(names)+len(extra))
 		for _, name := range names {
-			configs = append(configs, h.Config.MCP[name].Server(name, workspace.Cwd))
+			if setting.Enabled(h.Config.MCP[name].Enabled) {
+				configs = append(configs, h.Config.MCP[name].Server(name, workspace.Cwd))
+			}
 		}
 		configs = append(configs, extra...)
 		c.mcp, err = mcp.Connect(ctx, configs)
@@ -98,6 +122,7 @@ func (h Host) Open(ctx context.Context, workspace Workspace, store *session.Stor
 	for _, tool := range append(slices.Clone(c.items), taskTools(&toolapi.TaskScope{})...) {
 		allowed = append(allowed, tool.Info().Name)
 	}
+	allowed = append(allowed, "image_view")
 	c.tasks = manager.Scope(lifetime, "", toolapi.ScopeOptions{
 		AllowedTools: allowed,
 		History: func() []modelapi.Message {
@@ -169,7 +194,18 @@ func (h Host) model(ctx context.Context, name, effort string) (modelapi.Language
 	if !setting.ValidEffort(level) {
 		return nil, errors.New("invalid reasoning effort")
 	}
-	model, err := h.Models(ctx, profile.ID)
+	if !profile.Allows(level) {
+		return nil, errors.New("reasoning effort is not supported by this model")
+	}
+	factory := h.Models
+	if factory == nil {
+		var err error
+		factory, err = h.Config.Factory()
+		if err != nil {
+			return nil, err
+		}
+	}
+	model, err := factory(ctx, profile.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -177,7 +213,7 @@ func (h Host) model(ctx context.Context, name, effort string) (modelapi.Language
 	if level != "" {
 		model = effortModel{LanguageModel: model, effort: level}
 	}
-	return model, nil
+	return capabilityModel{LanguageModel: model, profile: profile}, nil
 }
 
 type effortModel struct {
@@ -186,28 +222,21 @@ type effortModel struct {
 }
 
 func (m effortModel) Generate(ctx context.Context, call modelapi.Call) (*modelapi.Response, error) {
-	call.ProviderOptions.ReasoningEffort = &m.effort
+	if call.ProviderOptions.ReasoningEffort == nil {
+		call.ProviderOptions.ReasoningEffort = &m.effort
+	}
 	return m.LanguageModel.Generate(ctx, call)
 }
 
 func (m effortModel) Stream(ctx context.Context, call modelapi.Call) (modelapi.StreamResponse, error) {
-	call.ProviderOptions.ReasoningEffort = &m.effort
+	if call.ProviderOptions.ReasoningEffort == nil {
+		call.ProviderOptions.ReasoningEffort = &m.effort
+	}
 	return m.LanguageModel.Stream(ctx, call)
 }
 
 func (c *Conversation) ChangeModel(ctx context.Context, name, effort string) error {
-	if c.Session.Active() != nil {
-		return errors.New("finish or cancel the current turn before switching models")
-	}
-	model, err := c.Host.model(ctx, name, effort)
-	if err != nil {
-		return err
-	}
-	if err := c.Store.SetModel(name, effort); err != nil {
-		return err
-	}
-	c.model = model
-	return nil
+	return c.ChangeSelection(ctx, c.Host.Config.ModelProvider, name, effort, prompt.Execute)
 }
 
 func (c *Conversation) Call(mode prompt.Mode, review bool) core.AgentStreamCall {
@@ -216,8 +245,15 @@ func (c *Conversation) Call(mode prompt.Mode, review bool) core.AgentStreamCall 
 		mode, role = prompt.Plan, "reviewer"
 	}
 	call := core.AgentStreamCall{PrepareStep: c.prepare(mode, role, c.model, c.items, c.plan, true)}
-	const retries = 3
+	retries := 3
+	if n := c.CurrentConfig().Connection().RequestMaxRetries; n != nil {
+		retries = *n
+	}
 	call.MaxRetries = new(retries)
+	effort := modelapi.ReasoningEffort(c.ModeEffort(mode))
+	if effort != "" {
+		call.ProviderOptions.ReasoningEffort = &effort
+	}
 	attempt := 0
 	responseStarted := false
 	call.OnStepStart = func(step int) error {
@@ -304,11 +340,24 @@ func (c *Conversation) Call(mode prompt.Mode, review bool) core.AgentStreamCall 
 }
 
 func (c *Conversation) Start(ctx context.Context, mode prompt.Mode, text string, review bool) (*core.Run, error) {
+	return c.StartWithFiles(ctx, mode, text, review, nil)
+}
+func (c *Conversation) StartWithFiles(ctx context.Context, mode prompt.Mode, text string, review bool, files []modelapi.FilePart) (*core.Run, error) {
+	files, err := c.prepareFiles(ctx, files)
+	if err != nil {
+		return nil, err
+	}
+	if session.MediaBytes(c.Session.Messages()) > 16<<20 {
+		if err := c.Compact(ctx); err != nil {
+			return nil, err
+		}
+	}
 	if review && !c.Workspace.Git {
 		return nil, errors.New("/review requires a Git working tree")
 	}
 	call := c.Call(mode, review)
 	call.Prompt = text
+	call.Files = files
 	return c.Session.Start(ctx, call)
 }
 
@@ -326,13 +375,18 @@ func (c *Conversation) prepare(mode prompt.Mode, role string, model modelapi.Lan
 			}
 			inputs = &promptInputs{rules, skills, skillTool}
 		}
+		profile := profileOf(model)
 		items := slices.Clone(registered)
+		if profile.Images() {
+			items = append(items, c.imageTool(profile))
+		}
 		if inputs.tool != nil {
 			items = append(items, inputs.tool...)
 		}
 		if foreground && mode == prompt.Execute {
 			items = append(items, c.mcp.Tools()...)
 		}
+		items = c.configureTools(items, profile)
 		overrides := map[string]string{}
 		for _, fragment := range []string{"search", "hashline", "commands"} {
 			body := strings.ReplaceAll(prompt.Default(fragment), `"path":"/`, `"path":"`)
@@ -341,6 +395,12 @@ func (c *Conversation) prepare(mode prompt.Mode, role string, model modelapi.Lan
 			body = strings.ReplaceAll(body, "workspace root", "system filesystem root")
 			body = strings.ReplaceAll(body, "timeout_seconds defaults to 600 and has a maximum of 600", "timeout_seconds is optional in Clara Code; omission sets no total deadline, and explicit values up to 600 seconds still apply")
 			overrides[fragment] = body
+		}
+		if defaults := c.Host.Config.Tools.Exec; defaults.TimeoutSeconds != nil {
+			overrides["commands"] = strings.ReplaceAll(overrides["commands"], "omission sets no total deadline", fmt.Sprintf("omission uses the configured %d-second total deadline", *defaults.TimeoutSeconds))
+		}
+		if yield := c.Host.Config.Tools.Exec.YieldSeconds; yield > 0 {
+			overrides["commands"] = strings.ReplaceAll(overrides["commands"], "yield_seconds defaults to 5 for exec_command", fmt.Sprintf("yield_seconds defaults to %d for exec_command", yield))
 		}
 		overrides["commands"] += "\nDetached terminals belong to this Clara session, including terminals started by subagents. Canceling a turn or write_stdin wait leaves detached terminals running. Check their latest status before polling or restarting; do not restart a terminal explicitly stopped by the user unless requested. Automatic observation does not consume unread output or start a new turn."
 		overrides["workspace_rules"] = prompt.Default("workspace_rules") + "\nClara Code already injects global instructions and current-directory project rules. fs_instructions queries project files only; no project instructions does not mean no global instructions. For new files, query the destination path before writing."
@@ -404,7 +464,8 @@ func (c *Conversation) prepare(mode prompt.Mode, role string, model modelapi.Lan
 				return ctx, core.PrepareStepResult{}, errors.New("workspace context exceeds the context budget")
 			}
 			var err error
-			compacted, err = (prompt.Compactor{BudgetBytes: budget}).Fit(ctx, model, system, history, items)
+			summaryHistory := session.SummaryMessages(history)
+			compacted, err = (prompt.Compactor{BudgetBytes: budget}).Fit(ctx, model, system, summaryHistory, items)
 			if err != nil {
 				return ctx, core.PrepareStepResult{}, err
 			}
@@ -449,7 +510,7 @@ func (c *Conversation) Compact(ctx context.Context) error {
 	if len(history) == 0 {
 		return errors.New("there is no conversation to compact")
 	}
-	body, err := json.Marshal(history)
+	body, err := json.Marshal(session.SummaryMessages(history))
 	if err != nil {
 		return err
 	}
@@ -512,17 +573,27 @@ func (c *Conversation) ProjectLabel() string {
 }
 
 func (c *Conversation) QueueInput(ctx context.Context, run *core.Run, text string, follow bool) (bool, error) {
+	return c.QueueFiles(ctx, run, text, follow, nil)
+}
+func (c *Conversation) QueueFiles(ctx context.Context, run *core.Run, text string, follow bool, files []modelapi.FilePart) (bool, error) {
+	files, err := c.prepareFiles(ctx, files)
+	if err != nil {
+		return false, err
+	}
+	attachments, err := AttachmentsFromFiles(c.Host.Config.Home, files)
+	if err != nil {
+		return false, err
+	}
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	var err error
 	if follow {
-		err = run.FollowUp(modelapi.NewUserMessage(text))
+		err = run.FollowUp(modelapi.NewUserMessage(text, files...))
 	} else {
-		err = run.Steer(modelapi.NewUserMessage(text))
+		err = run.Steer(modelapi.NewUserMessage(text, files...))
 	}
 	if err != nil {
 		return false, err
 	}
-	return true, c.Store.RecordInput(run.ID, text)
+	return true, c.Store.RecordFiles(run.ID, text, attachments)
 }

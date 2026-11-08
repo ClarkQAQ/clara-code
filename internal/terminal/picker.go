@@ -1,11 +1,17 @@
 package terminal
 
+import (
+	"clara-code/pkg/core/prompt"
+	"clara-code/pkg/model"
+)
+
 type choice struct {
 	id, label string
 }
 
 type picker struct {
 	kind, title, model     string
+	provider               string
 	items                  []choice
 	selected               int
 	startup, detail        bool
@@ -49,6 +55,14 @@ func (a *app) handlePicker(input key) bool {
 	if len(p.items) == 0 {
 		return false
 	}
+	if p.kind == "attachments" && (input.code == "delete" || input.code == "backspace") {
+		a.attachments = append(a.attachments[:p.selected], a.attachments[p.selected+1:]...)
+		a.picker = nil
+		if len(a.attachments) > 0 {
+			a.manageAttachments()
+		}
+		return false
+	}
 	switch input.code {
 	case "up", "left":
 		p.selected = max(0, p.selected-1)
@@ -68,23 +82,42 @@ func (a *app) handlePicker(input key) bool {
 		case "resume":
 			a.switchSession(selected.id, false, -1, "", "Resumed conversation")
 
+		case "provider":
+			a.showModels(selected.id)
+		case "attachments":
+			a.picker = nil
 		case "model":
-			profile := a.host.Config.Models[selected.id]
-			levels := []string{"", "none", "minimal", "low", "medium", "high", "xhigh", "max"}
-			next := &picker{kind: "effort", title: "Select reasoning effort", model: selected.id}
+			config := a.host.Config
+			if len(config.Providers) > 0 {
+				var err error
+				config, err = config.SelectProvider(p.provider)
+				if err != nil {
+					a.notice(err)
+					return false
+				}
+			}
+			profile := config.Models[selected.id]
+			levels := profile.Levels()
+			if len(levels) == 0 || levels[0] != "" {
+				levels = append([]model.ReasoningEffort{""}, levels...)
+			}
+			next := &picker{kind: "effort", title: "Select reasoning effort", model: selected.id, provider: p.provider}
 			effort := string(profile.Effort)
-			if meta := a.conv.Store.Meta(); meta.Model == selected.id {
-				effort = meta.Effort
+			if meta := a.conv.Store.Meta(); meta.Model == selected.id && meta.Provider == p.provider {
+				effort = a.conv.ModeEffort(a.mode)
 			}
 			for i, level := range levels {
-				label := level
+				label := string(level)
 				if level == "" {
 					label = "Provider default"
+					if a.mode == prompt.Plan {
+						label = "Inherit Agent reasoning effort"
+					}
 				}
-				if effort == level {
+				if effort == string(level) {
 					next.selected = i
 				}
-				next.items = append(next.items, choice{id: level, label: label})
+				next.items = append(next.items, choice{id: string(level), label: label})
 			}
 			a.picker = next
 		case "skill":
@@ -92,7 +125,7 @@ func (a *app) handlePicker(input key) bool {
 			a.editor.insert("$" + selected.id + " ")
 		case "effort":
 			a.picker = nil
-			a.applyModel(p.model, selected.id)
+			a.applySelection(p.provider, p.model, selected.id)
 		}
 	}
 	return false

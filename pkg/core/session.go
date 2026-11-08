@@ -157,11 +157,11 @@ func (s *Session) Start(ctx context.Context, call AgentStreamCall) (*Run, error)
 	if s.active != nil {
 		return nil, errs.ErrBusy
 	}
-	if len(call.Messages) == 0 && call.Prompt == "" {
+	if len(call.Messages) == 0 && call.Prompt == "" && len(call.Files) == 0 {
 		return nil, errs.New(errs.CodeInvalidArgument, "a new message is required")
 	}
 	input := slices.Clone(call.Messages)
-	if call.Prompt != "" {
+	if call.Prompt != "" || len(call.Files) > 0 {
 		input = append(input, model.NewUserMessage(call.Prompt, call.Files...))
 		call.Prompt = ""
 		call.Files = nil

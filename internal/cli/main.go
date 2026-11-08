@@ -18,8 +18,9 @@ import (
 )
 
 type arguments struct {
-	cwd, command, id    string
-	demo, help, version bool
+	cwd, command, id, model string
+	overrides               []string
+	demo, help, version     bool
 }
 
 func parse(args []string, stderr io.Writer) (arguments, error) {
@@ -27,6 +28,10 @@ func parse(args []string, stderr io.Writer) (arguments, error) {
 	flags := flag.NewFlagSet("clara-code", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.Usage = func() {}
+	flags.Func("c", "override a config key (repeatable)", func(v string) error { options.overrides = append(options.overrides, v); return nil })
+	flags.Func("config", "override a config key (repeatable)", func(v string) error { options.overrides = append(options.overrides, v); return nil })
+	flags.StringVar(&options.model, "model", "", "model ID")
+	flags.StringVar(&options.model, "m", "", "model ID")
 	flags.StringVar(&options.cwd, "cwd", ".", "working directory")
 	flags.BoolVar(&options.demo, "demo", false, "use the built-in demo model")
 	flags.BoolVar(&options.help, "help", false, "show usage")
@@ -41,7 +46,7 @@ func parse(args []string, stderr io.Writer) (arguments, error) {
 		}
 		if strings.HasPrefix(arg, "-") && arg != "-" {
 			items := []string{arg}
-			if (arg == "--cwd" || arg == "-cwd") && len(args) > 0 {
+			if (arg == "--cwd" || arg == "-cwd" || arg == "-c" || arg == "--config" || arg == "--model" || arg == "-m") && len(args) > 0 {
 				items = append(items, args[0])
 				args = args[1:]
 			}
@@ -71,7 +76,7 @@ func parse(args []string, stderr io.Writer) (arguments, error) {
 			return options, nil
 		}
 	}
-	return options, fmt.Errorf("unexpected arguments %q (see --help)", rest)
+	return options, errors.New("unexpected arguments (see --help)")
 }
 
 // Run starts the CLI with process-owned streams and a build version.
@@ -88,31 +93,29 @@ func Run(ctx context.Context, args []string, input, output, stderr *os.File, ver
 		return err
 	}
 	if options.help {
-		_, err := fmt.Fprint(output, "Clara Code\n\nUsage:\n  clara-code [--cwd DIR] [--demo]\n  clara-code resume [ID] [--cwd DIR] [--demo]\n  clara-code acp [--demo]\n  clara-code --version\n")
+		_, err := fmt.Fprint(output, "Clara Code\n\nUsage:\n  clara-code [--cwd DIR] [--demo]\n  clara-code resume [ID] [--cwd DIR] [--demo]\n  clara-code acp [--demo]\n  clara-code --version\n\nOptions:\n  -c, --config KEY=VALUE  Override configuration (repeatable)\n  -m, --model ID          Select model\n")
 		return err
 	}
-	config, err := setting.Load()
+	workspace, err := coding.ResolveWorkspace(options.cwd)
+	if err != nil {
+		return err
+	}
+	config, err := setting.LoadWith(ctx, setting.LoadOptions{Cwd: workspace.Cwd, Root: workspace.Root, Overrides: options.overrides, Model: options.model})
 	if err != nil {
 		return err
 	}
 	host := coding.Host{Config: config}
 	if options.demo {
+		host.Config.Options.Reload = false
+		host.Config.Providers = nil
+		host.Config.ModelProvider = ""
 		host.Config.DefaultModel = "demo"
 		host.Config.Models = map[string]setting.Model{"demo": {ID: "demo"}}
 		host.Models = func(context.Context, string) (model.LanguageModel, error) { return coding.DemoModel{}, nil }
-	} else {
-		host.Models, err = config.Factory()
-		if err != nil {
-			return err
-		}
 	}
 	if options.command == "acp" {
 		slog.SetDefault(diagnosticLogger(stderr))
 		return host.ServeACP(ctx, input, output, version)
-	}
-	workspace, err := coding.ResolveWorkspace(options.cwd)
-	if err != nil {
-		return err
 	}
 	// MCP and ACP SDK diagnostics must not write over the inline composer.
 	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))

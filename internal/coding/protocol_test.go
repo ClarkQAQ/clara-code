@@ -112,6 +112,17 @@ func TestSteeringFollowupAndQuestion(t *testing.T) {
 		payload, _ := json.Marshal(call.Prompt)
 		data := string(payload)
 		if strings.Contains(data, "steer answer") && strings.Contains(data, "follow-up answer") {
+			images := 0
+			for _, message := range call.Prompt {
+				for _, part := range message.Content {
+					if _, ok := modelapi.AsMessagePart[modelapi.FilePart](part); ok {
+						images++
+					}
+				}
+			}
+			if images != 2 {
+				return nil, fmt.Errorf("queued image inputs missing: %d", images)
+			}
 			return demoText("Both inputs accepted."), nil
 		}
 		for _, message := range call.Prompt {
@@ -135,10 +146,10 @@ func TestSteeringFollowupAndQuestion(t *testing.T) {
 	}
 	select {
 	case question := <-c.Questions.Requests:
-		if accepted, err := c.QueueInput(ctx, run, "steer answer", false); err != nil || !accepted {
+		if accepted, err := c.QueueFiles(ctx, run, "steer answer", false, []modelapi.FilePart{{Filename: "steer.png", MediaType: "image/png", Data: imageFixture(t)}}); err != nil || !accepted {
 			t.Fatal(err)
 		}
-		if accepted, err := c.QueueInput(ctx, run, "follow-up answer", true); err != nil || !accepted {
+		if accepted, err := c.QueueFiles(ctx, run, "follow-up answer", true, []modelapi.FilePart{{Filename: "follow.png", MediaType: "image/png", Data: imageFixture(t)}}); err != nil || !accepted {
 			t.Fatal(err)
 		}
 		question.Answer <- map[string]string{"first": "option 1"}

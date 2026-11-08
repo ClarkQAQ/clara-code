@@ -22,6 +22,7 @@ type questionForm struct {
 	notesMode  bool
 	width      int
 	validation string
+	helpText   func(string) string
 }
 
 func newQuestionForm(request coding.QuestionRequest) *questionForm {
@@ -61,6 +62,16 @@ func (q *questionForm) layout(p *painter) layout {
 	}
 	lines = append(lines, "")
 	options := questionOptions(item)
+	if q.helpText != nil && len(options) > 0 {
+		last := &options[len(options)-1]
+		if last.Description == "Optionally, add details in notes (tab)." {
+			if hint := q.helpText("tab"); hint != "" {
+				last.Description = "Optionally, add details in notes (" + hint + ")."
+			} else {
+				last.Description = "Optionally, add details in notes."
+			}
+		}
+	}
 	var optionLines []string
 	selectedStart, selectedEnd := 0, 0
 	labelWidth := 12
@@ -115,6 +126,9 @@ func (q *questionForm) layout(p *painter) layout {
 	}
 	if q.validation != "" {
 		help = q.validation
+	}
+	if q.helpText != nil {
+		help = q.helpText(help)
 	}
 	var footer []string
 	for _, row := range wrap(help, width) {

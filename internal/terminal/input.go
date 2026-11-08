@@ -59,7 +59,7 @@ func (d *decoder) feed(data []byte, timeout bool, emit func(key)) {
 				emit(key{code: "tab"})
 			case 0x7f, 0x08:
 				emit(key{code: "backspace"})
-			case 0x01, 0x03, 0x04, 0x05, 0x0b, 0x0c, 0x14, 0x15, 0x17:
+			case 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x0b, 0x0c, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a:
 				emit(key{code: "ctrl-" + string('a'+r-1)})
 			default:
 				if r >= ' ' {
@@ -72,6 +72,11 @@ func (d *decoder) feed(data []byte, timeout bool, emit func(key)) {
 			return
 		}
 		if len(d.buffer) >= 2 {
+			if d.buffer[1] >= 'a' && d.buffer[1] <= 'z' {
+				emit(key{code: "alt-" + string(d.buffer[1])})
+				d.buffer = d.buffer[2:]
+				continue
+			}
 			switch d.buffer[1] {
 			case '\r', '\n':
 				emit(key{code: "newline"})

@@ -39,7 +39,7 @@ func (p *painter) toolRows(activity session.ToolActivity, now time.Time) []strin
 	marker, color := "●", "\x1b[32m"
 	switch activity.Status {
 	case "running":
-		marker, color = indicator(now), dim
+		marker, color = p.indicator(now), dim
 	case "background":
 		color = accent
 	case "failed":
@@ -57,7 +57,7 @@ func (p *painter) toolRows(activity session.ToolActivity, now time.Time) []strin
 		title = singleLine(activity.Title)
 		header := "• " + title
 		if activity.Active() {
-			header = indicator(now) + " " + title
+			header = p.indicator(now) + " " + title
 		}
 		if activity.Detail != "" {
 			header += " · " + singleLine(activity.Detail)
@@ -114,9 +114,14 @@ func (p *painter) toolRows(activity session.ToolActivity, now time.Time) []strin
 		lines = strings.Split(output, "\n")
 	}
 	omitted := activity.Omitted
-	const head = 3
-	const tail = 2
-	if len(lines) > head+tail+1 {
+	head, tail := 3, 2
+	if p.previewLines != nil {
+		head = (*p.previewLines + 1) / 2
+		tail = *p.previewLines / 2
+	}
+	if p.previewLines != nil && *p.previewLines == 0 {
+		lines = nil
+	} else if len(lines) > head+tail+1 {
 		omitted += len(lines) - head - tail
 		preview := append([]string{}, lines[:head]...)
 		preview = append(preview, fmt.Sprintf("… %d lines omitted", omitted))
@@ -128,7 +133,7 @@ func (p *painter) toolRows(activity session.ToolActivity, now time.Time) []strin
 	if activity.Error != "" && (!redundantExit || output == "") {
 		lines = append(lines, clean(activity.Error))
 	}
-	if len(lines) == 0 && activity.Status == "succeeded" {
+	if len(lines) == 0 && output == "" && activity.Status == "succeeded" {
 		lines = []string{"(no output)"}
 	}
 	for i, line := range lines {
@@ -208,4 +213,11 @@ func (a *app) finishTools(cancelled bool) {
 		}
 	}
 	a.flushTools()
+}
+
+func (p *painter) indicator(now time.Time) string {
+	if p.animate != nil && !*p.animate {
+		return "•"
+	}
+	return indicator(now)
 }

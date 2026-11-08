@@ -110,3 +110,9 @@ The `stat` tool's `modified` value uses RFC3339Nano with `Z` or an explicit offs
 ```sh
 make check
 ```
+
+## Host media and capability policy
+
+`model.FilePart` and media tool results carry standard bytes and MIME types. Core does not know about Clara attachment directories. Hosts may normalize new input with the optional `ACPBinding.PrepareInput` hook before an ACP prompt is accepted. Image-only prompts are valid. Hosts should reject unsupported new images and project historical media into text-only request copies without changing persisted history.
+
+Model capabilities, provider catalogs, layered TOML configuration, clipboard adapters, and content-addressed storage are Clara application policy in `internal`. Public providers continue to accept ordinary `model.Call` options for output limits, reasoning, summaries, verbosity, and parallel calls. `tool.TaskSetup.MaxRetries` optionally supplies a child agent's retry budget; nil retains Core defaults. Neither hook requires application imports from public packages.

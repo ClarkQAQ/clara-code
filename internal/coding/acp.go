@@ -32,11 +32,17 @@ func (h Host) ServeACP(ctx context.Context, input io.Reader, output io.Writer, v
 			if err != nil {
 				return core.ACPBinding{}, err
 			}
+			effective, err := h.Config.Reload(ctx, workspace.Cwd, workspace.Root)
+			if err != nil {
+				return core.ACPBinding{}, err
+			}
+			localHost := h
+			localHost.Config = effective
 			var store *session.Store
 			if id == "" {
-				name := h.Config.DefaultModel
+				name := effective.DefaultModel
 				store = session.New(h.Config.Home, session.Meta{Project: workspace.Root, Cwd: workspace.Cwd,
-					Model: name, Effort: string(h.Config.Models[name].Effort)})
+					Model: name, Effort: string(effective.Models[name].Effort)})
 			} else {
 				store, err = session.Open(h.Config.Home, id, workspace.Root)
 				if err != nil {
@@ -47,12 +53,12 @@ func (h Host) ServeACP(ctx context.Context, input io.Reader, output io.Writer, v
 					return core.ACPBinding{}, errors.Join(err, errors.New("the session's project directory changed"), store.Close())
 				}
 			}
-			conversation, err := h.Open(ctx, workspace, store, nil, extra)
+			conversation, err := localHost.Open(ctx, workspace, store, nil, extra)
 			if err != nil {
 				return core.ACPBinding{}, err
 			}
 			return core.ACPBinding{
-				Session: conversation.Session, Close: func(context.Context) error { return conversation.Close() },
+				Session: conversation.Session, PrepareInput: conversation.PrepareImages, Close: func(context.Context) error { return conversation.Close() },
 				Configure: func(context.Context) core.AgentStreamCall {
 					return conversation.Call(prompt.Execute, false)
 				},

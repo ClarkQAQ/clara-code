@@ -16,9 +16,10 @@ import (
 )
 
 type ACPBinding struct {
-	Session   *Session
-	Configure func(context.Context) AgentStreamCall
-	Close     func(context.Context) error
+	Session      *Session
+	PrepareInput func(context.Context, []model.Message) ([]model.Message, error)
+	Configure    func(context.Context) AgentStreamCall
+	Close        func(context.Context) error
 }
 
 type ACPServerConfig struct {
@@ -186,7 +187,14 @@ func (s *ACPServer) Prompt(ctx context.Context, req sdk.PromptRequest) (sdk.Prom
 	if binding.Configure != nil {
 		call = binding.Configure(ctx)
 	}
-	call.Messages = append(call.Messages, message)
+	messages := []model.Message{message}
+	if binding.PrepareInput != nil {
+		messages, err = binding.PrepareInput(ctx, messages)
+		if err != nil {
+			return sdk.PromptResponse{}, sdk.NewInvalidParams(err.Error())
+		}
+	}
+	call.Messages = append(call.Messages, messages...)
 	chunk, start, finish := call.OnChunk, call.OnToolCall, call.OnToolResult
 	call.OnChunk = func(part model.StreamPart) error {
 		var err error

@@ -77,9 +77,16 @@ func (a *app) status() string {
 		return state
 	}
 	meta := a.conv.Store.Meta()
-	items := []string{state, modelLabel(meta), a.contextLabel(), filepath.Base(a.space.Root)}
-	if a.branch != "" {
-		items = append(items, a.branch)
+	fields := a.host.Config.TUI.StatusLine
+	if fields == nil {
+		fields = []string{"state", "model", "context", "directory", "git_branch"}
+	}
+	labels := map[string]string{"state": state, "model": strings.TrimSpace(meta.Model + " " + a.conv.ModeEffort(a.mode)), "context": a.contextLabel(), "directory": filepath.Base(a.space.Root), "git_branch": a.branch}
+	var items []string
+	for _, field := range fields {
+		if label := labels[field]; label != "" {
+			items = append(items, label)
+		}
 	}
 	return singleLine(strings.Join(items, " · "))
 }
@@ -90,7 +97,9 @@ func (a *app) statusLine() string {
 	if a.mode == prompt.Plan {
 		right = "Plan mode"
 		if a.run == nil && a.op == nil {
-			right += " (Shift+Tab to cycle)"
+			if hint := a.hints("Shift+Tab"); hint != "" {
+				right += " (" + hint + " to cycle)"
+			}
 		}
 	}
 	left := a.status()
@@ -122,6 +131,9 @@ func (a *app) showStatus() {
 			total = "≥" + total
 		}
 	}
+	profile := a.host.Config.Models[meta.Model]
+	connection := a.host.Config.Connection()
+	auth := connection.APIKey != ""
 	mode := "Agent"
 	if a.mode == prompt.Plan {
 		mode = "Plan"
@@ -129,7 +141,20 @@ func (a *app) showStatus() {
 	a.view.message("notice", strings.Join([]string{
 		"Session  " + meta.ID, "Directory  " + a.space.Cwd, "Project  " + a.space.Root,
 		"Local time  " + localtime.DateTime(now), "Time zone  " + localtime.Zone(now),
-		"Model  " + modelLabel(meta), "Mode  " + mode, "Context  " + a.contextLabel(), "Total usage  " + total + " tokens",
+		"Provider  " + meta.Provider,
+		"Model  " + modelLabel(meta),
+		"Agent effort  " + meta.Effort, "Plan effort  " + a.conv.ModeEffort(prompt.Plan),
+		fmt.Sprintf("Images  %t", a.conv.SupportsImages()),
+		fmt.Sprintf("Capabilities  reasoning=%v · output=%d · parallel=%s · summary=%s · verbosity=%s", profile.Levels(), profile.MaxOutputTokens, parallelLabel(profile.SupportsParallelToolCalls), profile.DefaultReasoningSummary, profile.DefaultVerbosity),
+		fmt.Sprintf("Provider authentication  configured=%t", auth),
+		"Configuration sources  " + strings.Join(a.host.Config.Sources, " → "), "Mode  " + mode, "Context  " + a.contextLabel(), "Total usage  " + total + " tokens",
 		fmt.Sprintf("MCP  %d configured servers", len(a.conv.MCPStatuses())),
 	}, "\n"))
+}
+
+func parallelLabel(value *bool) string {
+	if value == nil {
+		return "default"
+	}
+	return fmt.Sprint(*value)
 }

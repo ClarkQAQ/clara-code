@@ -31,28 +31,33 @@ type Options struct {
 }
 
 type app struct {
-	runHistoryStart     int
-	resyncNeeded        bool
-	ctx                 context.Context
-	options             Options
-	view                painter
-	host                coding.Host
-	space               coding.Workspace
-	conv                *coding.Conversation
-	ask                 *coding.Questions
-	editor              editor
-	mode                prompt.Mode
-	run                 *core.Run
-	events              <-chan runEvent
-	stopRun             context.CancelFunc
-	op                  <-chan operationResult
-	stopOp              context.CancelFunc
-	opLabel             string
-	picker              *picker
-	question            *questionForm
-	backgroundEvents    <-chan struct{}
-	stopTerminalResults chan error
-	stoppingTerminals   bool
+	runHistoryStart                            int
+	resyncNeeded                               bool
+	ctx                                        context.Context
+	options                                    Options
+	view                                       painter
+	host                                       coding.Host
+	space                                      coding.Workspace
+	conv                                       *coding.Conversation
+	ask                                        *coding.Questions
+	editor                                     editor
+	mode                                       prompt.Mode
+	run                                        *core.Run
+	events                                     <-chan runEvent
+	stopRun                                    context.CancelFunc
+	op                                         <-chan operationResult
+	stopOp                                     context.CancelFunc
+	opLabel                                    string
+	picker                                     *picker
+	question                                   *questionForm
+	backgroundEvents                           <-chan struct{}
+	stopTerminalResults                        chan error
+	stoppingTerminals                          bool
+	attachments                                []session.Attachment
+	submittedAttachments                       []session.Attachment
+	pendingAttachments                         []session.Attachment
+	attachmentResults                          <-chan attachmentResult
+	attachmentPasteText, attachmentPasteBefore string
 
 	prompts        []string
 	historyAt      int
@@ -86,11 +91,12 @@ type runEvent struct {
 }
 
 type operationResult struct {
-	picker *picker
-	conv   *coding.Conversation
-	draft  string
-	label  string
-	err    error
+	picker      *picker
+	conv        *coding.Conversation
+	draft       string
+	label       string
+	err         error
+	attachments []session.Attachment
 }
 
 func Run(ctx context.Context, options Options) (err error) {
@@ -103,6 +109,7 @@ func Run(ctx context.Context, options Options) (err error) {
 	a := &app{ctx: ctx, options: options, host: options.Host, space: options.Workspace,
 		ask: coding.NewQuestions(), mode: prompt.Execute, dirty: true}
 	a.view = painter{output: out, color: true}
+	a.configureUI()
 	if _, set := os.LookupEnv("NO_COLOR"); set {
 		a.view.color = false
 	}
@@ -180,8 +187,12 @@ func Run(ctx context.Context, options Options) (err error) {
 			a.dirty = true
 		case request := <-a.ask.Requests:
 			a.question = newQuestionForm(request)
+			a.question.helpText = a.questionHints
 			a.activity.pause(time.Now())
 			a.picker = nil
+			a.dirty = true
+		case result := <-a.attachmentResults:
+			a.acceptAttachments(result)
 			a.dirty = true
 		case <-a.backgroundEvents:
 			a.syncBackground()
@@ -227,7 +238,7 @@ func Run(ctx context.Context, options Options) (err error) {
 			}
 			a.dirty = true
 		case <-ticks.C:
-			if (a.run != nil || a.op != nil || len(a.toolGroup) > 0) && a.question == nil && time.Since(a.lastAnimation) >= 100*time.Millisecond {
+			if (a.run != nil || a.op != nil || len(a.toolGroup) > 0) && a.question == nil && time.Since(a.lastAnimation) >= a.animationInterval() {
 				a.lastAnimation = time.Now()
 				a.dirty = true
 			}
@@ -310,6 +321,10 @@ func (a *app) install(result operationResult) error {
 		a.view.resetHistory()
 	}
 	a.conv, a.space = result.conv, result.conv.Workspace
+	a.host = a.conv.Host
+	a.host.Config = a.conv.CurrentConfig()
+	a.configureUI()
+	a.attachments = append([]session.Attachment(nil), result.attachments...)
 	a.backgroundEvents = a.conv.BackgroundUpdates()
 	a.stopTerminalResults = nil
 	a.stoppingTerminals = false
@@ -337,6 +352,7 @@ func (a *app) install(result operationResult) error {
 		} else {
 			a.prompts = append(a.prompts, turn.Prompt)
 			a.view.message("user", turn.Prompt)
+			a.replayAttachments(turn.Attachments)
 			for _, cell := range turn.Cells {
 				if a.view.cell(cell) {
 					a.reflow = true
@@ -369,14 +385,16 @@ func (a *app) operation(label string, work func(context.Context) operationResult
 	go func() { out <- work(ctx) }()
 }
 
-func (a *app) switchSession(id string, fork bool, at int, draft, label string) {
+func (a *app) switchSession(id string, fork bool, at int, draft, label string, attachments ...session.Attachment) {
 	if a.conv != nil && id == a.conv.Session.ID() {
 		a.picker = nil
 		return
 	}
 	a.picker = nil
 	a.operation(label, func(ctx context.Context) operationResult {
-		return a.open(ctx, id, fork, at, draft, label)
+		result := a.open(ctx, id, fork, at, draft, label)
+		result.attachments = attachments
+		return result
 	})
 }
 
@@ -391,7 +409,14 @@ func (a *app) start(text string, review bool) {
 		cursor = state.Events[n-1].Sequence
 	}
 	ctx, cancel := context.WithCancel(a.ctx)
-	run, err := a.conv.Start(ctx, a.mode, text, review)
+	files, fileErr := coding.AttachmentFiles(a.host.Config.Home, a.attachments, a.host.Config.Images)
+	if fileErr != nil {
+		cancel()
+		a.notice(fileErr)
+		a.editor.replace(text)
+		return
+	}
+	run, err := a.conv.StartWithFiles(ctx, a.mode, text, review, files)
 	if err != nil {
 		cancel()
 		a.notice(err)
@@ -400,11 +425,14 @@ func (a *app) start(text string, review bool) {
 	}
 	a.run, a.stopRun = run, cancel
 	a.submitted = text
+	a.submittedAttachments = append([]session.Attachment(nil), a.attachments...)
+	a.attachments = nil
 	a.activity.start(time.Now())
 	a.toolGroup = nil
 	a.streamID = ""
 	a.runHistoryStart = a.view.droppedCells + len(a.view.history)
 	a.view.message("user", text)
+	a.replayAttachments(a.submittedAttachments)
 	events := make(chan runEvent, 128)
 	a.events = events
 	conversation := a.conv.Session
@@ -489,10 +517,11 @@ func (a *app) onRunEvent(update runEvent) {
 		case update.err != nil:
 			a.runError(update.err)
 			if a.editor.text == "" && len(a.pendingInput) == 0 {
-				a.editor.replace(a.submitted)
+				a.restoreDraft(a.submitted, a.submittedAttachments)
 			}
 		}
 		a.submitted = ""
+		a.submittedAttachments = nil
 		a.activity = activityState{}
 		for i := len(a.prompts); i < a.conv.Store.TurnCount(); i++ {
 			turn, err := a.conv.Store.ReadTurn(i)
@@ -507,6 +536,8 @@ func (a *app) onRunEvent(update runEvent) {
 		if len(a.pendingInput) > 0 {
 			next := strings.Join(a.pendingInput, "\n")
 			a.pendingInput = nil
+			a.attachments = append(a.pendingAttachments, a.attachments...)
+			a.pendingAttachments = nil
 			a.start(next, false)
 		}
 		return
@@ -673,7 +704,11 @@ func (a *app) pane() layout {
 		if a.picker.kind == "rewind" {
 			return layout{rows: a.rewindRows()}
 		}
-		return layout{rows: a.picker.rows(p)}
+		rows := a.picker.rows(p)
+		if len(rows) > 0 {
+			rows[len(rows)-1] = a.hints(rows[len(rows)-1])
+		}
+		return layout{rows: rows}
 	}
 	if a.question != nil {
 		return a.question.layout(p)
@@ -700,6 +735,7 @@ func (a *app) pane() layout {
 	if summary := a.backgroundSummary(); summary != "" && !hasActivity {
 		lines = append(lines, p.style(dim, truncate("  "+summary, p.width)), "")
 	}
+	lines = append(lines, a.attachmentRows()...)
 	borderRows := min(2, max(0, p.height-1))
 	if maxRows := max(0, p.height-borderRows-len(input.rows)-len(footer)); len(lines) > maxRows {
 		lines = lines[len(lines)-maxRows:]
