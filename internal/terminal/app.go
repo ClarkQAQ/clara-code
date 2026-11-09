@@ -92,6 +92,7 @@ type runEvent struct {
 	event    core.Event
 	err      error
 	done     bool
+	plan     string
 }
 
 type operationResult struct {
@@ -101,6 +102,7 @@ type operationResult struct {
 	label       string
 	err         error
 	attachments []session.Attachment
+	plan        string
 }
 
 func Run(ctx context.Context, options Options) (err error) {
@@ -227,6 +229,9 @@ func Run(ctx context.Context, options Options) (err error) {
 				a.notice(result.err)
 				a.editor.insert(a.operationDraft.text)
 				a.operationDraft.replace("")
+				if result.plan != "" {
+					a.confirmPlan(result.plan)
+				}
 				if a.conv == nil && a.options.PickSession {
 					a.openResume(true)
 				}
@@ -237,6 +242,9 @@ func Run(ctx context.Context, options Options) (err error) {
 			} else if result.conv != nil {
 				if err := a.install(result); err != nil {
 					return err
+				}
+				if result.plan != "" {
+					a.implementPlan(planHandoff + "\n\n" + result.plan)
 				}
 			} else if result.label != "" {
 				a.view.message("notice", result.label)
@@ -351,7 +359,6 @@ func (a *app) install(result operationResult) error {
 	a.host = a.conv.Host
 	a.host.Config = a.conv.CurrentConfig()
 	a.configureUI()
-	a.attachments = append([]session.Attachment(nil), result.attachments...)
 	a.backgroundEvents = a.conv.BackgroundUpdates()
 	a.stopTerminalResults = nil
 	a.stoppingTerminals = false
@@ -362,7 +369,9 @@ func (a *app) install(result operationResult) error {
 	a.picker = nil
 	a.commandMenu = commandMenu{}
 	a.activity.retry = nil
-	a.setDraft(result.draft, result.attachments)
+	if result.plan == "" {
+		a.setDraft(result.draft, result.attachments)
+	}
 	a.view.welcome(a.options.Version, modelLabel(a.conv.Store.Meta()), a.space.Cwd)
 	a.loadInputHistory()
 	seedHistory := len(a.inputHistory) == 0
@@ -448,6 +457,10 @@ func (a *app) start(text string, review bool) {
 		a.setDraft(text, a.attachments)
 		return
 	}
+	planning := a.mode == prompt.Plan
+	if planning {
+		ctx = session.WithPlanning(ctx)
+	}
 	run, err := a.conv.StartWithFiles(ctx, a.mode, text, review, files)
 	if err != nil {
 		cancel()
@@ -468,10 +481,10 @@ func (a *app) start(text string, review bool) {
 	events := make(chan runEvent, 128)
 	a.events = events
 	conversation := a.conv.Session
-	go watch(ctx, conversation, a.conv.Store, run, cursor, events)
+	go watch(ctx, conversation, a.conv.Store, run, cursor, planning, events)
 }
 
-func watch(ctx context.Context, conversation *core.Session, store *session.Store, run *core.Run, cursor uint64, out chan<- runEvent) {
+func watch(ctx context.Context, conversation *core.Session, store *session.Store, run *core.Run, cursor uint64, planning bool, out chan<- runEvent) {
 	send := func(event runEvent) bool {
 		select {
 		case out <- event:
@@ -506,8 +519,12 @@ func watch(ctx context.Context, conversation *core.Session, store *session.Store
 		}
 		switch event.Kind {
 		case "run.completed", "run.cancelled", "run.failed":
-			_, err := run.Wait(ctx)
-			send(runEvent{event: event, err: err, done: true})
+			result, err := run.Wait(ctx)
+			update := runEvent{event: event, err: err, done: true}
+			if planning && event.Kind == "run.completed" && err == nil {
+				update.plan = completedPlan(result)
+			}
+			send(update)
 			return
 		case "text_start", "text_delta", "text_end", "reasoning_delta", "reasoning_end", "tool.activity", "tool.result", "step.completed", "plan.updated", "goal.updated", "task.updated", "model.started", "model.responding", "model.retry", "model.error", "context.compacted":
 			if !send(runEvent{event: event}) {
@@ -584,10 +601,13 @@ func (a *app) onRunEvent(update runEvent) {
 			} else {
 				a.syncDraftImages()
 			}
+		} else if update.plan != "" {
+			a.confirmPlan(update.plan)
 		}
 		return
 	}
 	event := update.event
+	planning := a.mode == prompt.Plan
 	switch event.Kind {
 	case "model.responding":
 		a.activity.retry = nil
@@ -601,7 +621,7 @@ func (a *app) onRunEvent(update runEvent) {
 		a.activity.quiet = true
 		var part model.StreamPart
 		if json.Unmarshal(event.Data, &part) == nil {
-			if a.streamID != "" && a.streamID != part.ID {
+			if !planning && a.streamID != "" && a.streamID != part.ID {
 				a.flushStream()
 			}
 			a.streamID = part.ID
@@ -611,18 +631,24 @@ func (a *app) onRunEvent(update runEvent) {
 		a.activity.quiet = true
 		var chunk model.StreamPart
 		if json.Unmarshal(event.Data, &chunk) == nil {
-			if a.streamID != "" && a.streamID != chunk.ID {
+			if !planning && a.streamID != "" && a.streamID != chunk.ID {
 				a.flushStream()
 			}
 			a.streamID = chunk.ID
 			a.activity.retry = nil
-			a.stream += clean(chunk.Delta)
+			if planning && len(a.stream) < inputLimit {
+				a.stream += chunk.Delta
+			} else if !planning {
+				a.stream += clean(chunk.Delta)
+			}
 			a.sawText = a.sawText || chunk.Delta != ""
 		}
 	case "text_end":
 		var part model.StreamPart
 		if json.Unmarshal(event.Data, &part) == nil && (a.streamID == part.ID || a.streamID == "") {
-			a.flushStream()
+			if !planning {
+				a.flushStream()
+			}
 			a.streamID = ""
 		}
 	case "reasoning_delta", "reasoning_end":
@@ -656,8 +682,9 @@ func (a *app) onRunEvent(update runEvent) {
 		a.activity.retry = nil
 		var response model.Response
 		if json.Unmarshal(event.Data, &response) == nil {
-
-			if !a.sawText {
+			if planning && (!a.sawText || a.stream != "") {
+				a.stream = planResponseText(response.Content)
+			} else if !a.sawText {
 				a.stream = clean(response.Content.Text())
 			}
 		}
@@ -690,11 +717,19 @@ func (a *app) flushStream() {
 	if a.stream == "" {
 		return
 	}
+	cells := []session.Cell{{Kind: "assistant", Text: a.stream}}
+	if a.mode == prompt.Plan {
+		cells = session.PlanCells(a.stream, false)
+	}
 	if a.continued {
-		a.view.remember("assistant", a.stream)
+		for _, cell := range cells {
+			a.view.remember(cell.Kind, clean(cell.Text))
+		}
 		a.view.rebuild()
 	} else {
-		a.view.message("assistant", a.stream)
+		for _, cell := range cells {
+			a.view.message(cell.Kind, cell.Text)
+		}
 	}
 	a.stream, a.continued, a.streamRows = "", false, 0
 }
@@ -719,7 +754,7 @@ func (a *app) draw() error {
 	height := p.contentHeight()
 	pane = pane.slice(0, height)
 	if a.stream != "" {
-		rows := p.messageRows("assistant", a.stream)
+		rows := a.streamDisplayRows()
 		live := max(1, min(5, height-len(pane.rows)))
 		commitTo := max(0, len(rows)-live)
 		if commitTo < a.streamRows {
@@ -747,6 +782,9 @@ func (a *app) pane() layout {
 		return a.setup.layout(p, a.hints)
 	}
 	if a.picker != nil {
+		if a.picker.kind == planPicker {
+			return layout{rows: a.planPickerRows()}
+		}
 		if a.picker.kind == "skills" || a.picker.kind == "skill-toggle" {
 			return a.skillPickerLayout()
 		}

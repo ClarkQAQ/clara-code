@@ -33,7 +33,7 @@ type terminalTitle struct {
 func (a *app) updateTitle(now time.Time) error {
 	activity := titleIdle
 	switch {
-	case a.question != nil:
+	case a.question != nil || (a.picker != nil && a.picker.kind == planPicker):
 		activity = titleNeedsInput
 	case a.run != nil || a.op != nil:
 		activity = titleWorking

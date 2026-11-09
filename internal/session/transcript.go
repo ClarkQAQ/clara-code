@@ -35,7 +35,7 @@ func (t *Turn) collect(events []core.Event) {
 				partial.WriteString(excerpt(part.Delta, (256<<10)-partial.Len()))
 			}
 		case "text_end":
-			if !t.Staged && partial.Len() > 0 {
+			if !t.Planning && !t.Staged && partial.Len() > 0 {
 				t.StreamedCells = append(t.StreamedCells, len(t.Cells))
 				t.append("assistant", partial.String())
 				t.StreamedText += partial.String()
@@ -67,7 +67,7 @@ func (t *Turn) collect(events []core.Event) {
 				t.append("user", input)
 			}
 		case "run.cancelled":
-			t.append("assistant", partial.String())
+			t.appendAssistant(partial.String())
 			partial.Reset()
 			if t.Failure != nil && t.Failure.Kind == "timeout" {
 				t.finishTools("failed", event.At)
@@ -78,7 +78,7 @@ func (t *Turn) collect(events []core.Event) {
 			}
 		case "run.failed":
 			t.finishTools("failed", event.At)
-			t.append("assistant", partial.String())
+			t.appendAssistant(partial.String())
 			partial.Reset()
 			var failure struct{ Error string }
 			if json.Unmarshal(event.Data, &failure) == nil {
@@ -163,6 +163,16 @@ func ToolOutput(result model.ToolResultContent) Cell {
 	return Cell{}
 }
 
+func (t *Turn) appendAssistant(text string) {
+	if t.Planning {
+		for _, cell := range PlanCells(text, false) {
+			t.append(cell.Kind, cell.Text)
+		}
+	} else {
+		t.append("assistant", text)
+	}
+}
+
 func (t *Turn) append(kind, text string) {
 	room := (1 << 20) - t.Bytes
 	if text == "" {
@@ -175,7 +185,7 @@ func (t *Turn) append(kind, text string) {
 		return
 	}
 	limit := 16 << 10
-	if kind == "assistant" || kind == "user" {
+	if kind == "assistant" || kind == "user" || kind == ProposedPlanKind {
 		limit = 256 << 10
 	}
 	limit = min(room, limit)

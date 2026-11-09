@@ -68,6 +68,10 @@ func (p *painter) spanRows(spans []span, width int) []string {
 }
 
 func (p *painter) markdownRows(text string, width int) []string {
+	return p.markdownRowsWithSyntax(text, width, false)
+}
+
+func (p *painter) markdownRowsWithSyntax(text string, width int, keepSyntax bool) []string {
 	var rows []string
 	fenced := false
 	for _, line := range strings.Split(text, "\n") {
@@ -87,7 +91,11 @@ func (p *painter) markdownRows(text string, width int) []string {
 		}
 		if fenced {
 			for _, row := range wrap(line, max(1, width-2)) {
-				rows = append(rows, p.style(dim, "│ ")+p.style(accent, truncate(row.text, max(1, width-2))))
+				prefix := ""
+				if width >= 3 {
+					prefix = "│ "
+				}
+				rows = append(rows, p.style(dim, prefix)+p.style(accent, truncate(row.text, width-widthOf(prefix))))
 			}
 			continue
 		}
@@ -95,12 +103,21 @@ func (p *painter) markdownRows(text string, width int) []string {
 		case strings.HasPrefix(trim, "#"):
 			heading := strings.TrimLeft(trim, "#")
 			if strings.HasPrefix(heading, " ") {
-				rows = append(rows, p.spanRows([]span{{strings.TrimSpace(heading), bold}}, width)...)
+				style := bold
+				if keepSyntax {
+					if len(trim)-len(heading) == 1 {
+						style += "\x1b[4m"
+					}
+					heading = trim
+				}
+				rows = append(rows, p.spanRows([]span{{strings.TrimSpace(heading), style}}, width)...)
 				continue
 			}
 		case strings.HasPrefix(trim, "- "), strings.HasPrefix(trim, "* "):
-			indent := len(line) - len(strings.TrimLeft(line, " "))
-			line = strings.Repeat(" ", indent) + "• " + trim[2:]
+			if !keepSyntax {
+				indent := len(line) - len(strings.TrimLeft(line, " "))
+				line = strings.Repeat(" ", indent) + "• " + trim[2:]
+			}
 		case strings.HasPrefix(trim, "> "):
 			line = "│ " + trim[2:]
 		}

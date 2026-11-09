@@ -254,6 +254,8 @@ func (p *painter) messageRows(kind, text string) []string {
 	width := max(1, p.width-2)
 	var body []string
 	switch kind {
+	case session.ProposedPlanKind:
+		return p.proposedPlanRows(text)
 	case "assistant":
 		if p.markdown != nil && !*p.markdown {
 			for _, row := range wrap(text, width) {

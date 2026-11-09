@@ -172,6 +172,8 @@ Terminal regression tests cover inline markers, atomic editing, asynchronous ins
 
 Type `/` to open the two-column command menu. Use Up/Down to select, Tab to complete, Enter to confirm, and Esc to close while retaining the draft. Plan mode appears on the right of the status bar.
 
+In Plan mode, a completed proposal appears in a **Proposed Plan** card. Use Up/Down and Enter, or press 1–3, to keep the current conversation and start implementing in Agent mode, start a fresh Agent conversation with the approved plan, or stay in Plan mode to refine it. Esc dismisses the choices and stays in Plan mode. Starting fresh keeps the original planning conversation available through `/resume`.
+
 The main composer, question notes, and free-text answers use the real terminal cursor, allowing Chinese IME candidates and input-mode indicators to follow the insertion point. The cursor keeps the terminal's default shape, is hidden in read-only selectors, and becomes visible again on exit. Positions use terminal display columns for Chinese text, combined emoji, multiline input, and narrow windows. The terminal and system IME control candidate appearance and selection.
 
 Model progress updates and final answers are stored separately. Tool execution appears as an updating record such as `● Bash(command)`, with output beneath `└`. Green indicates success, red indicates failure, and cancellation and background execution have distinct states. Shell results use actual exit codes; subsequent background output updates the original record. Long previews retain the beginning and end. Structured records follow session storage limits and support replay on recovery and resize.

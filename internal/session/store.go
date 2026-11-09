@@ -56,6 +56,7 @@ type Turn struct {
 	Cells         []Cell
 	Cursor        uint64
 	Staged        bool
+	Planning      bool `json:",omitempty"`
 	Partial       string
 	Bytes         int
 	StreamedText  string   `json:",omitempty"`
@@ -219,6 +220,7 @@ func (s *Store) Save(ctx context.Context, state core.State) error {
 			return err
 		}
 		next.Active = &Turn{ID: state.ActiveRun}
+		next.Active.Planning, _ = ctx.Value(planningKey{}).(bool)
 		if at := len(before); at < len(state.Messages) {
 			next.Active.Prompt = excerpt(Text(state.Messages[at]), 256<<10)
 			attachments, err := attachmentsFrom(s.home, state.Messages[at])
@@ -244,7 +246,9 @@ func (s *Store) Save(ctx context.Context, state core.State) error {
 				}
 			}
 			full := text.String()
-			if strings.HasPrefix(full, turn.StreamedText) {
+			if turn.Planning {
+				turn.appendAssistant(full)
+			} else if strings.HasPrefix(full, turn.StreamedText) {
 				turn.append("assistant", strings.TrimPrefix(full, turn.StreamedText))
 			} else {
 				for _, index := range turn.StreamedCells {

@@ -91,7 +91,7 @@ func (a *app) handlePicker(input key) bool {
 		}
 		return false
 	}
-	if p.kind == "effort" && input.code == "text" && len(input.text) == 1 && input.text[0] >= '1' && input.text[0] <= '9' {
+	if (p.kind == "effort" || p.kind == planPicker) && input.code == "text" && len(input.text) == 1 && input.text[0] >= '1' && input.text[0] <= '9' {
 		index := int(input.text[0] - '1')
 		if index < len(p.items) {
 			p.selected = index
@@ -114,6 +114,8 @@ func (a *app) handlePicker(input key) bool {
 	case "enter":
 		selected := p.items[p.selected]
 		switch p.kind {
+		case planPicker:
+			a.selectPlanAction(selected.id, p.preview)
 		case "resume":
 			a.switchSession(selected.id, false, -1, "", "Resumed conversation")
 

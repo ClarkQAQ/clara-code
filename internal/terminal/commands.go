@@ -350,7 +350,9 @@ func (a *app) steer(text string, follow bool) {
 		a.notice(err)
 		return
 	}
-	a.flushStream()
+	if a.mode != prompt.Plan {
+		a.flushStream()
+	}
 	a.view.message("user", text)
 	a.replayAttachments(a.attachments)
 	a.attachments = nil

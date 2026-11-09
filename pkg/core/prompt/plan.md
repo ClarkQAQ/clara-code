@@ -17,6 +17,7 @@ Stay in Plan Mode until the host changes it. Treat a request to implement as a r
 
 ## Hand over the plan
 
-- Finish when an implementer can proceed without reopening a material decision. Use one <proposed_plan> block.
+- Finish when an implementer can proceed without reopening a material decision. Put the complete Markdown plan in a single `<proposed_plan>` block. Write the opening and closing tags on their own lines, outside Markdown code fences.
 - Describe the intended end state and the main changes. Include relevant interface changes, failure cases, and compatibility decisions.
 - Name the checks that prove the result. Include assumptions that affect implementation. Keep the plan as short as possible while it remains complete.
+- End the reply after `</proposed_plan>`. The terminal offers the implementation choices; do not ask for approval or to switch modes in the reply. If the user requests revisions, propose a complete replacement.
