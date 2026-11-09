@@ -98,6 +98,8 @@ Core retains its default total runtime limit of 600 seconds. Hosts can explicitl
 
 `Files.InstructionsSource` customizes rule lookup for a target file. `fs.InstructionsFrom` limits the ancestor at which rule loading begins. Default host behavior remains compatible. Hashline uses the filesystem's path resolver, supporting both native and confined logical paths.
 
+Use Read and Edit from the same `Files` instance so they share snapshots. Read with `{"path":"/main.go","anchored":true,"offset":2,"limit":1}`, then copy the returned first line into Edit's `input`. If the header is `[/main.go#ABCD]`, delete line 2 with `{"input":"[/main.go#ABCD]\nCUT 2.=2"}` or replace it with `{"input":"[/main.go#ABCD]\nPUT 2.=2:\n+// replacement"}`. Ranges include both endpoints. A CUT takes no colon or body; a literal PUT takes one `+` row per new line. Read again with `anchored: true` before the next edit to the same file or when a snapshot is unavailable, including after reopening a saved conversation.
+
 ## File Search Contract
 
 `glob` and `grep.include` share glob semantics. `*.go` matches filenames at any depth; `**` as a whole path component matches zero or more directories. Relative patterns containing `/` resolve against the search `path`; a leading `/` resolves against the logical workspace root. Patterns support `*`, `?`, and character classes, but not brace expansion. Invalid patterns return argument errors without suffix-matching fallbacks. `grep.query` is a whitespace-preserving literal string, searched case-insensitively by default.

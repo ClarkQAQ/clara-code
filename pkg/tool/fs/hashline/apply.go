@@ -67,7 +67,7 @@ func (e *Editor) Apply(ctx context.Context, input string) (Result, error) {
 			return Result{Files: applied}, err
 		}
 		if Normalize(string(current)) != file.Original {
-			return Result{Files: applied}, errs.New(errs.CodeConflict, "file changed before applying edits: "+file.Path.String())
+			return Result{Files: applied}, errs.New(errs.CodeConflict, fmt.Sprintf("file changed before applying edits: %s; read it with anchored=true before retrying", file.Path))
 		}
 		final := file.Path
 		if file.MoveTo != "" {
@@ -142,7 +142,7 @@ func (e *Editor) prepare(ctx context.Context, patch Patch) (Result, error) {
 		seenTags[filePath] = section.Tag
 		expected, ok := e.Store.Lookup(string(filePath), section.Tag)
 		if !ok {
-			return Result{}, fmt.Errorf("line %d: snapshot %s#%s is unknown; read %s again", section.Line, filePath, section.Tag, filePath)
+			return Result{}, fmt.Errorf("line %d: snapshot [%s#%s] is unknown; call read with anchored=true for this file and the target lines, then copy the returned header", section.Line, filePath, section.Tag)
 		}
 		current, ok := e.Store.Current(string(filePath))
 		if !ok {
@@ -163,13 +163,13 @@ func (e *Editor) prepare(ctx context.Context, patch Patch) (Result, error) {
 			}
 			state = &fileState{path: filePath, expected: expected, current: Normalize(string(text)), line: section.Line, mode: entry.Mode.Perm()}
 			if state.current != expected.Text {
-				return Result{}, errs.New(errs.CodeConflict, fmt.Sprintf("%s changed after the tagged read. Read it again.", filePath))
+				return Result{}, errs.New(errs.CodeConflict, fmt.Sprintf("%s changed after the tagged read; call read with anchored=true for the target lines and rebuild the edit", filePath))
 			}
 			states[filePath] = state
 			order = append(order, filePath)
 		}
 		if current.Tag != section.Tag && current.Tag != "" {
-			return Result{}, fmt.Errorf("%s has a newer snapshot; use tag %s", filePath, current.Tag)
+			return Result{}, fmt.Errorf("%s has a newer snapshot; call read with anchored=true for the target lines and use the returned header and line numbers", filePath)
 		}
 		if state.remove || state.moveTo != "" {
 			return Result{}, fmt.Errorf("line %d: %s already has REM or MV", section.Line, filePath)
@@ -258,13 +258,19 @@ func (e *Editor) stageOperation(
 		}
 		return start, end, true, nil
 	}
+	requireVisible := func(line int) error {
+		if !state.expected.Seen[line] {
+			return fmt.Errorf("line %d: file line %d was not visible in the tagged read; call read with anchored=true and offset/limit covering the target lines", operation.Line, line)
+		}
+		return nil
+	}
 	requireRange := func(start, end int) error {
 		if start < 1 || end < start || end > lineCount {
 			return fmt.Errorf("line %d: range %d..%d is outside the %d-line file", operation.Line, start, end, lineCount)
 		}
 		for line := start; line <= end; line++ {
-			if !state.expected.Seen[line] {
-				return fmt.Errorf("line %d: line %d of %s was not visible in the tagged read", operation.Line, line, state.path)
+			if err := requireVisible(line); err != nil {
+				return err
 			}
 		}
 		return nil
@@ -349,8 +355,10 @@ func (e *Editor) stageOperation(
 		if operation.Start < 1 || operation.Start > lineCount+1 {
 			return fmt.Errorf("line %d: insertion anchor is outside the file", operation.Line)
 		}
-		if operation.Register == "" && operation.Start <= lineCount && !state.expected.Seen[operation.Start] {
-			return fmt.Errorf("line %d: line %d was not visible in the tagged read", operation.Line, operation.Start)
+		if operation.Register == "" && operation.Start <= lineCount {
+			if err := requireVisible(operation.Start); err != nil {
+				return err
+			}
 		}
 		body, err := operationBody(operation.Kind)
 		if err != nil {
@@ -363,8 +371,10 @@ func (e *Editor) stageOperation(
 		if operation.Start < 0 || operation.Start > lineCount {
 			return fmt.Errorf("line %d: insertion anchor is outside the file", operation.Line)
 		}
-		if operation.Start > 0 && !state.expected.Seen[operation.Start] {
-			return fmt.Errorf("line %d: line %d was not visible in the tagged read", operation.Line, operation.Start)
+		if operation.Start > 0 {
+			if err := requireVisible(operation.Start); err != nil {
+				return err
+			}
 		}
 		body, err := operationBody(operation.Kind)
 		if err != nil {

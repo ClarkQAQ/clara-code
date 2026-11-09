@@ -7,13 +7,15 @@ import (
 
 func (s *Files) Edit() Tool {
 	type input struct {
-		Input string `json:"input" description:"one or more [path#TAG] Hashline sections"`
+		Input string `json:"input" description:"newline-separated Hashline sections, each starting with the exact [path#TAG] header from an anchored read"`
 	}
 	return Func(Definition{
 		Name: "edit",
-		Description: `Edit existing text with Hashline. Each section starts [path#TAG] using a tag from an anchored read. ` +
-			`PUT N.=M: replaces lines. PUT <N: or PUT >N: inserts. PUT >$: appends. CUT removes. REM deletes. MV moves. ` +
-			`Body rows start with + and are final content.`,
+		Description: `Edit existing text with Hashline. First call read with anchored=true for the target lines, then copy its first line ([path#TAG]) verbatim into input. ` +
+			`Use the numbers from the read without the trailing colon. Ranges are inclusive: PUT 12.=12: replaces line 12; PUT 12.=14: replaces lines 12 through 14. ` +
+			`PUT <12: inserts before line 12, PUT >12: inserts after it, and PUT >$: appends. Follow each literal PUT with one + prefixed row per new line (a lone + inserts a blank line). ` +
+			`Delete line 12 with CUT 12.=12 or lines 12 through 14 with CUT 12.=14. CUT has no trailing colon or body. REM deletes the file; MV destination moves it. ` +
+			`After a successful edit, read again with anchored=true before editing that file again.`,
 		Effects: []Effect{EffectWrite},
 	}, func(ctx context.Context, in input) (Result, error) {
 		patch, err := hashline.Parse(in.Input)

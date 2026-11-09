@@ -212,21 +212,20 @@ func (p *painter) paintWelcome(version, model, directory string) {
 	}
 	inside(title, widthOf(">_< Clara Code ("+version+")"))
 	inside("", 0)
-	label := func(name, value, color string) {
+	label := func(name, value string) {
 		label := fmt.Sprintf("%-*s", labelWidth, name)
 		value = truncate(value, width-4-len(label))
-		inside(p.style(dim, label)+p.style(color, value), len(label)+widthOf(value))
+		inside(p.style(dim, label)+value, len(label)+widthOf(value))
 	}
 	value := clean(model)
-	label("model:", value, "")
+	label("model:", value)
 	// The wide layout has room for the same model-switch hint as the reference.
 	if widthOf(value)+labelWidth+len(modelHint) <= width-4 {
 		lines = lines[:len(lines)-1]
 		inside(p.style(dim, fmt.Sprintf("%-*s", labelWidth, "model:"))+value+"   "+p.style(accent, "/model")+p.style(dim, " to change"),
 			labelWidth+widthOf(value)+len(modelHint))
 	}
-	label("directory:", clean(directory), "")
-	label("permissions:", "YOLO mode", purple)
+	label("directory:", clean(directory))
 	lines = append(lines, p.style(dim, "╰"+strings.Repeat("─", width-2)+"╯"), "")
 	p.commit(lines...)
 }

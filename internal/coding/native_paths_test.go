@@ -15,7 +15,7 @@ import (
 	"clara-code/internal/session"
 )
 
-func TestYOLOToolsOperateOutsideTheProject(t *testing.T) {
+func TestFileToolsOperateOutsideTheProject(t *testing.T) {
 	base := t.TempDir()
 	project, other := filepath.Join(base, "project"), filepath.Join(base, "other")
 	for _, dir := range []string{project, other} {

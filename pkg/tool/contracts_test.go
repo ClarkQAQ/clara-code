@@ -59,6 +59,54 @@ func TestSearchAndHashlineExamplesExecute(t *testing.T) {
 	}
 }
 
+func TestHashlineDeletionAndRecovery(t *testing.T) {
+	const path = "/main.go"
+	storage := memory.New()
+	if _, err := storage.WriteFile(t.Context(), path, []byte("package main\n// remove me\n// keep me\n"), fs.WriteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	files := toolapi.NewFiles(storage, nil)
+	readLine := func(line int) string {
+		t.Helper()
+		read := callTool(t, files.Read(), map[string]any{"path": path, "anchored": true, "offset": line, "limit": 1})
+		header, _, _ := strings.Cut(read.Content, "\n")
+		if read.IsError || !strings.HasPrefix(header, "["+path+"#") {
+			t.Fatalf("expected snapshot header, got %q", read.Content)
+		}
+		return header
+	}
+	header := readLine(1)
+	files = toolapi.NewFiles(storage, nil) // The old transcript can outlive its snapshot store.
+	edit := func(operation string) model.ToolResponse {
+		return callTool(t, files.Edit(), map[string]any{"input": header + "\n" + operation})
+	}
+	assertError := func(operation, hint string) {
+		t.Helper()
+		result := edit(operation)
+		if !result.IsError || !strings.Contains(result.Content, hint) {
+			t.Fatalf("%q: expected error with %q, got %+v", operation, hint, result)
+		}
+	}
+
+	assertError("CUT 2.=2", "call read with anchored=true")
+	header = readLine(1)
+	assertError("CUT 2", "Use CUT 12.=12")
+	assertError("CUT 2.=2:", "no colon or body")
+	assertError("PUT 2.=2:", "use a lone + for a blank line")
+	assertError("CUT 2.=2", "offset/limit covering the target lines")
+
+	header = readLine(2)
+	if result := edit("CUT 2.=2"); result.IsError {
+		t.Fatal(result.Content)
+	}
+	assertError("CUT 2.=2", "call read with anchored=true")
+	body, err := storage.ReadFile(t.Context(), path, 100)
+	if err != nil || string(body) != "package main\n// keep me\n" {
+		t.Fatalf("unexpected file after deletion: %q, %v", body, err)
+	}
+}
+
 func TestCommandUnitsAndStrictArguments(t *testing.T) {
 	commands := toolapi.NewCommands(toolapi.NewLocal())
 	defer commands.Close()

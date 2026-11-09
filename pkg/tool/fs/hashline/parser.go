@@ -86,7 +86,7 @@ func parseSection(path, tag string, line int, rows []bodyRow) (Section, error) {
 		}
 		if strings.HasPrefix(row.text, "+") {
 			if current == nil || !bodyBearing(current.Kind) {
-				return Section{}, fmt.Errorf("line %d has a body row without a body-bearing PUT", row.line)
+				return Section{}, fmt.Errorf("line %d: + rows must follow a PUT ending in ':'; CUT takes no body", row.line)
 			}
 			current.Body = append(current.Body, row.text[1:])
 			continue
@@ -127,7 +127,7 @@ func parseSection(path, tag string, line int, rows []bodyRow) (Section, error) {
 	}
 	for _, operation := range section.Ops {
 		if bodyBearing(operation.Kind) && len(operation.Body) == 0 && operation.Register == "" {
-			return Section{}, fmt.Errorf("line %d: PUT needs at least one + body row; use CUT to delete", operation.Line)
+			return Section{}, fmt.Errorf("line %d: PUT needs at least one + row (use a lone + for a blank line); to delete, use CUT N.=M with no trailing colon or body", operation.Line)
 		}
 		if bodyBearing(operation.Kind) && len(operation.Body) > 0 && operation.Register != "" {
 			return Section{}, fmt.Errorf("line %d: a register paste cannot also carry + rows", operation.Line)
@@ -231,7 +231,7 @@ func parseOperation(text string, line int) (Operation, error) {
 		operation.Kind, operation.Start, operation.End, operation.Register = OpCutBlock, start, start, match[2]
 		return operation, nil
 	}
-	return Operation{}, fmt.Errorf("line %d is not a hashline operation: %s", line, text)
+	return Operation{}, fmt.Errorf("line %d is not a hashline operation: %s\nUse CUT 12.=12 to delete line 12 (no colon or body), or PUT 12.=12: followed by +new text to replace it", line, text)
 }
 
 func validateBodyMarker(register, colon string, line int) error {

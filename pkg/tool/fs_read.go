@@ -15,7 +15,7 @@ func (s *Files) Read() Tool {
 	}
 	return Func(Definition{
 		Name:        "read",
-		Description: "Read a text file, up to 8 MiB. Set anchored to true before an edit. Use the returned [path#TAG] and line numbers. offset is a 1-based line number; limit is a line count. Ranges do not increase the 8 MiB snapshot limit.",
+		Description: "Read a text file, up to 8 MiB. Set anchored=true before using edit: copy the first line ([path#TAG]) into edit input, and use the visible line numbers without their trailing colons. offset is a 1-based line number; limit is a line count. Ranges do not increase the 8 MiB snapshot limit.",
 		Effects:     []Effect{EffectRead}, ParallelSafe: true, OutputLimit: 512 << 10,
 	}, func(ctx context.Context, in input) (Result, error) {
 		target, err := s.cleanPath(in.Path)
