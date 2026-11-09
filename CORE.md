@@ -87,13 +87,15 @@ ACP entry points live in `clara-code/pkg/core`; the task adapter is `tool.NewACP
 
 `mcp.ConnectWithProgress(ctx, configs, report)` reports each server synchronously before attempting its connection. `mcp.StartupProgress` includes the next server name, the number of prior attempts, and the total number of servers. Use `Manager.Statuses()` for connection results and tool counts after startup.
 
+Set `mcp.ServerConfig.ProtocolVersion` to a version supported by the Go MCP SDK to request that version during the handshake. For example, `ProtocolVersion: "2025-03-26"` starts with `initialize`. The server can negotiate a different supported version. An empty value uses the SDK's default negotiation.
+
 ## Background Commands
 
 `Commands.Terminals` returns background snapshots, `Refresh(ctx)` updates them, and `Stop(ctx, id)` stops a terminal. An empty ID stops all terminals present when called. `OnChange` notifies the host when status or retained output changes; elapsed time alone does not trigger a notification. The existing `Runner` and `Process` interfaces remain compatible. Local and SSH processes implement the optional `SnapshotProcess` interface, which reads state without advancing the `write_stdin` output cursor. For custom backends without this interface, automatic monitoring does not consume output; explicit polling updates the state.
 
 Natural exits, nonzero exits, timeouts, and explicit stops retain distinct final states. Finished processes release their resources while caching unread output for a subsequent `write_stdin` call. The cache holds at most the latest 32 completed terminals, and each terminal retains at most 1 MiB of output. Canceling `write_stdin` only cancels the wait and leaves the process running. Concurrent explicit stopping and polling report the stopped state. Waiting for an input write can be canceled, but bytes already delivered to stdin cannot be recalled. `Commands.Close` cleans up all live terminals. Persisted sessions do not restore processes.
 
-Core retains its default total runtime limit of 600 seconds. Hosts can explicitly set `Commands.NoDefaultTimeout=true` so commands that omit `timeout_seconds` have no total deadline. `Spec.NoTimeout` expresses the same intent to custom Runners. Explicit timeouts still apply; `yield_seconds` controls only the duration of one wait. Hosts should set `Commands.Context` to the owning session's lifetime and arrange their own refresh loop and notification display.
+Core retains its default total runtime limit of 600 seconds. Hosts can explicitly set `Commands.NoDefaultTimeout=true` so commands that omit `timeout_seconds` have no total deadline. `Spec.NoTimeout` expresses the same intent to custom Runners. Explicit timeouts still apply. The `yield_time_ms` argument to `exec_command` and `write_stdin` controls the duration of one wait in milliseconds. It defaults to 5000 for execution and 10000 for polling, with a maximum of 30000. To migrate existing calls, replace `yield_seconds` with `yield_time_ms` and multiply the value by 1000. Hosts should set `Commands.Context` to the owning session's lifetime and arrange their own refresh loop and notification display.
 
 ## Native Host Paths
 

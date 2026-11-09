@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+
+	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func (c Config) invalid(path, reason string) error {
@@ -108,6 +110,9 @@ func (c Config) validate() error {
 		return c.invalid("tools.exec_command.timeout_seconds", "must be between 1 and 600; omit for no deadline")
 	}
 	for name, m := range c.MCP {
+		if m.ProtocolVersion != "" && !slices.Contains(sdkmcp.SupportedProtocolVersions(), m.ProtocolVersion) {
+			return c.invalid("mcp_servers."+name+".protocol_version", "unsupported MCP protocol version")
+		}
 		if m.ConnectTimeoutSec < 0 || m.ToolTimeoutSec < 0 || m.ConnectTimeoutSec > 86400 || m.ToolTimeoutSec > 86400 {
 			return c.invalid("mcp_servers."+name, "timeouts must be between 0 and 86400 seconds")
 		}

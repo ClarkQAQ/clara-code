@@ -10,10 +10,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
+	wire "clara-code/pkg/appwire"
 	"clara-code/pkg/core"
 	"clara-code/pkg/core/prompt"
+	"clara-code/pkg/model"
 	"clara-code/pkg/tool/mcp"
 	acpsdk "github.com/coder/acp-go-sdk"
 
@@ -21,24 +24,31 @@ import (
 )
 
 func (h Host) ServeACP(ctx context.Context, input io.Reader, output io.Writer, version string) error {
-	server, err := core.NewACPServer(core.ACPServerConfig{
+	var server *core.ACPServer
+	var live sync.Map
+	var err error
+	server, err = core.NewACPServer(core.ACPServerConfig{
 		Name: "clara-code", Version: version, LoadSession: true, Images: true, MCPHTTP: true,
+		Meta: map[string]any{wire.Capability: wire.Version},
+		Extension: func(ctx context.Context, method string, params json.RawMessage) (any, error) {
+			return h.acpExtension(ctx, server, &live, method, params)
+		},
 		Open: func(ctx context.Context, id, cwd string, servers []acpsdk.McpServer) (core.ACPBinding, error) {
-			return h.openACP(ctx, id, cwd, servers, false)
+			return h.openACP(ctx, id, cwd, servers, false, server, &live)
 		},
 		List: h.listACP,
 		Resume: func(ctx context.Context, req acpsdk.ResumeSessionRequest) (core.ACPBinding, acpsdk.ResumeSessionResponse, error) {
-			binding, err := h.openACP(ctx, string(req.SessionId), req.Cwd, req.McpServers, true)
+			binding, err := h.openACP(ctx, string(req.SessionId), req.Cwd, req.McpServers, true, server, &live)
 			return binding, acpsdk.ResumeSessionResponse{}, err
 		},
 	})
 	if err != nil {
 		return err
 	}
-	return server.Serve(ctx, input, output)
+	return server.Serve(ctx, input, scopedACPOutput{output})
 }
 
-func (h Host) openACP(ctx context.Context, id, cwd string, servers []acpsdk.McpServer, resume bool) (core.ACPBinding, error) {
+func (h Host) openACP(ctx context.Context, id, cwd string, servers []acpsdk.McpServer, resume bool, server *core.ACPServer, live *sync.Map) (core.ACPBinding, error) {
 	if !filepath.IsAbs(cwd) {
 		return core.ACPBinding{}, acpsdk.NewInvalidParams("ACP cwd must be absolute")
 	}
@@ -79,15 +89,94 @@ func (h Host) openACP(ctx context.Context, id, cwd string, servers []acpsdk.McpS
 	if err != nil {
 		return core.ACPBinding{}, errors.Join(err, store.Close())
 	}
-	conversation, err := h.Open(ctx, workspace, store, nil, extra)
+	var questions *Questions
+	client := server.ClientCapabilities()
+	if client.Elicitation != nil && client.Elicitation.Form != nil {
+		questions = NewQuestions()
+	}
+	conversation, err := h.Open(ctx, workspace, store, questions, extra)
 	if err != nil {
-		return core.ACPBinding{}, err
+		return core.ACPBinding{}, errors.New(h.Config.Redact(err.Error()))
+	}
+	id = conversation.Session.ID()
+	entry := &acpConversation{chat: conversation, mode: "agent"}
+	live.Store(id, entry)
+	lifetime, stop := context.WithCancel(context.WithoutCancel(ctx))
+	if questions != nil {
+		go serveACPQuestions(lifetime, server, conversation, id)
 	}
 	return core.ACPBinding{
-		Session: conversation.Session, PrepareInput: conversation.PrepareImages,
-		Close: func(context.Context) error { return conversation.Close() },
+		Session: conversation.Session,
+		PreparePrompt: func(ctx context.Context, req acpsdk.PromptRequest, messages []model.Message) ([]model.Message, error) {
+			return entry.preparePrompt(ctx, req, messages, hasClaraExtension(client))
+		},
+		Close: func(context.Context) error {
+			live.CompareAndDelete(id, entry)
+			stop()
+			return conversation.Close()
+		},
+		ConfigOptions: entry.options,
+		CanClose: func(ctx context.Context, req acpsdk.CloseSessionRequest) error {
+			if req.Meta[wire.Namespace+"idleOnly"] != true || !hasClaraExtension(client) {
+				return nil
+			}
+			if conversation.Session.Active() != nil {
+				return errors.New("session still has a running turn")
+			}
+			for _, terminal := range conversation.Terminals() {
+				if terminal.Poll.Running {
+					return errors.New("session still has a running terminal")
+				}
+			}
+			tasks, err := conversation.backend.List(ctx)
+			if err != nil {
+				return err
+			}
+			for _, task := range tasks {
+				if task.Status == "starting" || task.Status == "running" {
+					return errors.New("session still has a running task")
+				}
+			}
+			return nil
+		},
+		SetOption: entry.setOption,
+		PromptMeta: func(run *core.Run) map[string]any {
+			if !hasClaraExtension(client) {
+				return nil
+			}
+			return map[string]any{wire.Namespace + "runId": run.ID}
+		},
+		ToolMeta: func(call model.ToolCallContent) map[string]any {
+			if !hasClaraExtension(client) {
+				return nil
+			}
+			activity := session.NewToolActivity(call, time.Now())
+			return map[string]any{wire.Namespace + "title": activity.Title, wire.Namespace + "detail": activity.Detail}
+		},
+		Start: func(ctx context.Context, call core.AgentStreamCall) (*core.Run, error) {
+			if entry.currentMode() == "plan" {
+				ctx = session.WithPlanning(ctx)
+			}
+			return conversation.Session.Start(ctx, call)
+		},
+		Plan: func(ctx context.Context) []acpsdk.PlanEntry {
+			state, err := conversation.plan.GetPlan(ctx)
+			if err != nil {
+				return nil
+			}
+			entries := make([]acpsdk.PlanEntry, 0, len(state.Steps))
+			for _, step := range state.Steps {
+				status := acpsdk.PlanEntryStatus(step.Status)
+				entries = append(entries, acpsdk.PlanEntry{Content: step.Step, Status: status, Priority: acpsdk.PlanEntryPriorityMedium})
+			}
+			return entries
+		},
 		Configure: func(context.Context) core.AgentStreamCall {
-			return conversation.Call(prompt.Execute, false)
+			mode := prompt.Execute
+			if entry.currentMode() == "plan" {
+				mode = prompt.Plan
+			}
+			return conversation.Call(mode, entry.currentMode() == "review")
 		},
 		MatchCwd: func(path string) bool {
 			if !filepath.IsAbs(path) {

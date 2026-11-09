@@ -67,6 +67,49 @@ func TestLayeredConfigurationAndRepeatedOverrides(t *testing.T) {
 	}
 }
 
+func TestMCPProtocolVersion(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	t.Setenv("CLARA_CODE_HOME", home)
+	configFile(t, filepath.Join(home, "config.toml"), exampleConfig+`
+[mcp_servers.auv]
+command = "auv"
+args = ["mcp", "serve"]
+protocol_version = "2025-03-26"
+
+[mcp_servers.other]
+command = "other"
+`)
+	const key = "mcp_servers.auv.protocol_version"
+	for _, test := range []struct {
+		name, override, want string
+	}{
+		{name: "file", want: "2025-03-26"},
+		{name: "override", override: key + `="2025-11-25"`, want: "2025-11-25"},
+		{name: "reset", override: key + `=""`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			options := LoadOptions{Cwd: root, Root: root}
+			if test.override != "" {
+				options.Overrides = []string{test.override}
+			}
+			cfg, err := LoadWith(t.Context(), options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.MCP["auv"].Server("auv", root).ProtocolVersion; got != test.want {
+				t.Fatalf("auv protocol version = %q, want %q", got, test.want)
+			}
+			if got := cfg.MCP["other"].Server("other", root).ProtocolVersion; got != "" {
+				t.Fatalf("unexpected protocol version for other server: %q", got)
+			}
+		})
+	}
+	_, err := LoadWith(t.Context(), LoadOptions{Cwd: root, Root: root, Overrides: []string{key + `="2099-01-01"`}})
+	if err == nil || !strings.Contains(err.Error(), "configuration command line: "+key+": "+key+": unsupported MCP protocol version") {
+		t.Fatalf("unexpected validation error: %v", err)
+	}
+}
+
 func TestStatusLineCacheFields(t *testing.T) {
 	home, root := t.TempDir(), t.TempDir()
 	t.Setenv("CLARA_CODE_HOME", home)

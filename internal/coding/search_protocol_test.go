@@ -56,7 +56,7 @@ func TestSearchContractAndCorrectionThroughProtocols(t *testing.T) {
 						}
 					}
 				}
-				if !found || !strings.Contains(string(body), "File search") || !strings.Contains(string(body), "yield_seconds") || !strings.Contains(string(body), "global instructions") {
+				if !found || !strings.Contains(string(body), "File search") || !strings.Contains(string(body), "yield_time_ms") || !strings.Contains(string(body), "global instructions") {
 					t.Errorf("wire contract or prompt missing: found grep=%v", found)
 				}
 				if step == 2 && (!strings.Contains(string(body), "grep: invalid arguments") || !strings.Contains(string(body), "Allowed fields:")) {

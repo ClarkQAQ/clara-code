@@ -8,10 +8,10 @@ import (
 
 func (s *Commands) WriteStdin() Tool {
 	type input struct {
-		SessionID    string `json:"session_id" description:"actual session_id returned by exec_command"`
-		Chars        string `json:"chars,omitempty" description:"characters to write; omit to wait without sending input"`
-		Stop         bool   `json:"stop,omitempty" description:"stop and close this background process"`
-		YieldSeconds int    `json:"yield_seconds,omitempty" description:"wait for output in seconds; default 10, maximum 30"`
+		SessionID   string `json:"session_id" description:"actual session_id returned by exec_command"`
+		Chars       string `json:"chars,omitempty" description:"characters to write; omit to wait without sending input"`
+		Stop        bool   `json:"stop,omitempty" description:"stop and close this background process"`
+		YieldTimeMS int    `json:"yield_time_ms,omitempty" description:"wait for output in milliseconds; default 10000, maximum 30000"`
 	}
 	return Func(Definition{Name: "write_stdin", Description: "Send input to a background terminal or wait for its output. Empty chars only waits. Canceling a wait leaves the background process running. Use the actual session_id, not a PID.", Effects: []Effect{EffectExecute}, Timeout: 2 * time.Minute}, func(ctx context.Context, in input) (Result, error) {
 		s.mu.Lock()
@@ -37,14 +37,7 @@ func (s *Commands) WriteStdin() Tool {
 				return ErrorResult(err.Error()), nil
 			}
 		}
-		wait := time.Duration(in.YieldSeconds) * time.Second
-		if wait <= 0 {
-			wait = 10 * time.Second
-		}
-		if wait > 30*time.Second {
-			wait = 30 * time.Second
-		}
-		poll, err := item.Poll(ctx, wait)
+		poll, err := item.Poll(ctx, commandWait(in.YieldTimeMS, 10*time.Second))
 		if ctx.Err() != nil {
 			return Result{}, ctx.Err()
 		}

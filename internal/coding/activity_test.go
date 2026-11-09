@@ -62,7 +62,7 @@ func TestPlanShellBackgroundPollingUpdatesTheOriginalRecordAcrossTurns(t *testin
 	model := fixtureModel{reply: func(call modelapi.Call) (*modelapi.Response, error) {
 		step++
 		if step == 1 {
-			return toolReply("exec_command", map[string]any{"command": "printf first; sleep 1.2; printf last", "yield_seconds": 1}, 1), nil
+			return toolReply("exec_command", map[string]any{"command": "printf first; sleep 1.2; printf last", "yield_time_ms": 1000}, 1), nil
 		}
 		var output string
 		for _, message := range call.Prompt {
@@ -88,7 +88,7 @@ func TestPlanShellBackgroundPollingUpdatesTheOriginalRecordAcrossTurns(t *testin
 			if id == "" {
 				return nil, errors.New("background session id missing")
 			}
-			return toolReply("write_stdin", map[string]any{"session_id": id, "yield_seconds": 1}, 2), nil
+			return toolReply("write_stdin", map[string]any{"session_id": id, "yield_time_ms": 1000}, 2), nil
 		}
 		return demoText("Completed."), nil
 	}}

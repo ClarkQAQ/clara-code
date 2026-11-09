@@ -107,7 +107,7 @@ func codingReply(_ context.Context, call model.Call) (model.Response, error) {
 	var input map[string]any
 	switch len(outputs) {
 	case 0, 4:
-		tool, input = "exec_command", map[string]any{"command": "go test ./...", "yield_seconds": 30}
+		tool, input = "exec_command", map[string]any{"command": "go test ./...", "yield_time_ms": 30000}
 	case 1:
 		if !strings.Contains(outputs[0], "incorrect sum") {
 			return model.Response{}, errors.New("expected the fixture test to fail")

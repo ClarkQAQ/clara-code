@@ -137,12 +137,15 @@ max_pixels = 64000000 # resize target in pixels
 max_dimension = 2048 # resize target for the longest side
 
 # Optional services below are disabled until configured.
+# Set protocol_version to request a specific handshake version for a server.
+# Omit it or set it to "" to use automatic negotiation.
 [mcp_servers.files]
 enabled = false
 command = "/path/to/mcp-server"
 args = ["--stdio"]
 env = { "EXAMPLE" = "value" }
 required = false
+# protocol_version = "2025-03-26" # Use initialize for a legacy server.
 connect_timeout_sec = 15
 tool_timeout_sec = 60
 

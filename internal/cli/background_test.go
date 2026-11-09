@@ -43,8 +43,8 @@ func TestBackgroundTerminalsInTmux(t *testing.T) {
 		switch step := requests.Add(1); step {
 		case 1:
 			delta = map[string]any{"tool_calls": []any{
-				tool(0, "job_one", "exec_command", map[string]any{"command": "printf first-marker; while [ ! -f release ]; do sleep 0.05; done; printf final-marker", "yield_seconds": 1}),
-				tool(1, "job_two", "exec_command", map[string]any{"command": "printf second-marker; sleep 30", "yield_seconds": 1}),
+				tool(0, "job_one", "exec_command", map[string]any{"command": "printf first-marker; while [ ! -f release ]; do sleep 0.05; done; printf final-marker", "yield_time_ms": 1000}),
+				tool(1, "job_two", "exec_command", map[string]any{"command": "printf second-marker; sleep 30", "yield_time_ms": 1000}),
 			}}
 			finish = "tool_calls"
 		case 2:
@@ -60,7 +60,7 @@ func TestBackgroundTerminalsInTmux(t *testing.T) {
 			if step == 5 {
 				id = ids["job_two"]
 			}
-			delta = map[string]any{"tool_calls": []any{tool(0, fmt.Sprintf("wait_%d", step), "write_stdin", map[string]any{"session_id": id, "yield_seconds": 30})}}
+			delta = map[string]any{"tool_calls": []any{tool(0, fmt.Sprintf("wait_%d", step), "write_stdin", map[string]any{"session_id": id, "yield_time_ms": 30000})}}
 			finish = "tool_calls"
 		case 4:
 			delta = map[string]any{"content": "The first background job finished."}

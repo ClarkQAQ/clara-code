@@ -19,10 +19,18 @@ import (
 )
 
 type ACPBinding struct {
-	Session      *Session
-	PrepareInput func(context.Context, []model.Message) ([]model.Message, error)
-	Configure    func(context.Context) AgentStreamCall
-	Close        func(context.Context) error
+	Session       *Session
+	PrepareInput  func(context.Context, []model.Message) ([]model.Message, error)
+	PreparePrompt func(context.Context, sdk.PromptRequest, []model.Message) ([]model.Message, error)
+	Start         func(context.Context, AgentStreamCall) (*Run, error)
+	ConfigOptions func() []sdk.SessionConfigOption
+	CanClose      func(context.Context, sdk.CloseSessionRequest) error
+	Plan          func(context.Context) []sdk.PlanEntry
+	PromptMeta    func(*Run) map[string]any
+	ToolMeta      func(model.ToolCallContent) map[string]any
+	SetOption     func(context.Context, sdk.SetSessionConfigOptionRequest) error
+	Configure     func(context.Context) AgentStreamCall
+	Close         func(context.Context) error
 	// MatchCwd optionally checks whether a requested cwd identifies this binding's workspace.
 	MatchCwd func(string) bool
 }
@@ -38,6 +46,8 @@ type ACPServerConfig struct {
 	LoadSession bool
 	Images      bool
 	MCPHTTP     bool
+	Meta        map[string]any
+	Extension   func(context.Context, string, json.RawMessage) (any, error)
 }
 
 type ACPServer struct {
@@ -46,6 +56,7 @@ type ACPServer struct {
 	conn     *sdk.AgentSideConnection
 	sessions map[sdk.SessionId]acpSession
 	closed   bool
+	client   sdk.ClientCapabilities
 	// Serialize lifecycle calls for the same session before acquiring host resources.
 	lifecycle [64]chan struct{}
 }
@@ -96,7 +107,10 @@ func (s *ACPServer) Serve(ctx context.Context, input io.Reader, output io.Writer
 	return err
 }
 
-func (s *ACPServer) Initialize(context.Context, sdk.InitializeRequest) (sdk.InitializeResponse, error) {
+func (s *ACPServer) Initialize(_ context.Context, req sdk.InitializeRequest) (sdk.InitializeResponse, error) {
+	s.mu.Lock()
+	s.client = req.ClientCapabilities
+	s.mu.Unlock()
 	capabilities := sdk.SessionCapabilities{Close: &sdk.SessionCloseCapabilities{}}
 	if s.config.List != nil {
 		capabilities.List = &sdk.SessionListCapabilities{}
@@ -109,6 +123,7 @@ func (s *ACPServer) Initialize(context.Context, sdk.InitializeRequest) (sdk.Init
 		AgentInfo:       &sdk.Implementation{Name: s.config.Name, Version: s.config.Version},
 		AuthMethods:     []sdk.AuthMethod{},
 		AgentCapabilities: sdk.AgentCapabilities{
+			Meta:                s.config.Meta,
 			LoadSession:         s.config.LoadSession,
 			PromptCapabilities:  sdk.PromptCapabilities{Image: s.config.Images, EmbeddedContext: true},
 			McpCapabilities:     sdk.McpCapabilities{Http: s.config.MCPHTTP},
@@ -164,7 +179,11 @@ func (s *ACPServer) ResumeSession(ctx context.Context, req sdk.ResumeSessionRequ
 		}) {
 			return sdk.ResumeSessionResponse{}, sdk.NewInvalidParams("active session has different MCP servers; close it before reconnecting")
 		}
-		return existing.resume, nil
+		response := existing.resume
+		if existing.ConfigOptions != nil {
+			response.ConfigOptions = existing.ConfigOptions()
+		}
+		return response, nil
 	}
 	binding, response, err := s.config.Resume(ctx, req)
 	if err != nil {
@@ -173,6 +192,9 @@ func (s *ACPServer) ResumeSession(ctx context.Context, req sdk.ResumeSessionRequ
 	_, err = s.register(ctx, req.SessionId, acpSession{
 		ACPBinding: binding, cwd: req.Cwd, servers: req.McpServers, resume: response,
 	})
+	if err == nil && binding.ConfigOptions != nil {
+		response.ConfigOptions = binding.ConfigOptions()
+	}
 	return response, err
 }
 
@@ -180,8 +202,57 @@ func (*ACPServer) SetSessionMode(context.Context, sdk.SetSessionModeRequest) (sd
 	return sdk.SetSessionModeResponse{}, sdk.NewMethodNotFound("session/set_mode")
 }
 
-func (*ACPServer) SetSessionConfigOption(context.Context, sdk.SetSessionConfigOptionRequest) (sdk.SetSessionConfigOptionResponse, error) {
-	return sdk.SetSessionConfigOptionResponse{}, sdk.NewMethodNotFound("session/set_config_option")
+func (s *ACPServer) SetSessionConfigOption(ctx context.Context, req sdk.SetSessionConfigOptionRequest) (sdk.SetSessionConfigOptionResponse, error) {
+	var out sdk.SetSessionConfigOptionResponse
+	if req.ValueId == nil {
+		return out, sdk.NewInvalidParams("a string option value is required")
+	}
+	id := req.ValueId.SessionId
+	unlock, err := s.lockSession(ctx, id)
+	if err != nil {
+		return out, err
+	}
+	defer unlock()
+	b, ok := s.lookup(id)
+	if !ok {
+		return out, unknownSession()
+	}
+	if b.SetOption == nil || b.ConfigOptions == nil {
+		return out, sdk.NewMethodNotFound("session/set_config_option")
+	}
+	if b.Session.Active() != nil {
+		return out, sdk.NewInvalidParams("finish the current turn before changing configuration")
+	}
+	if err := b.SetOption(ctx, req); err != nil {
+		return out, err
+	}
+	out.ConfigOptions = b.ConfigOptions()
+	return out, nil
+}
+
+// ClientCapabilities returns the capabilities negotiated with the connected client.
+func (s *ACPServer) ClientCapabilities() sdk.ClientCapabilities {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.client
+}
+
+// ElicitForm requests non-sensitive input from a client that supports ACP forms.
+func (s *ACPServer) ElicitForm(ctx context.Context, req sdk.UnstableCreateElicitationRequest) (sdk.UnstableCreateElicitationResponse, error) {
+	s.mu.Lock()
+	conn, capability := s.conn, s.client.Elicitation
+	s.mu.Unlock()
+	if conn == nil || capability == nil || capability.Form == nil {
+		return sdk.UnstableCreateElicitationResponse{}, errors.New("client does not support forms")
+	}
+	return conn.UnstableCreateElicitation(ctx, req)
+}
+
+func (s *ACPServer) HandleExtensionMethod(ctx context.Context, method string, params json.RawMessage) (any, error) {
+	if s.config.Extension == nil {
+		return nil, sdk.NewMethodNotFound(method)
+	}
+	return s.config.Extension(ctx, method, params)
 }
 
 func (s *ACPServer) open(ctx context.Context, id sdk.SessionId, cwd string, servers []sdk.McpServer) (ACPBinding, error) {
@@ -234,7 +305,11 @@ func (s *ACPServer) NewSession(ctx context.Context, req sdk.NewSessionRequest) (
 	if err != nil {
 		return sdk.NewSessionResponse{}, sdk.NewInvalidParams(err.Error())
 	}
-	return sdk.NewSessionResponse{SessionId: sdk.SessionId(binding.Session.ID())}, nil
+	response := sdk.NewSessionResponse{SessionId: sdk.SessionId(binding.Session.ID())}
+	if binding.ConfigOptions != nil {
+		response.ConfigOptions = binding.ConfigOptions()
+	}
+	return response, nil
 }
 
 func (s *ACPServer) LoadSession(ctx context.Context, req sdk.LoadSessionRequest) (sdk.LoadSessionResponse, error) {
@@ -265,10 +340,23 @@ func (s *ACPServer) LoadSession(ctx context.Context, req sdk.LoadSessionRequest)
 			}
 		}
 	}
-	return sdk.LoadSessionResponse{}, nil
+	response := sdk.LoadSessionResponse{}
+	if binding.ConfigOptions != nil {
+		response.ConfigOptions = binding.ConfigOptions()
+	}
+	return response, nil
 }
 
 func (s *ACPServer) Prompt(ctx context.Context, req sdk.PromptRequest) (sdk.PromptResponse, error) {
+	unlock, lockErr := s.lockSession(ctx, req.SessionId)
+	if lockErr != nil {
+		return sdk.PromptResponse{}, lockErr
+	}
+	defer func() {
+		if unlock != nil {
+			unlock()
+		}
+	}()
 	binding, ok := s.lookup(req.SessionId)
 	if !ok {
 		return sdk.PromptResponse{}, unknownSession()
@@ -282,11 +370,13 @@ func (s *ACPServer) Prompt(ctx context.Context, req sdk.PromptRequest) (sdk.Prom
 		call = binding.Configure(ctx)
 	}
 	messages := []model.Message{message}
-	if binding.PrepareInput != nil {
+	if binding.PreparePrompt != nil {
+		messages, err = binding.PreparePrompt(ctx, req, messages)
+	} else if binding.PrepareInput != nil {
 		messages, err = binding.PrepareInput(ctx, messages)
-		if err != nil {
-			return sdk.PromptResponse{}, sdk.NewInvalidParams(err.Error())
-		}
+	}
+	if err != nil {
+		return sdk.PromptResponse{}, sdk.NewInvalidParams(err.Error())
 	}
 	call.Messages = append(call.Messages, messages...)
 	chunk, start, finish := call.OnChunk, call.OnToolCall, call.OnToolResult
@@ -304,8 +394,13 @@ func (s *ACPServer) Prompt(ctx context.Context, req sdk.PromptRequest) (sdk.Prom
 		return err
 	}
 	call.OnToolCall = func(item model.ToolCallContent) error {
-		err := s.send(ctx, req.SessionId, sdk.StartToolCall(sdk.ToolCallId(item.ToolCallID), item.ToolName,
-			sdk.WithStartKind(toolKind(item.ToolName)), sdk.WithStartRawInput(json.RawMessage(item.Input))))
+		update := sdk.StartToolCall(sdk.ToolCallId(item.ToolCallID), item.ToolName,
+			sdk.WithStartKind(toolKind(item.ToolName)), sdk.WithStartStatus(sdk.ToolCallStatusInProgress),
+			sdk.WithStartRawInput(json.RawMessage(item.Input)))
+		if binding.ToolMeta != nil {
+			update.ToolCall.Meta = binding.ToolMeta(item)
+		}
+		err := s.send(ctx, req.SessionId, update)
 		if err == nil && start != nil {
 			return start(item)
 		}
@@ -317,27 +412,45 @@ func (s *ACPServer) Prompt(ctx context.Context, req sdk.PromptRequest) (sdk.Prom
 			status = sdk.ToolCallStatusFailed
 		}
 		body, _ := json.Marshal(item.Result)
+		if len(body) > 128<<10 {
+			body = append(body[:128<<10], []byte("\n[output truncated]")...)
+		}
 		err := s.send(ctx, req.SessionId, sdk.UpdateToolCall(sdk.ToolCallId(item.ToolCallID), sdk.WithUpdateStatus(status),
 			sdk.WithUpdateContent([]sdk.ToolCallContent{sdk.ToolContent(sdk.TextBlock(string(body)))})))
 		if err == nil && finish != nil {
-			return finish(item)
+			err = finish(item)
+		}
+		if err == nil && item.ToolName == "update_plan" && binding.Plan != nil {
+			if entries := binding.Plan(ctx); entries != nil {
+				err = s.send(ctx, req.SessionId, sdk.UpdatePlan(entries...))
+			}
 		}
 		return err
 	}
-	run, err := binding.Session.Start(ctx, call)
+	startRun := binding.Start
+	if startRun == nil {
+		startRun = binding.Session.Start
+	}
+	run, err := startRun(ctx, call)
+	unlock()
+	unlock = nil
 	if err != nil {
 		return sdk.PromptResponse{}, err
 	}
-	result, err := run.Wait(ctx)
+	result, err := run.Wait(context.WithoutCancel(ctx))
+	var meta map[string]any
+	if binding.PromptMeta != nil {
+		meta = binding.PromptMeta(run)
+	}
 	switch {
 	case errors.Is(err, context.Canceled):
-		return sdk.PromptResponse{StopReason: sdk.StopReasonCancelled}, nil
+		return sdk.PromptResponse{Meta: meta, StopReason: sdk.StopReasonCancelled}, nil
 	case err != nil:
 		return sdk.PromptResponse{}, err
 	case result.Response.FinishReason == model.FinishReasonLength:
-		return sdk.PromptResponse{StopReason: sdk.StopReasonMaxTokens}, nil
+		return sdk.PromptResponse{Meta: meta, StopReason: sdk.StopReasonMaxTokens}, nil
 	default:
-		return sdk.PromptResponse{StopReason: sdk.StopReasonEndTurn}, nil
+		return sdk.PromptResponse{Meta: meta, StopReason: sdk.StopReasonEndTurn}, nil
 	}
 }
 
@@ -356,13 +469,18 @@ func (s *ACPServer) CloseSession(ctx context.Context, req sdk.CloseSessionReques
 		return sdk.CloseSessionResponse{}, err
 	}
 	defer unlock()
-	s.mu.Lock()
-	binding, ok := s.sessions[req.SessionId]
-	delete(s.sessions, req.SessionId)
-	s.mu.Unlock()
+	binding, ok := s.lookup(req.SessionId)
 	if !ok {
 		return sdk.CloseSessionResponse{}, unknownSession()
 	}
+	if binding.CanClose != nil {
+		if err := binding.CanClose(ctx, req); err != nil {
+			return sdk.CloseSessionResponse{}, err
+		}
+	}
+	s.mu.Lock()
+	delete(s.sessions, req.SessionId)
+	s.mu.Unlock()
 	return sdk.CloseSessionResponse{}, closeBinding(ctx, binding.ACPBinding)
 }
 

@@ -30,6 +30,10 @@ type ServerConfig struct {
 	Required  bool
 	Timeout   time.Duration
 	Transport sdkmcp.Transport
+
+	// ProtocolVersion is the requested handshake version. An empty value
+	// uses the SDK default, and the server can negotiate a different version.
+	ProtocolVersion string
 }
 
 // Status reports one server connection.
@@ -149,7 +153,9 @@ func (m *Manager) connectOne(ctx context.Context, config ServerConfig) (*binding
 	}
 	connectCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	session, err := client.Connect(connectCtx, transport, nil)
+	session, err := client.Connect(connectCtx, transport, &sdkmcp.ClientSessionOptions{
+		ProtocolVersion: config.ProtocolVersion,
+	})
 	if err != nil {
 		return nil, err
 	}

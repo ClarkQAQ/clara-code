@@ -14,12 +14,12 @@ func (s *Commands) ExecCommand() Tool {
 		Command        string `json:"command" description:"shell command"`
 		Workdir        string `json:"workdir,omitempty" description:"working directory"`
 		TimeoutSeconds int    `json:"timeout_seconds,omitempty" description:"total runtime limit in seconds; default and maximum 600"`
-		YieldSeconds   int    `json:"yield_seconds,omitempty" description:"wait in seconds before returning a session_id; default 5, maximum 30"`
+		YieldTimeMS    int    `json:"yield_time_ms,omitempty" description:"wait in milliseconds before returning a session_id; default 5000, maximum 30000"`
 		TTY            bool   `json:"tty,omitempty" description:"request a terminal"`
 	}
 	tool := Func(Definition{
 		Name: "exec_command",
-		Description: "Run a shell command. A command still running after yield_seconds returns a session_id. " +
+		Description: "Run a shell command. A command still running after yield_time_ms returns a session_id. " +
 			"Use write_stdin to read more output, send input, or wait.",
 		Effects: []Effect{EffectExecute}, Timeout: 10 * time.Minute,
 	}, func(ctx context.Context, in input) (Result, error) {
@@ -62,14 +62,7 @@ func (s *Commands) ExecCommand() Tool {
 		if err != nil {
 			return ErrorResult(err.Error()), nil
 		}
-		yield := time.Duration(in.YieldSeconds) * time.Second
-		if yield <= 0 {
-			yield = 5 * time.Second
-		}
-		if yield > 30*time.Second {
-			yield = 30 * time.Second
-		}
-		poll, err := process.Poll(ctx, yield)
+		poll, err := process.Poll(ctx, commandWait(in.YieldTimeMS, 5*time.Second))
 		if err != nil || !poll.Running {
 			if err := errors.Join(err, process.Close()); err != nil {
 				return Result{}, err
@@ -101,4 +94,11 @@ func (s *Commands) ExecCommand() Tool {
 		value.info.Description += " Omitted timeout_seconds sets no total deadline in this host."
 	}
 	return tool
+}
+
+func commandWait(milliseconds int, fallback time.Duration) time.Duration {
+	if milliseconds <= 0 {
+		return fallback
+	}
+	return time.Duration(min(milliseconds, 30_000)) * time.Millisecond
 }

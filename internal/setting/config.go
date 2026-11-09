@@ -75,10 +75,15 @@ type MCP struct {
 	Enabled           *bool             `toml:"enabled"`
 	ConnectTimeoutSec int               `toml:"connect_timeout_sec"`
 	ToolTimeoutSec    int               `toml:"tool_timeout_sec"`
+	ProtocolVersion   string            `toml:"protocol_version"`
 }
 
 func (m MCP) Server(name, cwd string) mcp.ServerConfig {
-	return mcp.ServerConfig{Name: name, Command: m.Command, Args: m.Args, Env: m.Env, URL: m.URL, Headers: resolveHeaders(m.Headers, m.EnvHeaders), Required: m.Required, Cwd: cwd, Timeout: time.Duration(m.ConnectTimeoutSec) * time.Second}
+	return mcp.ServerConfig{
+		Name: name, Command: m.Command, Args: m.Args, Env: m.Env, URL: m.URL,
+		Headers: resolveHeaders(m.Headers, m.EnvHeaders), Required: m.Required, Cwd: cwd,
+		Timeout: time.Duration(m.ConnectTimeoutSec) * time.Second, ProtocolVersion: m.ProtocolVersion,
+	}
 }
 
 type ACP struct {

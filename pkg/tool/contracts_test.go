@@ -110,21 +110,21 @@ func TestHashlineDeletionAndRecovery(t *testing.T) {
 func TestCommandUnitsAndStrictArguments(t *testing.T) {
 	commands := toolapi.NewCommands(toolapi.NewLocal())
 	defer commands.Close()
-	wrong := callTool(t, commands.ExecCommand(), map[string]any{"command": "exit 0", "yield_time_ms": 1})
-	if !wrong.IsError || !strings.Contains(wrong.Content, "exec_command: invalid arguments") || !strings.Contains(wrong.Content, "yield_seconds") {
+	wrong := callTool(t, commands.ExecCommand(), map[string]any{"command": "exit 0", "yield_seconds": 1})
+	if !wrong.IsError || !strings.Contains(wrong.Content, "exec_command: invalid arguments") || !strings.Contains(wrong.Content, "yield_time_ms") {
 		t.Fatal(wrong.Content)
 	}
-	run := callTool(t, commands.ExecCommand(), map[string]any{"command": "sleep 1.2; printf example-ok", "yield_seconds": 1, "timeout_seconds": 120})
+	run := callTool(t, commands.ExecCommand(), map[string]any{"command": "sleep 1.2; printf example-ok", "yield_time_ms": 1000, "timeout_seconds": 120})
 	if run.IsError || !strings.HasPrefix(run.Content, "session_id: ") {
 		t.Fatal(run.Content)
 	}
 	first, _, _ := strings.Cut(run.Content, "\n")
 	id := strings.TrimPrefix(first, "session_id: ")
-	poll := callTool(t, commands.WriteStdin(), map[string]any{"session_id": id, "yield_seconds": 1})
+	poll := callTool(t, commands.WriteStdin(), map[string]any{"session_id": id, "yield_time_ms": 1000})
 	if poll.IsError || !strings.Contains(poll.Content, "example-ok") {
 		t.Fatal(poll.Content)
 	}
-	completed := callTool(t, commands.WriteStdin(), map[string]any{"session_id": id, "yield_seconds": 1})
+	completed := callTool(t, commands.WriteStdin(), map[string]any{"session_id": id, "yield_time_ms": 1000})
 	if !completed.IsError || !strings.Contains(completed.Content, "completed") {
 		t.Fatal(completed.Content)
 	}

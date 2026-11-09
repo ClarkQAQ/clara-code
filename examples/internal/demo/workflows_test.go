@@ -153,7 +153,7 @@ func TestExecSurvivesToolReturn(t *testing.T) {
 	})
 	toolCtx, finishTool := context.WithCancel(ctx)
 	result, err := commands.ExecCommand().Run(toolCtx, modelapi.ToolCall{
-		Input: `{"command":"read line; printf '%s' \"$line\"","yield_seconds":1}`,
+		Input: `{"command":"read line; printf '%s' \"$line\"","yield_time_ms":1000}`,
 	})
 	finishTool()
 	if err != nil || result.IsError {
@@ -164,7 +164,7 @@ func TestExecSurvivesToolReturn(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing process ID: %s", result.Content)
 	}
-	result, err = commands.WriteStdin().Run(ctx, modelapi.ToolCall{Input: `{"session_id":"` + id + `","chars":"still alive\n","yield_seconds":2}`})
+	result, err = commands.WriteStdin().Run(ctx, modelapi.ToolCall{Input: `{"session_id":"` + id + `","chars":"still alive\n","yield_time_ms":2000}`})
 	if err != nil || result.IsError || !strings.Contains(result.Content, "still alive") {
 		t.Fatalf("wait background command: %+v %v", result, err)
 	}

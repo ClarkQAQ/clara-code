@@ -15,6 +15,8 @@ import (
 	"clara-code/pkg/core/prompt"
 	"clara-code/pkg/model"
 	"clara-code/pkg/tool"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 func contextText(messages []model.Message) string {
@@ -97,14 +99,16 @@ func TestModelWindowBudgetAndCompactionPercent(t *testing.T) {
 
 func TestHostTemplateUsesConfiguredToolDefaults(t *testing.T) {
 	c, _ := testHost(t, t.TempDir(), DemoModel{})
-	c.Host.Config.Tools.Exec.YieldSeconds = 2
-	c.Host.Config.Tools.Exec.TimeoutSeconds = new(42)
+	config := []byte("[tools.exec_command]\nyield_seconds = 2\ntimeout_seconds = 42\n")
+	if err := toml.Unmarshal(config, &c.Host.Config); err != nil {
+		t.Fatal(err)
+	}
 	_, prepared, err := c.Call(prompt.Execute, false).PrepareStep(t.Context(), core.PrepareStepFunctionOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	policy := session.Text(prepared.Messages[0])
-	for _, text := range []string{"defaults to 2 for exec_command", "defaults to 42 seconds", "[/absolute/path/main.go#ABCD]", "Current mode: execute"} {
+	for _, text := range []string{"defaults to 2000 for exec_command", "defaults to 42 seconds", "[/absolute/path/main.go#ABCD]", "Current mode: execute"} {
 		if !strings.Contains(policy, text) {
 			t.Fatalf("missing tool semantics %s", text)
 		}

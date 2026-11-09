@@ -44,7 +44,7 @@ func startBackgroundFixture(t *testing.T, command string) (*Conversation, Host) 
 	c, h := testHost(t, t.TempDir(), fixtureModel{reply: func(model.Call) (*model.Response, error) {
 		count++
 		if count == 1 {
-			return toolReply("exec_command", map[string]any{"command": command, "yield_seconds": 1}, 1), nil
+			return toolReply("exec_command", map[string]any{"command": command, "yield_time_ms": 1000}, 1), nil
 		}
 		return demoText("The command continues in the background."), nil
 	}})
@@ -160,7 +160,7 @@ func TestCancelOnlyInterruptsTheWait(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := waiter.Run(ctx, model.ToolCall{ID: "wait", Input: `{"session_id":"` + id + `","yield_seconds":30}`})
+		_, err := waiter.Run(ctx, model.ToolCall{ID: "wait", Input: `{"session_id":"` + id + `","yield_time_ms":30000}`})
 		done <- err
 	}()
 	time.Sleep(20 * time.Millisecond)
@@ -197,7 +197,7 @@ func TestTaskTerminalsBelongToTheParentClaraSession(t *testing.T) {
 			executor = tool
 		}
 	}
-	result, err := executor.Run(t.Context(), model.ToolCall{ID: "child-command", Input: `{"command":"printf child-marker; sleep 30","yield_seconds":1}`})
+	result, err := executor.Run(t.Context(), model.ToolCall{ID: "child-command", Input: `{"command":"printf child-marker; sleep 30","yield_time_ms":1000}`})
 	if err != nil || result.IsError {
 		t.Fatal(result, err)
 	}

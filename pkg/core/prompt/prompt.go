@@ -52,7 +52,10 @@ func render(name string, config Config) string {
 		return body
 	}
 	var out strings.Builder
-	t := template.Must(template.New(name).Parse(templateText(name)))
+	functions := template.FuncMap{
+		"milliseconds": func(seconds int) int { return seconds * 1000 },
+	}
+	t := template.Must(template.New(name).Funcs(functions).Parse(templateText(name)))
 	if err := t.Execute(&out, config.parameters()); err != nil {
 		panic(err)
 	}

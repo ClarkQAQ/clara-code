@@ -29,6 +29,10 @@ func (t *Turn) collect(events []core.Event) {
 		}
 		t.Cursor = event.Sequence
 		switch event.Kind {
+		case "run.started":
+			t.StartedAt = event.At
+		case "run.completed":
+			t.FinishedAt, t.Status = event.At, "completed"
 		case "text_delta":
 			var part model.StreamPart
 			if !t.Staged && partial.Len() < 256<<10 && json.Unmarshal(event.Data, &part) == nil {
@@ -67,6 +71,7 @@ func (t *Turn) collect(events []core.Event) {
 				t.append("user", input)
 			}
 		case "run.cancelled":
+			t.FinishedAt, t.Status = event.At, "cancelled"
 			t.appendAssistant(partial.String())
 			partial.Reset()
 			if t.Failure != nil && t.Failure.Kind == "timeout" {
@@ -77,6 +82,7 @@ func (t *Turn) collect(events []core.Event) {
 				t.append("notice", "Interrupted")
 			}
 		case "run.failed":
+			t.FinishedAt, t.Status = event.At, "failed"
 			t.finishTools("failed", event.At)
 			t.appendAssistant(partial.String())
 			partial.Reset()

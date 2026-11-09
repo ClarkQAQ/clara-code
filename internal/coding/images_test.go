@@ -260,13 +260,19 @@ func TestConfiguredToolTimeoutAndExecDefaults(t *testing.T) {
 		input = string(bytes)
 		return model.NewTextResponse("ok"), nil
 	})
-	c.Host.Config.Tools.Exec = setting.Exec{YieldSeconds: 1, TimeoutSeconds: new(10)}
+	c.Host.Config.Tools.Exec = setting.Exec{YieldSeconds: 2, TimeoutSeconds: new(10)}
 	tools := c.configureTools([]model.AgentTool{capture}, setting.Model{})
-	if _, err := tools[0].Run(t.Context(), model.ToolCall{Input: `{"command":"test","yield_seconds":2}`}); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(input, `"yield_seconds":2`) || !strings.Contains(input, `"timeout_seconds":10`) {
-		t.Fatal(input)
+	for _, tc := range []struct{ input, expected string }{
+		{`{"command":"test"}`, `{"command":"test","timeout_seconds":10,"yield_time_ms":2000}`},
+		{`{"command":"test","yield_time_ms":125}`, `{"command":"test","timeout_seconds":10,"yield_time_ms":125}`},
+		{`{"command":"test","yield_time_ms":0}`, `{"command":"test","timeout_seconds":10,"yield_time_ms":0}`},
+	} {
+		if _, err := tools[0].Run(t.Context(), model.ToolCall{Input: tc.input}); err != nil {
+			t.Fatal(err)
+		}
+		if input != tc.expected {
+			t.Fatalf("got %s, want %s", input, tc.expected)
+		}
 	}
 }
 
@@ -330,7 +336,7 @@ func TestExecDefaultsAreVisibleInActualSchema(t *testing.T) {
 			continue
 		}
 		schema := info.InputSchema["properties"].(map[string]any)
-		for key, want := range map[string]string{"yield_seconds": "default 2", "timeout_seconds": "default 15"} {
+		for key, want := range map[string]string{"yield_time_ms": "default 2000, maximum 30000", "timeout_seconds": "default 15"} {
 			if description, _ := schema[key].(map[string]any)["description"].(string); !strings.Contains(description, want) {
 				t.Fatal("model schema disagrees with execution", key, description)
 			}

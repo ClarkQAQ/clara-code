@@ -3,6 +3,7 @@ package tool_test
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,7 +28,7 @@ func backgroundID(t *testing.T, result model.ToolResponse) string {
 func TestBackgroundSnapshotsDoNotConsumeAndExitIsRetained(t *testing.T) {
 	commands := tool.NewCommands(tool.NewLocal())
 	defer commands.Close()
-	result := callTool(t, commands.ExecCommand(), map[string]any{"command": "printf first; sleep 1.3; printf last; exit 7", "yield_seconds": 1})
+	result := callTool(t, commands.ExecCommand(), map[string]any{"command": "printf first; sleep 1.3; printf last; exit 7", "yield_time_ms": 1000})
 	id := backgroundID(t, result)
 	if !strings.Contains(result.Content, "first") {
 		t.Fatal(result.Content)
@@ -51,7 +52,7 @@ func TestBackgroundSnapshotsDoNotConsumeAndExitIsRetained(t *testing.T) {
 	if info.Status != "failed" || info.Poll.ExitCode != 7 || !strings.Contains(info.Poll.Output, "firstlast") {
 		t.Fatalf("snapshot %+v", info)
 	}
-	final := callTool(t, commands.WriteStdin(), map[string]any{"session_id": id, "yield_seconds": 1})
+	final := callTool(t, commands.WriteStdin(), map[string]any{"session_id": id, "yield_time_ms": 1000})
 	if !final.IsError || !strings.Contains(final.Content, "last") || strings.Contains(final.Content, "first") {
 		t.Fatalf("monitor stole or duplicated output: %s", final.Content)
 	}
@@ -64,9 +65,9 @@ func TestCanceledWaitAndConcurrentStopKeepCorrectState(t *testing.T) {
 	commands := tool.NewCommands(tool.NewLocal())
 	defer commands.Close()
 	commands.NoDefaultTimeout = true
-	id := backgroundID(t, callTool(t, commands.ExecCommand(), map[string]any{"command": "printf ready; sleep 30", "yield_seconds": 1}))
+	id := backgroundID(t, callTool(t, commands.ExecCommand(), map[string]any{"command": "printf ready; sleep 30", "yield_time_ms": 1000}))
 	ctx, cancel := context.WithCancel(t.Context())
-	input, _ := json.Marshal(map[string]any{"session_id": id, "yield_seconds": 30})
+	input, _ := json.Marshal(map[string]any{"session_id": id, "yield_time_ms": 30000})
 	done := make(chan error, 1)
 	go func() { _, err := commands.WriteStdin().Run(ctx, model.ToolCall{Input: string(input)}); done <- err }()
 	cancel()
@@ -131,7 +132,10 @@ func (r *snapshotFixtureRunner) Start(context.Context, tool.Spec) (tool.Process,
 	return r.process, nil
 }
 
-type snapshotFixtureProcess struct{ finished atomic.Bool }
+type snapshotFixtureProcess struct {
+	finished atomic.Bool
+	lastWait time.Duration
+}
 
 func (p *snapshotFixtureProcess) Write(context.Context, string) error { return nil }
 func (p *snapshotFixtureProcess) Kill(context.Context) error {
@@ -139,11 +143,62 @@ func (p *snapshotFixtureProcess) Kill(context.Context) error {
 	return nil
 }
 func (p *snapshotFixtureProcess) Close() error { return p.Kill(context.Background()) }
-func (p *snapshotFixtureProcess) Poll(context.Context, time.Duration) (tool.Poll, error) {
+func (p *snapshotFixtureProcess) Poll(_ context.Context, wait time.Duration) (tool.Poll, error) {
+	p.lastWait = wait
 	return tool.Poll{Running: !p.finished.Load(), Output: "retained output"}, nil
 }
-func (p *snapshotFixtureProcess) Snapshot(ctx context.Context) (tool.Poll, error) {
-	return p.Poll(ctx, 0)
+func (p *snapshotFixtureProcess) Snapshot(context.Context) (tool.Poll, error) {
+	return tool.Poll{Running: !p.finished.Load(), Output: "retained output"}, nil
+}
+
+func TestCommandWaitMilliseconds(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		input     map[string]any
+		execWait  time.Duration
+		stdinWait time.Duration
+	}{
+		{"omitted", nil, 5 * time.Second, 10 * time.Second},
+		{"zero", map[string]any{"yield_time_ms": 0}, 5 * time.Second, 10 * time.Second},
+		{"negative", map[string]any{"yield_time_ms": -1}, 5 * time.Second, 10 * time.Second},
+		{"subsecond", map[string]any{"yield_time_ms": 125}, 125 * time.Millisecond, 125 * time.Millisecond},
+		{"capped", map[string]any{"yield_time_ms": math.MaxInt}, 30 * time.Second, 30 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &snapshotFixtureRunner{}
+			commands := tool.NewCommands(runner)
+			defer commands.Close()
+			start := map[string]any{"command": "fixture"}
+			wait := map[string]any{}
+			for key, value := range tc.input {
+				start[key], wait[key] = value, value
+			}
+			wait["session_id"] = backgroundID(t, callTool(t, commands.ExecCommand(), start))
+			if got := runner.process.lastWait; got != tc.execWait {
+				t.Fatalf("exec_command waited %s, want %s", got, tc.execWait)
+			}
+			result := callTool(t, commands.WriteStdin(), wait)
+			if got := runner.process.lastWait; result.IsError || got != tc.stdinWait {
+				t.Fatalf("write_stdin waited %s, want %s: %s", got, tc.stdinWait, result.Content)
+			}
+		})
+	}
+}
+
+func TestLegacyCommandWaitRejectedBeforeExecution(t *testing.T) {
+	runner := &snapshotFixtureRunner{}
+	commands := tool.NewCommands(runner)
+	defer commands.Close()
+	start := callTool(t, commands.ExecCommand(), map[string]any{"command": "fixture", "yield_seconds": 1})
+	if !start.IsError || runner.process != nil {
+		t.Fatalf("legacy exec_command was not rejected: %s", start.Content)
+	}
+	id := backgroundID(t, callTool(t, commands.ExecCommand(), map[string]any{"command": "fixture"}))
+	runner.process.lastWait = 0
+	wait := callTool(t, commands.WriteStdin(), map[string]any{"session_id": id, "yield_seconds": 1})
+	if !wait.IsError || runner.process.lastWait != 0 {
+		t.Fatalf("legacy write_stdin was not rejected: %s", wait.Content)
+	}
 }
 
 func TestCompletedTerminalCacheIsBoundedAndNotifiesOnlyChanges(t *testing.T) {
@@ -154,7 +209,7 @@ func TestCompletedTerminalCacheIsBoundedAndNotifiesOnlyChanges(t *testing.T) {
 	commands.OnChange = func(tool.TerminalInfo) { notifications.Add(1) }
 	var oldest, latest string
 	for i := range 34 {
-		id := backgroundID(t, callTool(t, commands.ExecCommand(), map[string]any{"command": "fixture", "yield_seconds": 1}))
+		id := backgroundID(t, callTool(t, commands.ExecCommand(), map[string]any{"command": "fixture", "yield_time_ms": 1000}))
 		if i == 0 {
 			oldest = id
 		}
@@ -189,7 +244,7 @@ func TestStopAllAndExplicitBackgroundTimeout(t *testing.T) {
 	commands.NoDefaultTimeout = true
 	defer commands.Close()
 	for range 2 {
-		callTool(t, commands.ExecCommand(), map[string]any{"command": "sleep 30", "yield_seconds": 1})
+		callTool(t, commands.ExecCommand(), map[string]any{"command": "sleep 30", "yield_time_ms": 1000})
 	}
 	if err := commands.Stop(t.Context(), ""); err != nil {
 		t.Fatal(err)
@@ -203,7 +258,7 @@ func TestStopAllAndExplicitBackgroundTimeout(t *testing.T) {
 			t.Fatalf("user stop was not explicit: %+v", result)
 		}
 	}
-	id := backgroundID(t, callTool(t, commands.ExecCommand(), map[string]any{"command": "sleep 30", "yield_seconds": 1, "timeout_seconds": 2}))
+	id := backgroundID(t, callTool(t, commands.ExecCommand(), map[string]any{"command": "sleep 30", "yield_time_ms": 1000, "timeout_seconds": 2}))
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		if err := commands.Refresh(t.Context()); err != nil {
@@ -223,7 +278,7 @@ func TestStopAllAndExplicitBackgroundTimeout(t *testing.T) {
 func TestCanceledStdinWriteDoesNotKillTerminal(t *testing.T) {
 	commands := tool.NewCommands(tool.NewLocal())
 	defer commands.Close()
-	id := backgroundID(t, callTool(t, commands.ExecCommand(), map[string]any{"command": "sleep 30", "yield_seconds": 1}))
+	id := backgroundID(t, callTool(t, commands.ExecCommand(), map[string]any{"command": "sleep 30", "yield_time_ms": 1000}))
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
 	input, _ := json.Marshal(map[string]any{"session_id": id, "chars": strings.Repeat("x", 1<<20)})
@@ -240,7 +295,7 @@ func TestCanceledStdinWriteDoesNotKillTerminal(t *testing.T) {
 
 func TestConcurrentStopAndSessionCloseReapTheProcess(t *testing.T) {
 	commands := tool.NewCommands(tool.NewLocal())
-	id := backgroundID(t, callTool(t, commands.ExecCommand(), map[string]any{"command": "sleep 30", "yield_seconds": 1}))
+	id := backgroundID(t, callTool(t, commands.ExecCommand(), map[string]any{"command": "sleep 30", "yield_time_ms": 1000}))
 	var group sync.WaitGroup
 	for _, close := range []func() error{func() error { return commands.Stop(t.Context(), id) }, commands.Close} {
 		group.Go(func() {

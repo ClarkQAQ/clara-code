@@ -110,14 +110,14 @@ func (t configuredTool) Info() model.ToolInfo {
 		info.Parallel = false
 	}
 	if info.Name == "exec_command" {
-		info.Description = "Run a shell command. A command still running after yield_seconds returns a session_id. Use write_stdin to read more output, send input, or wait. timeout_seconds " + commandTimeout(t.exec) + "."
+		info.Description = "Run a shell command. A command still running after yield_time_ms returns a session_id. Use write_stdin to read more output, send input, or wait. timeout_seconds " + commandTimeout(t.exec) + "."
 		info.Parameters = maps.Clone(info.Parameters)
 		defaults := map[string]string{"timeout_seconds": "total runtime limit in seconds; omitted: unlimited; maximum 600"}
 		if t.exec.TimeoutSeconds != nil {
 			defaults["timeout_seconds"] = fmt.Sprintf("total runtime limit in seconds; default %d, maximum 600", *t.exec.TimeoutSeconds)
 		}
 		if t.exec.YieldSeconds > 0 {
-			defaults["yield_seconds"] = fmt.Sprintf("wait in seconds before returning a session_id; default %d, maximum 30", t.exec.YieldSeconds)
+			defaults["yield_time_ms"] = fmt.Sprintf("wait in milliseconds before returning a session_id; default %d, maximum 30000", t.exec.YieldSeconds*1000)
 		}
 		for key, description := range defaults {
 			if property, ok := info.Parameters[key].(map[string]any); ok {
@@ -142,8 +142,8 @@ func (t configuredTool) Run(ctx context.Context, call model.ToolCall) (model.Too
 	if t.Info().Name == "exec_command" && (t.exec.YieldSeconds > 0 || t.exec.TimeoutSeconds != nil) {
 		var args map[string]json.RawMessage
 		if json.Unmarshal([]byte(call.Input), &args) == nil && args != nil {
-			if _, ok := args["yield_seconds"]; !ok && t.exec.YieldSeconds > 0 {
-				args["yield_seconds"], _ = json.Marshal(t.exec.YieldSeconds)
+			if _, ok := args["yield_time_ms"]; !ok && t.exec.YieldSeconds > 0 {
+				args["yield_time_ms"], _ = json.Marshal(t.exec.YieldSeconds * 1000)
 			}
 			if _, ok := args["timeout_seconds"]; !ok && t.exec.TimeoutSeconds != nil {
 				args["timeout_seconds"], _ = json.Marshal(*t.exec.TimeoutSeconds)

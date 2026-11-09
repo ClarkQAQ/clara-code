@@ -56,6 +56,9 @@ type Cell struct {
 }
 
 type Turn struct {
+	StartedAt     time.Time `json:",omitzero"`
+	FinishedAt    time.Time `json:",omitzero"`
+	Status        string    `json:",omitempty"`
 	ID, Prompt    string
 	Attachments   []Attachment `json:",omitempty"`
 	Cells         []Cell
