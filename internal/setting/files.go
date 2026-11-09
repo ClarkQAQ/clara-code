@@ -15,7 +15,7 @@ func Home() (string, error) {
 		return "", err
 	}
 	if runtime.GOOS == "darwin" {
-		return filepath.Join(home, "Library", "Application Support", "clara-code"), nil
+		return filepath.Join(home, "Library", "Application Support", "ClaraCode"), nil
 	}
 	data := os.Getenv("XDG_DATA_HOME")
 	if !filepath.IsAbs(data) {
