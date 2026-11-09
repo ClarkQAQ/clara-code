@@ -36,6 +36,13 @@ upload() {
   esac
 }
 
+for arch in amd64 arm64; do
+  archive="clara-code-windows-$arch.zip"
+  for file in "$archive" "$archive.sha256"; do
+    upload "$registry/generic/clara-code/$VERSION/$file" "$package_dir/$file"
+  done
+done
+
 upload "$archive_url" "$package_dir/clara-code-darwin-arm64.tar.gz"
 curl -fsS -H "$auth" "$archive_url" -o "$work/remote-archive"
 checksum="$(sha256sum "$work/remote-archive")"

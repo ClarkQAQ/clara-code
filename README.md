@@ -1,10 +1,10 @@
 # Clara Code
 
-Clara Code is a terminal coding assistant built on Clara Core. It uses the terminal's main screen and preserves completed conversations in native scrollback. Resizing rebuilds the terminal buffer from logical messages and reflows the conversation, including the current question, menu, and input draft. The interactive CLI supports macOS and Linux.
+Clara Code is a terminal coding assistant built on Clara Core. It uses the terminal's main screen and preserves completed conversations in native scrollback. Resizing rebuilds the terminal buffer from logical messages and reflows the conversation, including the current question, menu, and input draft. The interactive CLI supports macOS, Linux, and Windows 11 (x64 and ARM64).
 
 ## Getting Started
 
-For prebuilt packages, see [installation with pacman or Homebrew](.forgejo/README.md#installation).
+For prebuilt packages, see [installation on Linux, macOS, and Windows](.forgejo/README.md#installation).
 Building from source requires Go 1.27. The CLI and reusable agent, model, and tool packages all live in this repository.
 
 ```sh
@@ -13,6 +13,16 @@ go build -o clara-code .
 ./clara-code --cwd /path/to/project
 ./clara-code resume --cwd /path/to/project
 ```
+
+On Windows, open Windows Terminal and use PowerShell or Command Prompt:
+
+```powershell
+go build -o clara-code.exe .
+.\clara-code.exe --demo
+.\clara-code.exe --cwd 'C:\Projects\Example'
+```
+
+On Windows, the local command tool selects PowerShell 7 from PATH, Windows PowerShell 5.1, or Command Prompt in that order. Clara reports the selected shell to the model. The shell that launched Clara can differ from the shell Clara uses to run tool commands. When using the Command Prompt fallback, use a drive-backed working directory for command execution. For stdio ACP and MCP, configure the server executable and arguments directly. A batch shim can be invoked through an explicitly configured `cmd.exe`.
 
 Clara's terminal title shows the project name, with a spinner during requests and an `Action Required` prefix while it waits for an answer. In VS Code, use `${sequence}` for `terminal.integrated.tabs.title` if your tab only shows the process name.
 
@@ -63,7 +73,7 @@ export CLARA_CODE_API_KEY='your-key'
 
 ## Configuration
 
-On Linux, the data directory defaults to `~/.local/share/clara-code`, or `clara-code` under `XDG_DATA_HOME` when set. On macOS, it is `~/Library/Application Support/clara-code`. `CLARA_CODE_HOME` overrides the directory on either platform.
+On Linux, the data directory defaults to `~/.local/share/clara-code`, or `clara-code` under `XDG_DATA_HOME` when set. On macOS, it is `~/Library/Application Support/clara-code`. On Windows, it is `%LOCALAPPDATA%\ClaraCode`. `CLARA_CODE_HOME` overrides the directory on all platforms.
 
 On a regular interactive launch with no configuration files and no complete model configuration from environment variables or flags, Clara Code guides you through setting up a provider and a default model. Enter the provider's base URL and API protocol, the model ID, and optionally the API key and model token limits. The key is masked as you type. Use Shift+Tab to go back or Esc to cancel. The last step saves a private `config.toml` in the data directory and opens the normal composer. No connection is made until you send a message. Demo, resume, and ACP launches skip the guide.
 
@@ -140,7 +150,7 @@ Clara uses a Codex-derived base prompt (see NOTICE), with native-path and actual
 
 ## Images
 
-Ctrl+V reads an image from the system clipboard in the background and falls back to clipboard text. Ordinary terminal paste still uses bracketed paste. macOS uses AppKit through the system JavaScript bridge; Linux uses `wl-paste` on Wayland or `xclip` on X11. Reads have a four-second timeout and bounded output. Missing clipboard helpers are reported without installing anything; `/attach PATH` remains available.
+Ctrl+V reads an image from the system clipboard in the background and falls back to clipboard text. Ordinary terminal paste still uses bracketed paste. macOS uses AppKit through the system JavaScript bridge; Linux uses `wl-paste` on Wayland or `xclip` on X11. Windows reads Unicode text and PNG or bitmap images from the system clipboard. If Windows Terminal handles Ctrl+V itself, change its paste binding to let Clara receive that shortcut. Reads have a four-second timeout and bounded output. Missing clipboard helpers are reported without installing anything; `/attach PATH` remains available.
 
 Paste or drag complete local image paths, including quoted or escaped spaces, multiple paths, and `file://` URLs. Paths inside an ordinary sentence remain text. `/attach <path>` explicitly adds an image. Invalid paths retain the pasted draft and report the failure. Attachments appear inline as cyan `[Image #1]` markers at the insertion point. Text can be edited before and after each marker. Left/Right cross the entire marker; Backspace/Delete remove it as one attachment. Numbering follows display order. Ctrl+G opens a filename/dimension selector for managing attachments. Pure-image messages, text with multiple images, steering, and `/follow` are supported. Unaccepted and failed submissions retain text and attachments.
 
@@ -155,7 +165,7 @@ Terminal regression tests cover inline markers, atomic editing, asynchronous ins
 | Action | Key or command |
 | --- | --- |
 | Submit input or steer an active turn | Enter |
-| Insert a newline | Alt+Enter, or Shift+Enter in terminals that distinguish it |
+| Insert a newline | Shift+Enter in terminals that support extended keys, or Alt+Enter / Ctrl+J |
 | Switch between Agent and Plan | Shift+Tab, or `/agent` and `/plan` |
 | Interrupt a turn | Esc or `/cancel` |
 | View or stop background terminals, including during a turn | `/ps`, `/stop [ID]`; omit the ID to stop all terminals present when called |
@@ -171,6 +181,10 @@ Terminal regression tests cover inline markers, atomic editing, asynchronous ins
 | Run a goal or queue follow-up instructions | `/goal`, `/pause`, `/continue`, `/follow` |
 | View connections or manage skills | `/mcp`, `/skills` |
 | Show help or exit | `/help`, `/exit`, `/quit` |
+
+Clara requests the Kitty keyboard protocol in compatible terminals. In tmux,
+Shift+Enter requires extended keys (`set -s extended-keys on`) and a terminal that
+can report them.
 
 Type `/` to open the two-column command menu. Use Up/Down to select, Tab to complete, Enter to confirm, and Esc to close while retaining the draft. Plan mode appears on the right of the status bar.
 
@@ -206,7 +220,7 @@ By default, `glob` and `grep` use Git metadata to search tracked files and unign
 
 Glob patterns support `*.go`, `**/*.go`, `?`, and character classes; `**` can match zero directory levels. `grep` searches literal text with `query` and filters files with `include`, for example `{"path":"internal","query":"cursorPosition","include":["*.go"]}`. When results report an incomplete search, inspect the diagnostics and narrow the scope rather than concluding that the project contains no matching code. `fs_instructions` queries project rules; the host injects global rules separately.
 
-Agent mode lets file tools and Shell operate with the current user's OS permissions, without a project-directory boundary. Reads follow symbolic links; overwrite writes and edits update their targets. Moving or deleting a link operates on the link itself. Creating a file does not overwrite an existing link. Plan mode exposes only read-only and interaction tools. Branching restores model context before the selected prompt; prior file changes and command effects remain in the workspace. Each session has an independent lock, so other processes can open different sessions in the same project. Running goals, subagents, and Shell processes end when the owning session closes.
+Agent mode lets file tools and Shell operate with the current user's OS permissions, without a project-directory boundary. Reads follow symbolic links; overwrite writes and edits update their targets. Moving or deleting a link operates on the link itself. Creating a file does not overwrite an existing link. Plan mode exposes read-only and interaction tools plus Shell for diagnostics, tests, and builds that preserve tracked files and task-relevant state. Shell runs with the current user's OS permissions. Plan instructions restrict command use, and the Shell process has no additional read-only sandbox. Branching restores model context before the selected prompt; prior file changes and command effects remain in the workspace. Each session has an independent lock, so other processes can open different sessions in the same project. Running goals, subagents, and Shell processes end when the owning session closes.
 
 Clara stores sessions and turns in `sessions.sqlite3` in the data directory. A blank conversation stays in memory until its first message starts a turn. The application applies bundled schema migrations when it opens the database. Legacy JSON files under `sessions/` and `turns/` stay on disk. Session discovery and resume use the SQLite database exclusively.
 

@@ -35,6 +35,32 @@ build linux amd64 "$context/clara-code-linux-amd64"
 build linux arm64 "$context/clara-code-linux-arm64"
 build darwin arm64 "$context/homebrew/clara-code"
 
+for arch in amd64 arm64; do
+  windows_dir="$context/windows-$arch"
+  archive="clara-code-windows-$arch.zip"
+  mkdir -p "$windows_dir"
+  build windows "$arch" "$windows_dir/clara-code.exe"
+  LC_ALL=C grep -aFq -- "$VERSION" "$windows_dir/clara-code.exe"
+  CGO_ENABLED=0 GOOS=windows GOARCH="$arch" go build ./examples/...
+  # The host cannot execute Windows tests. The wrapper only accepts a built test binary.
+  CGO_ENABLED=0 GOOS=windows GOARCH="$arch" go test -exec true -count=1 ./...
+  cp LICENSE NOTICE "$windows_dir/"
+  touch -d "@$SOURCE_DATE_EPOCH" "$windows_dir/"{clara-code.exe,LICENSE,NOTICE}
+  rm -f "$package_dir/$archive"
+  (
+    cd "$windows_dir"
+    TZ=UTC zip -X -q "$package_dir/$archive" LICENSE NOTICE clara-code.exe
+    unzip -t "$package_dir/$archive"
+    unzip -p "$package_dir/$archive" clara-code.exe | cmp - clara-code.exe
+  )
+  (
+    cd "$package_dir"
+    sha256sum "$archive" > "$archive.sha256"
+    sha256sum -c "$archive.sha256"
+  )
+  rm -r "$windows_dir"
+done
+
 cp LICENSE NOTICE "$context/"
 cp LICENSE NOTICE "$context/homebrew/"
 tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owner \
