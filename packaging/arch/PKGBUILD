@@ -1,0 +1,16 @@
+pkgname=clara-code
+pkgver=${PACKAGE_VERSION:?}
+pkgrel=1
+pkgdesc="Terminal coding assistant built on Clara Core"
+arch=("${PACKAGE_ARCH:?}")
+url="https://forgejo.gulugulu.moe/gulugulu/clara-code"
+license=('Apache-2.0')
+depends=('ca-certificates' 'git')
+optdepends=('wl-clipboard: image paste on Wayland' 'xclip: image paste on X11')
+options=('!strip' '!debug')
+
+package() {
+  install -Dm755 "${PACKAGE_BINARY:?}" "$pkgdir/usr/bin/clara-code"
+  install -Dm644 "$startdir/LICENSE" "$pkgdir/usr/share/licenses/clara-code/LICENSE"
+  install -Dm644 "$startdir/NOTICE" "$pkgdir/usr/share/licenses/clara-code/NOTICE"
+}

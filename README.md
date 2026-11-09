@@ -4,7 +4,8 @@ Clara Code is a terminal coding assistant built on Clara Core. It uses the termi
 
 ## Getting Started
 
-Go 1.27 is required. The CLI and reusable agent, model, and tool packages all live in this repository.
+For prebuilt packages, see [installation with pacman or Homebrew](docs/release.md#安装).
+Building from source requires Go 1.27. The CLI and reusable agent, model, and tool packages all live in this repository.
 
 ```sh
 go run . --demo

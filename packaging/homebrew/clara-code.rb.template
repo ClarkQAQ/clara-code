@@ -1,0 +1,23 @@
+# frozen_string_literal: true
+
+class ClaraCode < Formula
+  desc "Terminal coding assistant built on Clara Core"
+  homepage "@HOMEPAGE@"
+  url "@ARCHIVE_URL@",
+      header: "Authorization: token #{ENV.fetch("HOMEBREW_CLARA_CODE_TOKEN", "")}"
+  version "@VERSION@"
+  sha256 "@SHA256@"
+  license "Apache-2.0"
+
+  depends_on :macos
+  depends_on arch: :arm64
+
+  def install
+    bin.install "clara-code"
+    doc.install "LICENSE", "NOTICE"
+  end
+
+  test do
+    assert_equal "Clara Code #{version}\n", shell_output("#{bin}/clara-code --version")
+  end
+end
