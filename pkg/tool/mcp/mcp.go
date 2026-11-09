@@ -40,6 +40,13 @@ type Status struct {
 	ToolCount int
 }
 
+// StartupProgress describes the next server connection attempt.
+type StartupProgress struct {
+	Name      string
+	Completed int
+	Total     int
+}
+
 type binding struct {
 	config ServerConfig
 	client *sdkmcp.ClientSession
@@ -61,16 +68,32 @@ type Manager struct {
 
 // Connect connects all configured servers. Optional failures are retained in Status.
 func Connect(ctx context.Context, configs []ServerConfig) (*Manager, error) {
+	return ConnectWithProgress(ctx, configs, nil)
+}
+
+// ConnectWithProgress is like Connect and calls report synchronously before each
+// server connection attempt. Completed counts previous attempts, including
+// optional failures. A nil report disables progress updates.
+func ConnectWithProgress(ctx context.Context, configs []ServerConfig, report func(StartupProgress)) (*Manager, error) {
 	watchCtx, cancel := context.WithCancel(context.Background())
 	manager := &Manager{
 		bindings: map[string]*binding{}, dirty: make(chan struct{}, 1), cancel: cancel,
 	}
-	for _, config := range configs {
+	for i, config := range configs {
+		if err := ctx.Err(); err != nil {
+			return nil, errors.Join(err, manager.Close())
+		}
 		if strings.TrimSpace(config.Name) == "" || manager.bindings[config.Name] != nil {
 			return nil, errors.Join(errors.New("mcp: server name is empty or duplicated"), manager.Close())
 		}
+		if report != nil {
+			report(StartupProgress{Name: config.Name, Completed: i, Total: len(configs)})
+		}
 		conn, err := manager.connectOne(ctx, config)
 		if err != nil {
+			if canceled := ctx.Err(); canceled != nil {
+				return nil, errors.Join(canceled, manager.Close())
+			}
 			manager.status = append(manager.status, Status{Name: config.Name, Error: err.Error()})
 			if config.Required {
 				manager.Close()
@@ -82,6 +105,9 @@ func Connect(ctx context.Context, configs []ServerConfig) (*Manager, error) {
 		manager.bindings[config.Name] = conn
 		manager.mu.Unlock()
 		manager.status = append(manager.status, Status{Name: config.Name, OK: true, ToolCount: len(conn.tools)})
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, errors.Join(err, manager.Close())
 	}
 	go manager.watchRefresh(watchCtx)
 	return manager, nil

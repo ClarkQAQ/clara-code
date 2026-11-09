@@ -313,6 +313,8 @@ func markerFor(kind string) (string, string) {
 		return "↳", dim
 	case "error":
 		return "■", red
+	case "warning":
+		return "·", "\x1b[33m"
 	default:
 		return "·", accent
 	}

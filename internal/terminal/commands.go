@@ -294,7 +294,7 @@ func (a *app) submit(line string) bool {
 		for _, status := range a.conv.MCPStatuses() {
 			label := fmt.Sprintf("connected (%d tools)", status.ToolCount)
 			if !status.OK {
-				label = status.Error
+				label = a.host.Config.Redact(status.Error)
 			}
 			lines = append(lines, status.Name+" · "+label)
 		}
@@ -307,6 +307,18 @@ func (a *app) submit(line string) bool {
 		a.editor.replace(line)
 	}
 	return false
+}
+
+func (a *app) warnMCPStartup() {
+	var failures []string
+	for _, status := range a.conv.MCPStatuses() {
+		if !status.OK {
+			failures = append(failures, status.Name+" · "+a.host.Config.Redact(status.Error))
+		}
+	}
+	if len(failures) > 0 {
+		a.view.message("warning", "Warning · MCP startup incomplete\n"+strings.Join(failures, "\n"))
+	}
 }
 
 func splitCommand(line string) (string, string) {

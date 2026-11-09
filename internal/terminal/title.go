@@ -31,6 +31,9 @@ type terminalTitle struct {
 }
 
 func (a *app) updateTitle(now time.Time) error {
+	if a.conv == nil && a.op != nil && !a.options.PickSession {
+		return nil
+	}
 	activity := titleIdle
 	switch {
 	case a.question != nil || (a.picker != nil && a.picker.kind == planPicker):

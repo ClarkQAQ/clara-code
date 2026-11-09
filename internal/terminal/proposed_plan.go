@@ -10,6 +10,7 @@ import (
 	"clara-code/pkg/core"
 	"clara-code/pkg/core/prompt"
 	"clara-code/pkg/model"
+	"clara-code/pkg/tool/mcp"
 )
 
 const planPicker = "plan-implementation"
@@ -57,8 +58,8 @@ func (a *app) selectPlanAction(action, plan string) {
 	case "implement":
 		a.implementPlan("Implement the plan.")
 	case "fresh":
-		a.operation("Opening a fresh conversation", func(ctx context.Context) operationResult {
-			result := a.open(ctx, "", false, -1, "", "Cleared conversation")
+		a.conversationOperation("Opening a fresh conversation", func(ctx context.Context, report func(mcp.StartupProgress)) operationResult {
+			result := a.open(ctx, "", false, -1, "", "Cleared conversation", report)
 			result.plan = plan
 			return result
 		})

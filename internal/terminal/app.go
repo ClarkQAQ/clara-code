@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/rand/v2"
 	"os"
 	"os/signal"
@@ -15,6 +16,7 @@ import (
 	"clara-code/pkg/core/prompt"
 	"clara-code/pkg/model"
 	toolapi "clara-code/pkg/tool"
+	"clara-code/pkg/tool/mcp"
 	"golang.org/x/term"
 
 	"clara-code/internal/coding"
@@ -49,6 +51,7 @@ type app struct {
 	op                   <-chan operationResult
 	stopOp               context.CancelFunc
 	opLabel              string
+	mcpProgress          <-chan mcp.StartupProgress
 	picker               *picker
 	setup                *setupForm
 	question             *questionForm
@@ -145,8 +148,8 @@ func Run(ctx context.Context, options Options) (err error) {
 	a.view.buf.WriteString("\x1b[?2004h")
 	if !options.PickSession && options.Resume == "" && a.host.Models == nil && a.host.Config.NeedsSetup() {
 		a.setup = newSetupForm(a.host.Config)
-	} else if err := a.startup(); err != nil {
-		return err
+	} else {
+		a.startup()
 	}
 
 	keys := make(chan key, 256)
@@ -181,9 +184,7 @@ func Run(ctx context.Context, options Options) (err error) {
 					return nil
 				}
 				if a.setup == nil {
-					if err := a.startup(); err != nil {
-						return err
-					}
+					a.startup()
 				}
 			} else if a.handle(input) {
 				return nil
@@ -220,12 +221,26 @@ func Run(ctx context.Context, options Options) (err error) {
 		case event := <-a.events:
 			a.onRunEvent(event)
 			a.dirty = true
+		case progress := <-a.mcpProgress:
+			name := singleLine(progress.Name)
+			a.opLabel = "Starting MCP server " + name
+			if progress.Total > 1 {
+				a.opLabel = fmt.Sprintf("Starting MCP servers (%d/%d) · %s", progress.Completed, progress.Total, name)
+			}
+			a.dirty = true
 		case result := <-a.op:
 			a.op = nil
+			a.mcpProgress = nil
 			a.stopOp()
 			a.stopOp = nil
 			a.opLabel = ""
 			if result.err != nil {
+				if a.conv == nil && !a.options.PickSession {
+					if errors.Is(result.err, context.Canceled) {
+						return nil
+					}
+					return result.err
+				}
 				a.notice(result.err)
 				a.editor.insert(a.operationDraft.text)
 				a.operationDraft.replace("")
@@ -270,20 +285,18 @@ func Run(ctx context.Context, options Options) (err error) {
 	}
 }
 
-func (a *app) startup() error {
+func (a *app) startup() {
 	if a.options.PickSession {
 		a.openResume(true)
-		return nil
+		return
 	}
 	label := ""
 	if a.options.Resume != "" {
 		label = "Resumed conversation"
 	}
-	result := a.open(a.ctx, a.options.Resume, false, -1, "", label)
-	if result.err != nil {
-		return result.err
-	}
-	return a.install(result)
+	a.conversationOperation("Opening conversation", func(ctx context.Context, report func(mcp.StartupProgress)) operationResult {
+		return a.open(ctx, a.options.Resume, false, -1, "", label, report)
+	})
 }
 
 func (a *app) resize() error {
@@ -309,7 +322,7 @@ func (a *app) resize() error {
 	return nil
 }
 
-func (a *app) open(ctx context.Context, id string, fork bool, at int, draft, label string) operationResult {
+func (a *app) open(ctx context.Context, id string, fork bool, at int, draft, label string, report func(mcp.StartupProgress)) operationResult {
 	space := a.options.Workspace
 	var store *session.Store
 	var err error
@@ -338,7 +351,7 @@ func (a *app) open(ctx context.Context, id string, fork bool, at int, draft, lab
 		}
 		return operationResult{err: err}
 	}
-	next, err := a.host.Open(ctx, space, store, a.ask, nil)
+	next, err := a.host.OpenWithMCPProgress(ctx, space, store, a.ask, report)
 	if err != nil {
 		return operationResult{err: err}
 	}
@@ -411,6 +424,7 @@ func (a *app) install(result operationResult) error {
 	} else if result.label != "" && result.label != "Cleared conversation" {
 		a.view.message("notice", result.label+" · "+a.conv.Store.Meta().ID)
 	}
+	a.warnMCPStartup()
 	a.syncBackground()
 	a.editor.insert(a.operationDraft.text)
 	a.operationDraft.replace("")
@@ -426,14 +440,29 @@ func (a *app) operation(label string, work func(context.Context) operationResult
 	go func() { out <- work(ctx) }()
 }
 
+func (a *app) conversationOperation(label string, work func(context.Context, func(mcp.StartupProgress)) operationResult) {
+	updates := make(chan mcp.StartupProgress, 1)
+	a.mcpProgress = updates
+	a.operation(label, func(ctx context.Context) operationResult {
+		return work(ctx, func(progress mcp.StartupProgress) {
+			// The connection loop is the sole sender. Replace any unread update.
+			select {
+			case <-updates:
+			default:
+			}
+			updates <- progress
+		})
+	})
+}
+
 func (a *app) switchSession(id string, fork bool, at int, draft, label string, attachments ...session.Attachment) {
 	if a.conv != nil && id == a.conv.Session.ID() {
 		a.picker = nil
 		return
 	}
 	a.picker = nil
-	a.operation(label, func(ctx context.Context) operationResult {
-		result := a.open(ctx, id, fork, at, draft, label)
+	a.conversationOperation(label, func(ctx context.Context, report func(mcp.StartupProgress)) operationResult {
+		result := a.open(ctx, id, fork, at, draft, label, report)
 		result.attachments = attachments
 		return result
 	})
@@ -799,6 +828,9 @@ func (a *app) pane() layout {
 	}
 	if a.question != nil {
 		return a.question.layout(p)
+	}
+	if a.conv == nil && a.op != nil && !a.options.PickSession {
+		return layout{rows: a.activityRows(time.Now())}
 	}
 	height := p.contentHeight()
 	matches := a.menuMatches()

@@ -3,6 +3,7 @@ package mcp_test
 import (
 	"clara-code/pkg/model"
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -10,6 +11,24 @@ import (
 
 	mcpconnector "clara-code/pkg/tool/mcp"
 )
+
+func ExampleConnectWithProgress() {
+	manager, err := mcpconnector.ConnectWithProgress(context.Background(), []mcpconnector.ServerConfig{
+		{Name: "files"},
+		{Name: "docs"},
+	}, func(progress mcpconnector.StartupProgress) {
+		fmt.Printf("%d/%d · %s\n", progress.Completed, progress.Total, progress.Name)
+	})
+	if err != nil {
+		panic(err)
+	}
+	defer manager.Close()
+	fmt.Println("Recorded results:", len(manager.Statuses()))
+	// Output:
+	// 0/2 · files
+	// 1/2 · docs
+	// Recorded results: 2
+}
 
 type echoInput struct {
 	Text string `json:"text" jsonschema:"text to echo"`

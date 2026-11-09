@@ -56,6 +56,14 @@ type Conversation struct {
 }
 
 func (h Host) Open(ctx context.Context, workspace Workspace, store *session.Store, ask *Questions, extra []mcp.ServerConfig) (*Conversation, error) {
+	return h.open(ctx, workspace, store, ask, extra, nil)
+}
+
+func (h Host) OpenWithMCPProgress(ctx context.Context, workspace Workspace, store *session.Store, ask *Questions, report func(mcp.StartupProgress)) (*Conversation, error) {
+	return h.open(ctx, workspace, store, ask, nil, report)
+}
+
+func (h Host) open(ctx context.Context, workspace Workspace, store *session.Store, ask *Questions, extra []mcp.ServerConfig, report func(mcp.StartupProgress)) (*Conversation, error) {
 	meta := store.Meta()
 	reloaded, err := h.Config.Reload(ctx, workspace.Cwd, workspace.Root)
 	if err != nil {
@@ -112,7 +120,7 @@ func (h Host) Open(ctx context.Context, workspace Workspace, store *session.Stor
 			}
 		}
 		configs = append(configs, extra...)
-		c.mcp, err = mcp.Connect(ctx, configs)
+		c.mcp, err = mcp.ConnectWithProgress(ctx, configs, report)
 		if err != nil {
 			return cleanup(err)
 		}

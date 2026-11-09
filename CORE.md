@@ -84,6 +84,8 @@ Model tools require strict JSON objects as arguments. Structured streaming previ
 
 ACP entry points live in `clara-code/pkg/core`; the task adapter is `tool.NewACPTaskBackend`. Import MCP connection management from `clara-code/pkg/tool/mcp` and Relay from `clara-code/pkg/model/relay`.
 
+`mcp.ConnectWithProgress(ctx, configs, report)` reports each server synchronously before attempting its connection. `mcp.StartupProgress` includes the next server name, the number of prior attempts, and the total number of servers. Use `Manager.Statuses()` for connection results and tool counts after startup.
+
 ## Background Commands
 
 `Commands.Terminals` returns background snapshots, `Refresh(ctx)` updates them, and `Stop(ctx, id)` stops a terminal. An empty ID stops all terminals present when called. `OnChange` notifies the host when status or retained output changes; elapsed time alone does not trigger a notification. The existing `Runner` and `Process` interfaces remain compatible. Local and SSH processes implement the optional `SnapshotProcess` interface, which reads state without advancing the `write_stdin` output cursor. For custom backends without this interface, automatic monitoring does not consume output; explicit polling updates the state.
