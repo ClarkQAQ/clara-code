@@ -20,6 +20,7 @@ import (
 	"clara-code/pkg/tool/fs/host"
 	"clara-code/pkg/tool/fs/local"
 	"clara-code/pkg/tool/fs/mount"
+
 	"github.com/pelletier/go-toml/v2"
 	"go.yaml.in/yaml/v3"
 )
@@ -254,7 +255,8 @@ func (w Workspace) skillCatalog(ctx context.Context, home string, includeDisable
 		func(ctx context.Context, in struct {
 			Name string `json:"name"`
 			Path string `json:"path"`
-		}) (tool.Result, error) {
+		},
+		) (tool.Result, error) {
 			storage, ok := resources[in.Name]
 			if !ok {
 				return tool.ErrorResult("unknown skill"), nil
@@ -309,7 +311,8 @@ func parseSkill(body string) (skillHeader, bool) {
 			result.Name, result.Description = strings.TrimSpace(result.Name), strings.TrimSpace(result.Description)
 			return result, result.Name != "" && len(result.Name) <= 80 && result.Description != "" && len(result.Description) <= 1024
 		}
-		head.WriteString(line + "\n")
+		head.WriteString(line)
+		head.WriteString("\n")
 		if head.Len() > 8<<10 {
 			break
 		}
