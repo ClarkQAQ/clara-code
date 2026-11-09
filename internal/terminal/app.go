@@ -328,7 +328,7 @@ func (a *app) open(ctx context.Context, id string, fork bool, at int, draft, lab
 	default:
 		space = a.space
 		profile := a.host.Config.DefaultModel
-		store = session.New(a.host.Config.Home, session.Meta{
+		store = session.NewDraft(a.host.Config.Home, session.Meta{
 			Project: space.Root, Cwd: space.Cwd, Model: profile, Effort: string(a.host.Config.Models[profile].Effort),
 		})
 	}

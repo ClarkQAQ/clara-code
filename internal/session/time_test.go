@@ -2,10 +2,10 @@ package session
 
 import (
 	"encoding/json"
-	"os"
 	"testing"
 	"time"
 
+	"clara-code/internal/session/internal/sessiondb"
 	"clara-code/pkg/core"
 	"clara-code/pkg/model"
 	"clara-code/pkg/util/id"
@@ -31,20 +31,23 @@ func TestPersistedTimestampsKeepOffsetsPrecisionAndOldMessages(t *testing.T) {
 	if err := store.UpdateCommand(command); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := os.ReadFile(store.path(sessionID))
+	row, err := sessiondb.New(store.db).GetSession(t.Context(), sessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var document struct {
-		Meta     struct{ Updated string }
 		State    struct{ Events []struct{ At string } }
 		Commands map[string]struct{ Started, Finished string }
 	}
-	if err := json.Unmarshal(raw, &document); err != nil {
+	if err := json.Unmarshal(row.Checkpoint, &document); err != nil {
+		t.Fatal(err)
+	}
+	var meta struct{ Updated string }
+	if err := json.Unmarshal(row.Metadata, &meta); err != nil {
 		t.Fatal(err)
 	}
 	for raw, expected := range map[string]time.Time{
-		document.Meta.Updated:                 store.Meta().Updated,
+		meta.Updated:                          store.Meta().Updated,
 		document.State.Events[0].At:           ended,
 		document.Commands["command"].Started:  start,
 		document.Commands["command"].Finished: ended,

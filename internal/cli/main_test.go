@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -219,6 +218,41 @@ func (p *cliPTY) await(t *testing.T, after int, needle string) {
 	t.Fatalf("PTY did not show %q: %q", needle, out[max(0, len(out)-2500):])
 }
 
+func TestInlineSavesConversationOnFirstMessage(t *testing.T) {
+	home, cwd := t.TempDir(), t.TempDir()
+	space, err := coding.ResolveWorkspace(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoSessions := func() {
+		t.Helper()
+		items, err := session.List(home, space.Root)
+		if err != nil || len(items) != 0 {
+			t.Fatalf("empty conversation was saved: %+v, %v", items, err)
+		}
+	}
+	p := startPTY(t, home, cwd)
+	p.await(t, 0, "Ready")
+	assertNoSessions()
+	p.send(t, "/resume\r")
+	p.await(t, 0, "No saved conversations in this project")
+	p.send(t, "/exit\r")
+	if err := p.cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	assertNoSessions()
+
+	p = startPTY(t, home, cwd)
+	p.await(t, 0, "Ready")
+	p.send(t, "First saved message\r")
+	p.await(t, 0, "Demo response: First saved message")
+	p.await(t, strings.LastIndex(p.output(), "Demo response: First saved message"), "Ready")
+	items, err := session.List(home, space.Root)
+	if err != nil || len(items) != 1 || items[0].FirstPrompt != "First saved message" {
+		t.Fatalf("first message was not saved: %+v, %v", items, err)
+	}
+}
+
 func TestInlineRewindAndResumeAfterCrash(t *testing.T) {
 	home, cwd := t.TempDir(), t.TempDir()
 	space, err := coding.ResolveWorkspace(cwd)
@@ -314,7 +348,8 @@ func TestACPProcess(t *testing.T) {
 	if err != nil || reply != "Demo response: ACP probe" || reason != "end_turn" {
 		t.Fatalf("ACP reply %q, %q, %v", reply, reason, err)
 	}
-	if _, err := os.Stat(filepath.Join(home, "sessions", string(id)+".json")); err != nil {
-		t.Fatal(err)
+	page, err := session.ListPage(ctx, home, "", nil)
+	if err != nil || len(page) != 1 || page[0].ID != string(id) {
+		t.Fatalf("ACP session was not persisted: %+v, %v", page, err)
 	}
 }

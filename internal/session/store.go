@@ -3,10 +3,10 @@ package session
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"clara-code/internal/session/internal/sessiondb"
 	"clara-code/pkg/core"
 	modelapi "clara-code/pkg/model"
 	"clara-code/pkg/util/errs"
@@ -22,7 +23,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const maxManifest = core.MaxStateBytes + 12<<20
+const maxCheckpoint = core.MaxStateBytes + 12<<20
 
 var safeID = regexp.MustCompile(`^(session|run)_[a-zA-Z0-9_.-]{1,96}$`)
 
@@ -68,59 +69,104 @@ type Turn struct {
 	Failure       *Failure `json:",omitempty"`
 }
 
-type manifest struct {
-	Version  int
-	Meta     Meta
-	Commands map[string]ToolActivity `json:",omitempty"`
+type checkpoint struct {
 	State    core.State
-	Turns    []string
 	Active   *Turn
+	Commands map[string]ToolActivity `json:",omitempty"`
+}
+
+type sessionData struct {
+	checkpoint
+	Meta  Meta
+	Turns []string
 }
 
 type Store struct {
-	home string
-	mu   sync.Mutex
-	lock *os.File
-	data manifest
+	home  string
+	mu    sync.Mutex
+	lock  *os.File
+	db    *sql.DB
+	draft bool
+	data  sessionData
 }
 
 func New(home string, meta Meta) *Store {
 	if meta.PathMode == 0 && meta.ID == "" && meta.Parent == "" && meta.Project != "" {
 		meta.PathMode = 2
 	}
-	return &Store{home: home, data: manifest{Version: 1, Meta: meta}}
+	return &Store{home: home, data: sessionData{Meta: meta}}
+}
+
+// NewDraft keeps the initial checkpoint in memory until the first run starts.
+func NewDraft(home string, meta Meta) *Store {
+	store := New(home, meta)
+	store.draft = true
+	return store
 }
 
 func Open(home, sessionID, project string) (*Store, error) {
-	s := New(home, Meta{})
 	if !ValidID(sessionID) {
 		return nil, ErrInvalidID
 	}
-	if _, err := os.Stat(s.path(sessionID)); err != nil {
+	ctx := context.Background()
+	db, err := openDatabase(ctx, home, false)
+	if err != nil {
 		return nil, err
 	}
+	savedProject, err := sessiondb.New(db).GetSessionProject(ctx, sessionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = os.ErrNotExist
+	}
+	if err != nil {
+		return nil, errors.Join(err, db.Close())
+	}
+	if savedProject != project {
+		return nil, errors.Join(ErrProjectMismatch, db.Close())
+	}
+	s := New(home, Meta{})
+	s.db = db
 	if err := s.acquire(sessionID); err != nil {
-		return nil, err
-	}
-	if err := read(s.path(sessionID), maxManifest, &s.data); err != nil {
 		return nil, errors.Join(err, s.Close())
 	}
-	if s.data.Version != 1 || s.data.Meta.ID != sessionID || s.data.State.ID != sessionID {
-		return nil, errors.Join(errors.New("invalid session format"), s.Close())
+	if err := s.restore(ctx, sessionID, project); err != nil {
+		return nil, errors.Join(err, s.Close())
 	}
-	if s.data.Meta.Project != project {
-		return nil, errors.Join(ErrProjectMismatch, s.Close())
-	}
-	collectUsage(&s.data.Meta, s.data.State.Events)
 	return s, nil
 }
 
-func (s *Store) path(sessionID string) string {
-	return filepath.Join(s.home, "sessions", sessionID+".json")
-}
-
-func (s *Store) object(runID, suffix string) string {
-	return filepath.Join(s.home, "turns", runID+suffix+".json")
+func (s *Store) restore(ctx context.Context, sessionID, project string) error {
+	queries := sessiondb.New(s.db)
+	row, err := queries.GetSession(ctx, sessionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return os.ErrNotExist
+	}
+	if err != nil {
+		return err
+	}
+	meta, err := decodeMeta(row.Metadata)
+	if err != nil {
+		return err
+	}
+	if meta.ID != sessionID {
+		return errors.New("invalid session metadata")
+	}
+	if meta.Project != project {
+		return ErrProjectMismatch
+	}
+	data := sessionData{Meta: meta}
+	if err := decodePayload(s.home, row.Checkpoint, maxCheckpoint-len(row.Metadata), &data.checkpoint); err != nil {
+		return err
+	}
+	if data.State.ID != sessionID {
+		return errors.New("invalid session checkpoint")
+	}
+	data.Turns, err = queries.ListSessionTurns(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	collectUsage(&data.Meta, data.State.Events)
+	s.data = data
+	return nil
 }
 
 func ValidID(id string) bool {
@@ -131,7 +177,7 @@ func (s *Store) acquire(sessionID string) error {
 	if !ValidID(sessionID) {
 		return ErrInvalidID
 	}
-	dir := filepath.Join(s.home, "sessions")
+	dir := filepath.Join(s.home, "session-locks")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
@@ -153,11 +199,20 @@ func (s *Store) acquire(sessionID string) error {
 func (s *Store) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.lock == nil {
-		return nil
+	s.draft = false
+	return s.closeLocked()
+}
+
+func (s *Store) closeLocked() error {
+	var err error
+	if s.db != nil {
+		err = s.db.Close()
+		s.db = nil
 	}
-	err := s.lock.Close()
-	s.lock = nil
+	if s.lock != nil {
+		err = errors.Join(err, s.lock.Close())
+		s.lock = nil
+	}
 	return err
 }
 
@@ -173,50 +228,61 @@ func (s *Store) Load(ctx context.Context, sessionID string) (core.State, error) 
 	if err := ctx.Err(); err != nil {
 		return core.State{}, err
 	}
-	if s.lock == nil || sessionID != s.data.Meta.ID {
+	if (!s.draft && s.db == nil) || sessionID == "" || sessionID != s.data.Meta.ID {
 		return core.State{}, errs.ErrNotFound
 	}
 	return cloneState(s.data.State), nil
 }
 
-func (s *Store) Save(ctx context.Context, state core.State) error {
+func (s *Store) Save(ctx context.Context, state core.State) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	next := s.data
-	if s.lock == nil {
-		if next.Meta.ID != "" || state.Revision != 1 {
-			return errs.ErrConflict
-		}
-		if err := s.acquire(state.ID); err != nil {
-			return err
-		}
-		if _, err := os.Stat(s.path(state.ID)); !errors.Is(err, os.ErrNotExist) {
-			if err != nil {
-				return err
-			}
-			return errs.ErrConflict
+	first := s.db == nil
+	if first && next.Meta.ID == "" {
+		if !ValidID(state.ID) {
+			return ErrInvalidID
 		}
 		next.Meta.ID = state.ID
 	}
-	if state.ID != next.Meta.ID || state.Revision != next.State.Revision+1 {
+	if state.ID != next.Meta.ID || state.Revision != next.State.Revision+1 ||
+		(first && !s.draft && s.data.Meta.ID != "") {
 		return errs.ErrConflict
 	}
+	if s.draft && first && state.ActiveRun == "" {
+		next.State = cloneState(state)
+		s.data = next
+		return nil
+	}
+	if first {
+		if err := s.acquire(state.ID); err != nil {
+			return err
+		}
+		defer func() {
+			if err != nil {
+				err = errors.Join(err, s.closeLocked())
+			}
+		}()
+		s.db, err = openDatabase(ctx, s.home, true)
+		if err != nil {
+			return err
+		}
+	}
+	var changes turnChanges
 	if state.ActiveRun != "" && next.Active != nil && next.Active.ID != state.ActiveRun {
 		previous := *next.Active
 		previous.Cells = slices.Clone(previous.Cells)
 		previous.collect(state.Events)
 		previous.append("notice", "Previous run interrupted before its final checkpoint was saved.")
-		if err := write(s.object(previous.ID, ""), previous, 10<<20); err != nil {
-			return err
-		}
+		changes.completed = &previous
 		next.Turns = append(slices.Clone(next.Turns), previous.ID)
 		next.Active = nil
 	}
 	if state.ActiveRun != "" && next.Active == nil {
-		if !safeID.MatchString(state.ActiveRun) {
+		if !validRunID(state.ActiveRun) {
 			return errors.New("invalid run ID")
 		}
 		before := next.State.Messages
@@ -233,9 +299,11 @@ func (s *Store) Save(ctx context.Context, state core.State) error {
 		if len(state.Messages) >= inputCount {
 			before = state.Messages[:len(state.Messages)-inputCount]
 		}
-		if err := write(s.object(state.ActiveRun, "-before"), before, core.MaxStateBytes); err != nil {
+		body, err := encodePayload(s.home, before, core.MaxStateBytes)
+		if err != nil {
 			return err
 		}
+		changes.started = &sessiondb.InsertTurnParams{ID: state.ActiveRun, BeforeMessages: body}
 		next.Active = &Turn{ID: state.ActiveRun}
 		next.Active.Planning, _ = ctx.Value(planningKey{}).(bool)
 		if at := len(before); at < len(state.Messages) {
@@ -284,16 +352,14 @@ func (s *Store) Save(ctx context.Context, state core.State) error {
 		}
 		next.Active = &turn
 		if state.ActiveRun == "" {
-			if err := write(s.object(turn.ID, ""), turn, 10<<20); err != nil {
-				return err
-			}
+			changes.completed = &turn
 			next.Turns = append(slices.Clone(next.Turns), turn.ID)
 			next.Active = nil
 		}
 	}
 	next.State = cloneState(state)
 	collectUsage(&next.Meta, state.Events)
-	return s.commit(next)
+	return s.saveCheckpoint(ctx, next, first, changes)
 }
 
 func collectUsage(meta *Meta, events []core.Event) {
@@ -359,13 +425,104 @@ func cloneState(state core.State) core.State {
 	return state
 }
 
-func (s *Store) commit(next manifest) error {
+type turnChanges struct {
+	started   *sessiondb.InsertTurnParams
+	completed *Turn
+}
+
+func (s *Store) commit(next sessionData) error {
+	if s.draft && s.db == nil && next.Meta.ID != "" {
+		s.data = next
+		return nil
+	}
+	return s.saveCheckpoint(context.Background(), next, false, turnChanges{})
+}
+
+func (s *Store) saveCheckpoint(ctx context.Context, next sessionData, first bool, changes turnChanges) error {
+	if s.db == nil {
+		return errs.ErrConflict
+	}
 	next.Meta.Updated = time.Now().UTC()
-	if err := write(s.path(next.Meta.ID), next, maxManifest); err != nil {
+	meta, err := json.Marshal(next.Meta)
+	if err != nil {
+		return err
+	}
+	if len(meta) > maxMetadata {
+		return errors.New("session metadata exceeds the size limit")
+	}
+	body, err := encodePayload(s.home, next.checkpoint, maxCheckpoint-len(meta))
+	if err != nil {
+		return err
+	}
+	var transcript []byte
+	if changes.completed != nil {
+		transcript, err = encodePayload(s.home, changes.completed, maxTurn)
+		if err != nil {
+			return err
+		}
+	}
+	key := next.Meta.Updated.Format(updatedKey)
+	err = transact(ctx, s.db, func(q *sessiondb.Queries) error {
+		if err := saveSessionRow(ctx, q, next.Meta, key, meta, body, first); err != nil {
+			return err
+		}
+		if changes.started != nil {
+			if err := q.InsertTurn(ctx, *changes.started); err != nil {
+				return err
+			}
+		}
+		if changes.completed != nil {
+			if err := updateTranscript(ctx, q, changes.completed.ID, transcript); err != nil {
+				return err
+			}
+		}
+		start := len(s.data.Turns)
+		if first {
+			start = 0
+		}
+		for index := start; index < len(next.Turns); index++ {
+			if err := q.AppendSessionTurn(ctx, sessiondb.AppendSessionTurnParams{
+				SessionID: next.Meta.ID, Position: int64(index), TurnID: next.Turns[index],
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
 		return err
 	}
 	s.data = next
+	s.draft = false
 	return nil
+}
+
+func saveSessionRow(ctx context.Context, q *sessiondb.Queries, meta Meta, key string, metadata, checkpoint []byte, first bool) error {
+	var rows int64
+	var err error
+	if first {
+		rows, err = q.InsertSession(ctx, sessiondb.InsertSessionParams{
+			ID: meta.ID, Project: meta.Project, Cwd: meta.Cwd,
+			UpdatedKey: key, Metadata: metadata, Checkpoint: checkpoint,
+		})
+	} else {
+		rows, err = q.UpdateSession(ctx, sessiondb.UpdateSessionParams{
+			ID: meta.ID, Project: meta.Project, Cwd: meta.Cwd,
+			UpdatedKey: key, Metadata: metadata, Checkpoint: checkpoint,
+		})
+	}
+	if err == nil && rows != 1 {
+		return errs.ErrConflict
+	}
+	return err
+}
+
+func updateTranscript(ctx context.Context, q *sessiondb.Queries, runID string, body []byte) error {
+	rows, err := q.UpdateTranscript(ctx, sessiondb.UpdateTranscriptParams{ID: runID, Transcript: body})
+	if err == nil && rows != 1 {
+		return errs.ErrNotFound
+	}
+	return err
 }
 
 func (s *Store) SetModel(model, effort string) error {
@@ -408,7 +565,7 @@ func (s *Store) ReplaceHistory(ctx context.Context, messages []modelapi.Message,
 	state.Revision++
 	next.State = state
 	next.Meta.LastUsage = nil
-	return s.commit(next)
+	return s.saveCheckpoint(ctx, next, false, turnChanges{})
 }
 
 func (s *Store) Turns() ([]Turn, error) {
@@ -432,18 +589,14 @@ func (s *Store) TurnCount() int {
 
 func (s *Store) ReadTurn(index int) (Turn, error) {
 	s.mu.Lock()
-	if index < 0 || index >= len(s.data.Turns) {
-		s.mu.Unlock()
+	defer s.mu.Unlock()
+	if s.db == nil || index < 0 || index >= len(s.data.Turns) {
 		return Turn{}, errs.ErrNotFound
 	}
-	runID := s.data.Turns[index]
-	s.mu.Unlock()
-	if !safeID.MatchString(runID) || !strings.HasPrefix(runID, "run_") {
-		return Turn{}, errors.New("invalid stored run ID")
+	turn, err := s.readTurn(context.Background(), sessiondb.New(s.db), s.data.Turns[index])
+	if err != nil {
+		return Turn{}, err
 	}
-	var turn Turn
-	err := read(s.object(runID, ""), 10<<20, &turn)
-	s.mu.Lock()
 	for i, cell := range turn.Cells {
 		if cell.Tool == nil {
 			continue
@@ -454,30 +607,56 @@ func (s *Store) ReadTurn(index int) (Turn, error) {
 		}
 		turn.Cells[i].Tool = &value
 	}
-	s.mu.Unlock()
+	return turn, nil
+}
 
+func validRunID(id string) bool {
+	return strings.HasPrefix(id, "run_") && safeID.MatchString(id)
+}
+
+func (s *Store) readTurn(ctx context.Context, q *sessiondb.Queries, runID string) (Turn, error) {
+	var turn Turn
+	if !validRunID(runID) {
+		return turn, errors.New("invalid stored run ID")
+	}
+	body, err := q.GetTranscript(ctx, runID)
+	if err != nil {
+		return turn, err
+	}
+	err = decodePayload(s.home, body, maxTurn, &turn)
 	return turn, err
 }
 
 // Fork seeds a separate session with the context before turn index. Index -1
-// branches from the current tip. Completed turn files are immutable and shared.
+// branches from the current tip. The branch shares completed turn records.
 func (s *Store) Fork(ctx context.Context, index int) (*Store, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.data.Meta.ID == "" || (s.db == nil && !s.draft) {
+		return nil, errs.ErrNotFound
+	}
 	if s.data.Active != nil {
 		return nil, errs.ErrBusy
 	}
+	queries := sessiondb.New(s.db)
 	meta := s.data.Meta
 	meta.Parent, meta.ID = meta.ID, ""
+	if s.draft {
+		meta.Parent = ""
+	}
 	meta.LastUsage, meta.TotalUsage, meta.UsageCursor, meta.UsageIncomplete = nil, modelapi.Usage{}, 0, false
 	meta.SessionCache, meta.RoundCache, meta.CacheRunID = CacheUsage{}, CacheUsage{}, ""
 	messages, turns := s.data.State.Messages, s.data.Turns
 	if index >= 0 {
-		if index >= len(turns) || !safeID.MatchString(turns[index]) {
+		if index >= len(turns) || !validRunID(turns[index]) {
 			return nil, errors.New("invalid rewind position")
 		}
+		body, err := queries.GetBeforeMessages(ctx, turns[index])
+		if err != nil {
+			return nil, err
+		}
 		messages = nil
-		if err := read(s.object(turns[index], "-before"), core.MaxStateBytes, &messages); err != nil {
+		if err := decodePayload(s.home, body, core.MaxStateBytes, &messages); err != nil {
 			return nil, err
 		}
 		turns = turns[:index]
@@ -486,12 +665,15 @@ func (s *Store) Fork(ctx context.Context, index int) (*Store, error) {
 		}
 	}
 	child := New(s.home, meta)
+	if len(turns) == 0 && len(messages) == 0 {
+		child.draft = true
+	}
 	child.data.Turns = slices.Clone(turns)
 	child.data.Commands = map[string]ToolActivity{}
 	allowed := map[string]bool{}
 	for _, turnID := range turns {
-		var turn Turn
-		if err := read(s.object(turnID, ""), 10<<20, &turn); err != nil {
+		turn, err := s.readTurn(ctx, queries, turnID)
+		if err != nil {
 			return nil, err
 		}
 		for _, cell := range turn.Cells {
@@ -509,197 +691,6 @@ func (s *Store) Fork(ctx context.Context, index int) (*Store, error) {
 		return nil, errors.Join(err, child.Close())
 	}
 	return child, nil
-}
-
-func List(home, project string) ([]Meta, error) {
-	dir := filepath.Join(home, "sessions")
-	files, err := os.ReadDir(dir)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	var found []Meta
-	for _, entry := range files {
-		if meta, ok := listedMeta(dir, entry); ok && meta.Project == project {
-			found = append(found, meta)
-		}
-	}
-	slices.SortFunc(found, compareListedMeta)
-	return found, nil
-}
-
-const SessionPageSize = 100
-
-// ListPage returns up to one page plus a lookahead, reading only manifest metadata.
-func ListPage(ctx context.Context, home, cwd string, after *Meta) ([]Meta, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	dir := filepath.Join(home, "sessions")
-	file, err := os.Open(dir)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	const maxEntries = 64 << 10
-	found := make([]Meta, 0, SessionPageSize+2)
-	for scanned := 0; ; {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		entries, err := file.ReadDir(128)
-		scanned += len(entries)
-		if scanned > maxEntries {
-			return nil, errs.New(errs.CodeLimit, "session directory exceeds the listing scan limit")
-		}
-		for _, entry := range entries {
-			meta, ok := listedMeta(dir, entry)
-			if !ok || !ValidID(meta.ID) || !filepath.IsAbs(meta.Cwd) || (cwd != "" && meta.Cwd != cwd) ||
-				(after != nil && compareListedMeta(meta, *after) <= 0) {
-				continue
-			}
-			index, _ := slices.BinarySearchFunc(found, meta, compareListedMeta)
-			if index <= SessionPageSize {
-				found = slices.Insert(found, index, meta)
-				if len(found) > SessionPageSize+1 {
-					found = found[:SessionPageSize+1]
-				}
-			}
-		}
-		if errors.Is(err, io.EOF) {
-			return found, nil
-		}
-		if err != nil {
-			return nil, err
-		}
-	}
-}
-
-func compareListedMeta(a, b Meta) int {
-	if order := b.Updated.Compare(a.Updated); order != 0 {
-		return order
-	}
-	return strings.Compare(a.ID, b.ID)
-}
-
-func listedMeta(dir string, entry os.DirEntry) (Meta, bool) {
-	id, ok := strings.CutSuffix(entry.Name(), ".json")
-	if !ok || !safeID.MatchString(id) || !entry.Type().IsRegular() {
-		return Meta{}, false
-	}
-	meta, err := readMeta(filepath.Join(dir, entry.Name()))
-	return meta, err == nil && meta.ID == id
-}
-
-func readMeta(path string) (Meta, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return Meta{}, err
-	}
-	defer file.Close()
-	// Listing stops at Meta and never decodes Core state.
-	const maxMetadata = 64 << 10
-	reader := &io.LimitedReader{R: file, N: maxMetadata}
-	decoder := json.NewDecoder(reader)
-	start, err := decoder.Token()
-	if err != nil || start != json.Delim('{') {
-		return Meta{}, errors.New("invalid session manifest")
-	}
-	key, err := decoder.Token()
-	if err == nil && key == "Commands" {
-		// Older manifests may put command snapshots before Version and Meta.
-		reader.N += maxManifest - maxMetadata
-		start, commandsErr := decoder.Token()
-		if commandsErr != nil || start != json.Delim('{') {
-			return Meta{}, errors.New("invalid session command snapshots")
-		}
-		for decoder.More() {
-			if _, err := decoder.Token(); err != nil {
-				return Meta{}, err
-			}
-			var command struct{}
-			if err := decoder.Decode(&command); err != nil {
-				return Meta{}, err
-			}
-		}
-		if _, err := decoder.Token(); err != nil {
-			return Meta{}, err
-		}
-		reader.N = min(reader.N, maxMetadata)
-		key, err = decoder.Token()
-	}
-	if err != nil || key != "Version" {
-		return Meta{}, errors.New("invalid session version")
-	}
-	var version int
-	if err := decoder.Decode(&version); err != nil || version != 1 {
-		return Meta{}, errors.New("unsupported session version")
-	}
-	key, err = decoder.Token()
-	if err != nil || key != "Meta" {
-		return Meta{}, errors.New("invalid session metadata")
-	}
-	var meta Meta
-	offset := decoder.InputOffset()
-	err = decoder.Decode(&meta)
-	if decoder.InputOffset()-offset > maxMetadata {
-		return Meta{}, errors.New("session metadata exceeds the size limit")
-	}
-	return meta, err
-}
-
-func read(path string, maxBytes int64, dst any) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	body, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
-	if err != nil {
-		return err
-	}
-	if int64(len(body)) > maxBytes {
-		return errors.New("session data exceeds the size limit")
-	}
-	body, err = mediaJSON(path, body, true)
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(body, dst)
-}
-
-func write(path string, value any, maxBytes int) error {
-	body, err := json.Marshal(value)
-	if err != nil {
-		return err
-	}
-	body, err = mediaJSON(path, body, false)
-	if err != nil {
-		return err
-	}
-	if len(body) > maxBytes {
-		return errors.New("session data exceeds the size limit")
-	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	file, err := os.CreateTemp(dir, ".save-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(file.Name())
-	_, writeErr := file.Write(body)
-	err = errors.Join(writeErr, file.Sync(), file.Close())
-	if err != nil {
-		return err
-	}
-	return os.Rename(file.Name(), path)
 }
 
 // RecordInput persists an input already accepted by the Core run queue.
@@ -722,20 +713,25 @@ func (s *Store) RecordFiles(runID, text string, attachments []Attachment) error 
 		next.Active = &turn
 		return s.commit(next)
 	}
-	for _, id := range s.data.Turns {
-		if id == runID {
-			var turn Turn
-			if err := read(s.object(id, ""), 10<<20, &turn); err != nil {
-				return err
-			}
-			turn.append("user", text)
-			if len(attachments) > 0 {
-				turn.Cells = append(turn.Cells, Cell{Kind: "attachments", Attachments: attachments})
-			}
-			return write(s.object(id, ""), turn, 10<<20)
-		}
+	if !slices.Contains(s.data.Turns, runID) {
+		return errs.ErrNotFound
 	}
-	return errs.ErrNotFound
+	ctx := context.Background()
+	return transact(ctx, s.db, func(q *sessiondb.Queries) error {
+		turn, err := s.readTurn(ctx, q, runID)
+		if err != nil {
+			return err
+		}
+		turn.append("user", text)
+		if len(attachments) > 0 {
+			turn.Cells = append(turn.Cells, Cell{Kind: "attachments", Attachments: attachments})
+		}
+		body, err := encodePayload(s.home, turn, maxTurn)
+		if err != nil {
+			return err
+		}
+		return updateTranscript(ctx, q, runID, body)
+	})
 }
 
 func (s *Store) ActiveTurn() *Turn {

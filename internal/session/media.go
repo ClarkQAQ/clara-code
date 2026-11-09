@@ -106,14 +106,13 @@ func getMedia(home, hash string) ([]byte, error) {
 }
 
 // The disk codec replaces image payloads only; Core and provider types stay unchanged.
-func mediaJSON(path string, body []byte, restore bool) ([]byte, error) {
+func mediaJSON(home string, body []byte, restore bool) ([]byte, error) {
 	var tree any
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
 	if err := decoder.Decode(&tree); err != nil {
 		return nil, err
 	}
-	home := filepath.Dir(filepath.Dir(path))
 	var walk func(any) error
 	walk = func(node any) error {
 		switch v := node.(type) {
@@ -155,20 +154,6 @@ func mediaJSON(path string, body []byte, restore bool) ([]byte, error) {
 	}
 	if err := walk(tree); err != nil {
 		return nil, err
-	}
-	// Keep the manifest header first so the bounded session picker never reads images.
-	if !restore {
-		if m, ok := tree.(map[string]any); ok && m["Version"] != nil && m["Meta"] != nil {
-			version, _ := json.Marshal(m["Version"])
-			meta, _ := json.Marshal(m["Meta"])
-			delete(m, "Version")
-			delete(m, "Meta")
-			rest, err := json.Marshal(m)
-			if err != nil {
-				return nil, err
-			}
-			return []byte(`{"Version":` + string(version) + `,"Meta":` + string(meta) + `,` + string(rest[1:])), nil
-		}
 	}
 	return json.Marshal(tree)
 }

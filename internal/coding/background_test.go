@@ -3,7 +3,7 @@ package coding
 import (
 	"bytes"
 	"context"
-	"os"
+	"database/sql"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,6 +15,16 @@ import (
 
 	"clara-code/internal/session"
 )
+
+func sessionFixtureDB(t *testing.T, home string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", filepath.Join(home, "sessions.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
+}
 
 func waitBackground(t *testing.T, c *Conversation, predicate func() bool) {
 	t.Helper()
@@ -48,12 +58,17 @@ func TestIdleBackgroundCompletionPersistsWithoutRewritingTurn(t *testing.T) {
 	if err != nil || len(turns) != 1 {
 		t.Fatalf("turns %v %v", turns, err)
 	}
-	// Completed turn objects are immutable even though their rendered command changes.
-	pattern := filepath.Join(h.Config.Home, "turns", turns[0].ID+".json")
-	before, err := os.ReadFile(pattern)
-	if err != nil {
-		t.Fatal(err)
+	// Background output updates the session overlay rather than the shared transcript.
+	db := sessionFixtureDB(t, h.Config.Home)
+	readTranscript := func() []byte {
+		t.Helper()
+		var body []byte
+		if err := db.QueryRowContext(t.Context(), "SELECT transcript FROM turns WHERE id = ?", turns[0].ID).Scan(&body); err != nil {
+			t.Fatal(err)
+		}
+		return body
 	}
+	before := readTranscript()
 	waitBackground(t, c, func() bool {
 		for _, cell := range c.Store.Commands() {
 			if cell.Name == "exec_command" && cell.Status == "failed" && strings.Contains(cell.Output, "last") {
@@ -62,9 +77,8 @@ func TestIdleBackgroundCompletionPersistsWithoutRewritingTurn(t *testing.T) {
 		}
 		return false
 	})
-	after, err := os.ReadFile(pattern)
-	if err != nil || !bytes.Equal(before, after) {
-		t.Fatal("background update rewrote a turn", err)
+	if !bytes.Equal(before, readTranscript()) {
+		t.Fatal("background update rewrote a turn")
 	}
 	latest, err := c.Store.ReadTurn(0)
 	if err != nil {

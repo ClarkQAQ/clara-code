@@ -246,7 +246,7 @@ func testApp(t *testing.T) *app {
 	}
 	host := coding.Host{Config: setting.Config{Home: t.TempDir(), DefaultModel: "demo", Models: map[string]setting.Model{"demo": {ID: "demo", ContextWindow: 1_048_576}}},
 		Models: func(context.Context, string) (model.LanguageModel, error) { return coding.DemoModel{}, nil }}
-	store := session.New(host.Config.Home, session.Meta{Project: space.Root, Cwd: space.Cwd, Model: "demo"})
+	store := session.NewDraft(host.Config.Home, session.Meta{Project: space.Root, Cwd: space.Cwd, Model: "demo"})
 	conversation, err := host.Open(t.Context(), space, store, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -277,6 +277,13 @@ func TestCommandMenuAndClearKeepSavedSession(t *testing.T) {
 	if len(a.menuMatches()) != 0 || a.editor.text != "/res" {
 		t.Fatal("escape did not preserve command draft")
 	}
+	run, err := a.conv.Start(t.Context(), prompt.Execute, "Saved message", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.Wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	a.editor.replace("/clear")
 	parent := a.conv.Session.ID()
 	a.handle(key{code: "enter"})
@@ -293,8 +300,8 @@ func TestCommandMenuAndClearKeepSavedSession(t *testing.T) {
 		t.Fatal("clear did not create a new session")
 	}
 	found, err := session.List(a.host.Config.Home, a.space.Root)
-	if err != nil || len(found) != 2 {
-		t.Fatalf("old session not retained: %+v %v", found, err)
+	if err != nil || len(found) != 1 || found[0].ID != parent {
+		t.Fatalf("expected only the saved conversation: %+v %v", found, err)
 	}
 }
 

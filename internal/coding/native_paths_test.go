@@ -157,20 +157,11 @@ func TestRelativeFilesStartAtCwdAndLegacySessionsMigrate(t *testing.T) {
 	if err := c.Close(); err != nil {
 		t.Fatal(err)
 	}
-	manifest := filepath.Join(host.Config.Home, "sessions", id+".json")
-	raw, err := os.ReadFile(manifest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var document map[string]any
-	if err := json.Unmarshal(raw, &document); err != nil {
-		t.Fatal(err)
-	}
-	meta := document["Meta"].(map[string]any)
-	delete(meta, "PathMode")
-	delete(meta, "LegacyPathContext")
-	raw, _ = json.Marshal(document)
-	if err := os.WriteFile(manifest, raw, 0o600); err != nil {
+	db := sessionFixtureDB(t, host.Config.Home)
+	if _, err := db.ExecContext(t.Context(), `
+		UPDATE sessions
+		SET metadata = CAST(json_remove(CAST(metadata AS TEXT), '$.PathMode', '$.LegacyPathContext') AS BLOB)
+		WHERE id = ?`, id); err != nil {
 		t.Fatal(err)
 	}
 	store, err := session.Open(host.Config.Home, id, c.Workspace.Root)

@@ -53,7 +53,7 @@ func (h Host) openACP(ctx context.Context, id, cwd string, servers []acpsdk.McpS
 	}
 	var store *session.Store
 	if id == "" {
-		store = session.New(h.Config.Home, session.Meta{Project: workspace.Root, Cwd: workspace.Cwd})
+		store = session.NewDraft(h.Config.Home, session.Meta{Project: workspace.Root, Cwd: workspace.Cwd})
 	} else {
 		store, err = session.Open(h.Config.Home, id, workspace.Root)
 		if err != nil {

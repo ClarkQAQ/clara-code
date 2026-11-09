@@ -76,6 +76,13 @@ func TestACPListSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	draft, err := client.ListSessions(ctx, sdk.ListSessionsRequest{Cwd: &second})
+	if err != nil || len(draft.Sessions) != 0 {
+		t.Fatalf("unprompted session was listed: %+v, %v", draft, err)
+	}
+	if _, _, err := client.Prompt(ctx, other, "First message"); err != nil {
+		t.Fatal(err)
+	}
 	page, err := client.ListSessions(ctx, sdk.ListSessionsRequest{Cwd: &first.Cwd})
 	if err != nil || len(page.Sessions) != 100 || page.NextCursor == nil {
 		t.Fatalf("first page size %d, nextCursor %v, %v", len(page.Sessions), page.NextCursor, err)

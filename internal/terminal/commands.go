@@ -394,11 +394,10 @@ func (a *app) openResume(startup bool) {
 	}
 	p := &picker{kind: "resume", title: "Resume a conversation", startup: startup}
 	for _, item := range found {
-		text := item.FirstPrompt
-		if text == "" {
-			text = "Empty conversation"
+		if item.FirstPrompt == "" {
+			continue
 		}
-		p.items = append(p.items, choice{id: item.ID, label: localtime.DateTime(item.Updated) + " · " + text + " · " + item.ID})
+		p.items = append(p.items, choice{id: item.ID, label: localtime.DateTime(item.Updated) + " · " + item.FirstPrompt + " · " + item.ID})
 	}
 	if len(p.items) == 0 {
 		if !startup {

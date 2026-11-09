@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"clara-code/pkg/core/prompt"
 	"clara-code/pkg/util/localtime"
 )
 
@@ -25,6 +26,13 @@ func TestStatusAndResumeUseLocalDateTime(t *testing.T) {
 	}
 	if !found || !strings.Contains(text, "Time zone  "+localtime.Zone(before)) {
 		t.Fatal("status clock or explicit time zone missing", text)
+	}
+	run, err := a.conv.Start(t.Context(), prompt.Execute, "Saved message", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.Wait(t.Context()); err != nil {
+		t.Fatal(err)
 	}
 	a.openResume(false)
 	if a.picker == nil || len(a.picker.items) != 1 {

@@ -59,13 +59,13 @@ func TestImageAttachmentRecoveryForkAndTextModelProjection(t *testing.T) {
 	if err != nil || len(turn.Attachments) != 1 || turn.Attachments[0].Width != 8 || turn.Attachments[0].Height != 6 {
 		t.Fatal("image transcript missing", turn.Attachments, err)
 	}
-	manifest := filepath.Join(h.Config.Home, "sessions", c.Session.ID()+".json")
-	raw, err := os.ReadFile(manifest)
-	if err != nil {
+	db := sessionFixtureDB(t, h.Config.Home)
+	var raw []byte
+	if err := db.QueryRowContext(t.Context(), "SELECT checkpoint FROM sessions WHERE id = ?", c.Session.ID()).Scan(&raw); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Contains(raw, []byte("clara-blob:")) || bytes.Contains(raw, []byte("iVBOR")) {
-		t.Fatal("image data was inlined into the manifest")
+		t.Fatal("image data was inlined into the checkpoint")
 	}
 	history := c.Session.Messages()
 	projected := withoutImages(history)
