@@ -35,8 +35,10 @@ jobs:
           go vet ./...
           go test ./...
           go test -race ./...
-          docker run --rm -v "$PWD:/workspace:ro" -w /workspace \
-            ruby:3.4-alpine ruby .forgejo/scripts/test-homebrew-credentials.rb
+          set -o pipefail
+          tar -C "$PWD" -cf - .forgejo |
+            docker run --rm -i -w /workspace ruby:3.4-alpine \
+              sh -c 'tar -xf - && ruby .forgejo/scripts/test-homebrew-credentials.rb'
 
       - name: Resolve release version
         run: |
