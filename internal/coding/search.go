@@ -1,12 +1,10 @@
 package coding
 
 import (
-	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"os"
-	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -14,6 +12,8 @@ import (
 	"clara-code/pkg/tool"
 	corefs "clara-code/pkg/tool/fs"
 	"clara-code/pkg/util/errs"
+
+	"github.com/go-git/go-git/v5/plumbing/filemode"
 )
 
 func (w Workspace) files() *tool.Files {
@@ -60,137 +60,99 @@ func (f searchFS) ReadDir(ctx context.Context, p corefs.Path) ([]corefs.Entry, e
 	return filtered, nil
 }
 
-type searchBuffer struct{ bytes.Buffer }
-
-func (b *searchBuffer) Write(p []byte) (int, error) {
-	const limit = 8 << 20
-	if len(p) > limit-b.Len() {
-		return 0, fmt.Errorf("git search enumeration exceeded 8 MiB; narrow path")
-	}
-	return b.Buffer.Write(p)
-}
-
-func (w Workspace) gitSearch(ctx context.Context, root corefs.Path, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	args = append([]string{"-C", w.Root, "-c", "core.fsmonitor=false", "ls-files"}, args...)
-	if root.String() != filepath.ToSlash(w.Root) {
-		relative, err := filepath.Rel(w.Root, filepath.FromSlash(root.String()))
-		if err != nil {
-			return nil, err
-		}
-		args = append(args, "--", ":(literal)"+filepath.ToSlash(relative))
-	}
-	command := searchGitCommand(ctx, args...)
-	var output, stderr searchBuffer
-	command.Stdout, command.Stderr = &output, &stderr
-	if err := command.Run(); err != nil {
-		return nil, fmt.Errorf("git search enumeration failed: %w: %s", err, strings.TrimSpace(stderr.String()))
-	}
-	return output.Bytes(), nil
-}
-
 func (w Workspace) searchSource(ctx context.Context, root corefs.Path, includeIgnored bool) (corefs.FS, error) {
-	repo, git, err := projectForPath(filepath.FromSlash(root.String()))
+	repoRoot, git, err := projectForPath(filepath.FromSlash(root.String()))
 	if err != nil {
 		return nil, err
 	}
-	w.Root, w.Git = repo, git
 	storage := searchFS{FS: w.toolFS(), submodules: map[corefs.Path]bool{}, root: root}
+	if !git {
+		return storage, nil
+	}
 	for _, part := range strings.Split(root.String(), "/") {
 		if part == ".git" {
 			return storage, nil
 		}
 	}
-	if !w.Git {
-		return storage, nil
-	}
-	stages, err := w.gitSearch(ctx, corefs.Path(filepath.ToSlash(w.Root)), "--stage", "-z")
-	if err != nil {
-		return nil, err
-	}
-	for _, record := range bytes.Split(stages, []byte{0}) {
-		metadata, name, ok := strings.Cut(string(record), "\t")
-		if ok && strings.HasPrefix(metadata, "160000 ") {
-			storage.submodules[corefs.Path(filepath.ToSlash(filepath.Join(w.Root, name)))] = true
-		}
-	}
-	for module := range storage.submodules {
-		if root == module || strings.HasPrefix(root.String(), module.String()+"/") {
-			return storage, nil
-		}
-	}
-	if includeIgnored {
-		return storage, nil
-	}
-	listing, err := w.gitSearch(ctx, root, "--cached", "--others", "--exclude-standard", "-z")
-	if err != nil {
-		return nil, err
-	}
-	storage.allowed = map[corefs.Path]bool{"/": true}
-	count := 0
-	for _, raw := range bytes.SplitN(listing, []byte{0}, 20002) {
-		if len(raw) == 0 {
-			continue
-		}
-		count++
-		if count > 20000 {
-			return nil, fmt.Errorf("git search enumeration exceeded 20000 files; narrow path")
-		}
-		name := filepath.ToSlash(filepath.Join(w.Root, string(raw)))
-		for p := corefs.Path(name); p != "/"; p = p.Dir() {
-			storage.allowed[p] = true
-		}
-	}
-	// An empty, non-ignored directory still has a valid search with zero results.
-	if !storage.allowed[root] {
-		if _, err := w.toolFS().Stat(ctx, root); err != nil {
-			return nil, err
-		}
-		ignored, err := w.gitIgnored(ctx, root)
-		if err != nil {
-			return nil, err
-		}
-		if !ignored {
-			storage.allowed[root] = true
-		}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := storage.gitPaths(ctx, repoRoot, includeIgnored); err != nil {
+		return nil, fmt.Errorf("git search enumeration failed: %w", err)
 	}
 	return storage, nil
 }
 
-func (w Workspace) gitIgnored(ctx context.Context, root corefs.Path) (bool, error) {
-	if root.String() == filepath.ToSlash(w.Root) {
-		return false, nil
-	}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	relative, err := filepath.Rel(w.Root, filepath.FromSlash(root.String()))
+func (f *searchFS) gitPaths(ctx context.Context, repoRoot string, includeIgnored bool) error {
+	repo, err := openGit(repoRoot)
 	if err != nil {
-		return false, err
+		return err
 	}
-	command := searchGitCommand(ctx, "-C", w.Root, "check-ignore", "-q", "--", filepath.ToSlash(relative))
-	var stderr searchBuffer
-	command.Stderr = &stderr
-	err = command.Run()
-	if err == nil {
-		return true, nil
+	entries, err := readGitIndex(repo)
+	if err != nil {
+		return err
 	}
-	var exit *exec.ExitError
-	if errors.As(err, &exit) && exit.ExitCode() == 1 {
-		return false, nil
+	start, err := filepath.Rel(repoRoot, filepath.FromSlash(f.root.String()))
+	if err != nil {
+		return err
 	}
-	return false, fmt.Errorf("git ignore check failed: %w: %s", err, strings.TrimSpace(stderr.String()))
-}
-
-func searchGitCommand(ctx context.Context, args ...string) *exec.Cmd {
-	command := exec.CommandContext(ctx, "git", args...)
-	for _, value := range os.Environ() {
-		name, _, _ := strings.Cut(value, "=")
-		switch name {
-		case "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR":
-			continue
+	start = filepath.ToSlash(start)
+	for name, entry := range entries {
+		if entry.Mode == filemode.Submodule {
+			f.submodules[corefs.Path(filepath.ToSlash(filepath.Join(repoRoot, name)))] = true
+			if start == name || strings.HasPrefix(start, name+"/") {
+				return nil
+			}
 		}
-		command.Env = append(command.Env, value)
 	}
-	return command
+	if includeIgnored {
+		return ctx.Err()
+	}
+
+	f.allowed = map[corefs.Path]bool{"/": true}
+	count, size := 0, 0
+	add := func(name string) error {
+		count++
+		size += len(name) + 1
+		if count > 20000 || size > 8<<20 {
+			return fmt.Errorf("git search enumeration exceeded 20000 files or 8 MiB; narrow path")
+		}
+		absolute := corefs.Path(filepath.ToSlash(filepath.Join(repoRoot, name)))
+		for p := absolute; !f.allowed[p]; p = p.Dir() {
+			f.allowed[p] = true
+		}
+		return nil
+	}
+	for name := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if start == "." || name == start || strings.HasPrefix(name, start+"/") {
+			if err := add(name); err != nil {
+				return err
+			}
+		}
+	}
+	root, err := os.OpenRoot(repoRoot)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	ignore, err := readGitIgnore(repo, root)
+	if err != nil {
+		return err
+	}
+	ignored, err := ignore.untracked(ctx, entries, start, func(name string) error {
+		if err := add(name); err != nil {
+			return err
+		}
+		// Like ls-files, a nested repository is listed as one entry.
+		if info, err := root.Lstat(filepath.FromSlash(name)); err == nil && info.IsDir() {
+			f.submodules[corefs.Path(path.Join(filepath.ToSlash(repoRoot), name))] = true
+		}
+		return nil
+	})
+	if err == nil && !ignored {
+		f.allowed[f.root] = true
+	}
+	return err
 }

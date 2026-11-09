@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -142,7 +141,7 @@ func TestCodingLoopUsesRealHashlineAndShell(t *testing.T) {
 
 func TestPlanOnlyAndProjectInstructions(t *testing.T) {
 	root := t.TempDir()
-	gitTest(t, root, "init", "-q")
+	initTestGit(t, root)
 	writeTestFile(t, root, "AGENTS.md", "project instructions")
 	writeTestFile(t, root, "sub/AGENTS.md", "overridden")
 	writeTestFile(t, root, "sub/AGENTS.override.md", "nearby instructions")
@@ -302,15 +301,6 @@ func writeTestFile(t *testing.T, root, name, text string) {
 	}
 }
 
-func gitTest(t *testing.T, cwd string, args ...string) {
-	t.Helper()
-	cmd := exec.CommandContext(t.Context(), "git", args...)
-	cmd.Dir = cwd
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git %v: %v %s", args, err, output)
-	}
-}
-
 func TestAutomaticCompactionKeepsVisibleTurns(t *testing.T) {
 	model := fixtureModel{reply: func(modelapi.Call) (*modelapi.Response, error) {
 		return demoText("Short response."), nil
@@ -361,7 +351,7 @@ func TestAutomaticCompactionKeepsVisibleTurns(t *testing.T) {
 
 func TestWorkspacePathsAndSkillResources(t *testing.T) {
 	root := t.TempDir()
-	gitTest(t, root, "init", "-q")
+	initTestGit(t, root)
 	writeTestFile(t, root, "target.txt", "root content")
 	writeTestFile(t, root, "sub/child/keep.txt", "child content")
 	writeTestFile(t, root, ".agents/skills/demo/SKILL.md", "---\nname: demo\ndescription: resource test\n---\nRead refs/guide.txt")

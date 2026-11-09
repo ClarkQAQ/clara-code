@@ -23,7 +23,7 @@ func TestYOLOToolsOperateOutsideTheProject(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	gitTest(t, other, "init", "-q")
+	initTestGit(t, other)
 	writeTestFile(t, other, "AGENTS.md", "TARGET RULES")
 	writeTestFile(t, other, "AGENTS.override.md", "OVERRIDE TARGET RULES")
 	writeTestFile(t, other, ".gitignore", "ignored.go\n")
@@ -136,7 +136,7 @@ func TestYOLOToolsOperateOutsideTheProject(t *testing.T) {
 
 func TestRelativeFilesStartAtCwdAndLegacySessionsMigrate(t *testing.T) {
 	root := t.TempDir()
-	gitTest(t, root, "init", "-q")
+	initTestGit(t, root)
 	writeTestFile(t, root, "file.txt", "root")
 	writeTestFile(t, root, "sub/file.txt", "cwd")
 	writeTestFile(t, root, "sub/AGENTS.md", "cwd rules")

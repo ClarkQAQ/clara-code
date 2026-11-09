@@ -3,7 +3,6 @@ package coding
 import (
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,15 +10,10 @@ import (
 	"clara-code/pkg/model"
 	toolapi "clara-code/pkg/tool"
 	corefs "clara-code/pkg/tool/fs"
-)
 
-func searchGit(t *testing.T, root string, args ...string) {
-	t.Helper()
-	command := exec.CommandContext(t.Context(), "git", append([]string{"-C", root}, args...)...)
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("git %v: %v %s", args, err, output)
-	}
-}
+	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/filemode"
+)
 
 func runSearchTool(t *testing.T, tool model.AgentTool, input string) model.ToolResponse {
 	t.Helper()
@@ -32,16 +26,31 @@ func runSearchTool(t *testing.T, tool model.AgentTool, input string) model.ToolR
 
 func TestSearchRespectsGitAndDirectReadsRemainAvailable(t *testing.T) {
 	root := t.TempDir()
-	searchGit(t, root, "init")
+	repo := initTestGit(t, root)
 	for name, body := range map[string]string{
 		".gitignore": "ignored/\n*.log\n!keep.log\n",
 		"main.go":    "needle", "sub/a.go": "needle", "ignored/a.go": "needle", "ignored/new.go": "needle",
 		"tracked.log": "needle", "drop.log": "needle", "keep.log": "needle", "module/hidden.go": "needle",
+		"sub/.gitignore":    "*.skip\n",
+		"sub/drop.skip":     "needle",
+		".git/info/exclude": "local-only.go\n",
+		"local-only.go":     "needle",
+		"-[literal]/a.go":   "needle",
 	} {
 		writeTestFile(t, root, name, body)
 	}
-	searchGit(t, root, "add", "-f", "tracked.log", "ignored/a.go")
-	searchGit(t, root, "update-index", "--add", "--cacheinfo", "160000,"+strings.Repeat("1", 40)+",module")
+	stageTestFiles(t, repo, "tracked.log", "ignored/a.go")
+	idx, err := repo.Storer.Index()
+	if err != nil {
+		t.Fatal(err)
+	}
+	moduleEntry := idx.Add("module")
+	moduleEntry.Mode = filemode.Submodule
+	moduleEntry.Hash = plumbing.NewHash(strings.Repeat("1", 40))
+	if err := repo.Storer.SetIndex(idx); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", t.TempDir())
 	space, err := ResolveWorkspace(root)
 	if err != nil {
 		t.Fatal(err)
@@ -61,7 +70,7 @@ func TestSearchRespectsGitAndDirectReadsRemainAvailable(t *testing.T) {
 				t.Fatalf("missing %s: %s", want, result.Content)
 			}
 		}
-		for _, excluded := range []string{"ignored/new.go", "drop.log", "module/hidden.go", "/.git/"} {
+		for _, excluded := range []string{"ignored/new.go", "drop.log", "drop.skip", "local-only.go", "module/hidden.go", "/.git/"} {
 			if strings.Contains(result.Content, excluded) {
 				t.Fatalf("unexpected %s: %s", excluded, result.Content)
 			}
@@ -74,6 +83,10 @@ func TestSearchRespectsGitAndDirectReadsRemainAvailable(t *testing.T) {
 	sub := runSearchTool(t, files.Glob(), `{"path":"sub","pattern":"*.go"}`)
 	if sub.IsError || !strings.Contains(sub.Content, "/sub/a.go") || strings.Contains(sub.Content, "main.go") {
 		t.Fatal(sub.Content)
+	}
+	literal := runSearchTool(t, files.Glob(), `{"path":"-[literal]","pattern":"*.go"}`)
+	if literal.IsError || !strings.Contains(literal.Content, "/-[literal]/a.go") {
+		t.Fatal(literal.Content)
 	}
 	module := runSearchTool(t, files.Grep(), `{"path":"module","query":"needle","include_ignored":true}`)
 	if module.IsError || !strings.Contains(module.Content, "hidden.go") {
@@ -102,7 +115,7 @@ func TestSearchPolicyEmptyNonGitAndGitFailure(t *testing.T) {
 	if result.IsError || !strings.Contains(result.Content, "ignored/a.go") {
 		t.Fatal(result.Content)
 	}
-	searchGit(t, root, "init")
+	initTestGit(t, root)
 	space, err = ResolveWorkspace(root)
 	if err != nil {
 		t.Fatal(err)
@@ -124,6 +137,11 @@ func TestSearchPolicyEmptyNonGitAndGitFailure(t *testing.T) {
 		t.Fatal(result.Content)
 	}
 	t.Setenv("PATH", t.TempDir())
+	result = runSearchTool(t, space.files().Grep(), `{"query":"needle","include_ignored":true}`)
+	if result.IsError || !strings.Contains(result.Content, "needle") {
+		t.Fatal("search requires a Git executable: " + result.Content)
+	}
+	writeTestFile(t, root, ".git/index", "invalid index")
 	result = runSearchTool(t, space.files().Grep(), `{"query":"needle"}`)
 	if !result.IsError || !strings.Contains(result.Content, "git search enumeration failed") {
 		t.Fatal("silently expanded Git scope: " + result.Content)
@@ -132,7 +150,7 @@ func TestSearchPolicyEmptyNonGitAndGitFailure(t *testing.T) {
 
 func TestMainAndTaskSearchAssemblyUsesSamePolicy(t *testing.T) {
 	root := t.TempDir()
-	searchGit(t, root, "init")
+	initTestGit(t, root)
 	writeTestFile(t, root, ".gitignore", "ignored/\n")
 	writeTestFile(t, root, "ignored/a.go", "secret")
 	c, _ := testHost(t, root, DemoModel{})

@@ -275,10 +275,12 @@ func renderSearch(response Response) string {
 	for index, result := range response.Results {
 		fmt.Fprintf(&builder, "%d. %s\n", index+1, first(result.Title, "Untitled"))
 		if result.URL != "" {
-			builder.WriteString(result.URL + "\n")
+			builder.WriteString(result.URL)
+			builder.WriteString("\n")
 		}
 		if summary := first(result.Summary, result.Content); summary != "" {
-			builder.WriteString(summary + "\n")
+			builder.WriteString(summary)
+			builder.WriteString("\n")
 		}
 		if result.SiteName != "" || result.Date != "" {
 			builder.WriteString(strings.TrimSpace(strings.Join([]string{result.SiteName, result.Date}, " · ")))

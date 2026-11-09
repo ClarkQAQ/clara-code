@@ -65,9 +65,9 @@ func TestMCPToolsFromHTTP(t *testing.T) {
 
 func TestReviewChangesAreReadOnlyAndCoverWorktree(t *testing.T) {
 	root := t.TempDir()
-	gitTest(t, root, "init", "-q")
+	repo := initTestGit(t, root)
 	writeTestFile(t, root, "tracked.txt", "staged change\n")
-	gitTest(t, root, "add", "tracked.txt")
+	stageTestFiles(t, repo, "tracked.txt")
 	writeTestFile(t, root, "tracked.txt", "unstaged change\n")
 	writeTestFile(t, root, "untracked.txt", "new file\n")
 	kinds := []string{"staged", "unstaged", "untracked"}

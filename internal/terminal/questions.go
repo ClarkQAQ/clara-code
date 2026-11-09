@@ -9,10 +9,13 @@ import (
 	"clara-code/internal/coding"
 )
 
+const noneOfTheAbove = "None of the above"
+
 type questionDraft struct {
-	selected int
-	notes    editor
-	answered bool
+	selected      int
+	notes         editor
+	keepNotesOpen bool
+	answered      bool
 }
 
 type questionForm struct {
@@ -20,7 +23,7 @@ type questionForm struct {
 	drafts     []questionDraft
 	index      int
 	notesMode  bool
-	width      int
+	noteWidth  int
 	validation string
 	helpText   func(string) string
 }
@@ -32,18 +35,22 @@ func newQuestionForm(request coding.QuestionRequest) *questionForm {
 func questionOptions(item coding.Question) []coding.QuestionOption {
 	options := append([]coding.QuestionOption{}, item.Options...)
 	for _, option := range options {
-		if strings.EqualFold(option.Label, "None of the above") {
+		if strings.EqualFold(option.Label, noneOfTheAbove) {
 			return options
 		}
 	}
 	if len(options) > 0 {
-		options = append(options, coding.QuestionOption{Label: "None of the above", Description: "Optionally, add details in notes (tab)."})
+		options = append(options, coding.QuestionOption{Label: noneOfTheAbove, Description: "Optionally, add details in notes (tab)."})
 	}
 	return options
 }
 
+func (q *questionForm) editingNotes() bool {
+	return q.notesMode && len(q.request.Items[q.index].Options) > 0
+}
+
 func (q *questionForm) layout(p *painter) layout {
-	q.width = p.width
+	height := p.contentHeight()
 	item, draft := q.request.Items[q.index], &q.drafts[q.index]
 	unanswered := 0
 	for _, answer := range q.drafts {
@@ -51,16 +58,16 @@ func (q *questionForm) layout(p *painter) layout {
 			unanswered++
 		}
 	}
-	width := max(1, p.width-4)
-	margin := strings.Repeat(" ", min(2, max(0, p.width-1)))
+	marginWidth := min(2, max(0, (p.width-1)/2))
+	margin := strings.Repeat(" ", marginWidth)
+	width := max(1, p.width-2*marginWidth)
 	lines := []string{margin + p.style(dim, truncate(fmt.Sprintf("Question %d/%d (%d unanswered)", q.index+1, len(q.drafts), unanswered), width))}
 	for _, row := range wrap(clean(item.Prompt()), width) {
 		lines = append(lines, margin+p.style(accent, truncate(row.text, width)))
-		if len(lines) >= max(2, p.height/3) {
+		if len(lines) >= max(2, height/3) {
 			break
 		}
 	}
-	lines = append(lines, "")
 	options := questionOptions(item)
 	if q.helpText != nil && len(options) > 0 {
 		last := &options[len(options)-1]
@@ -105,11 +112,15 @@ func (q *questionForm) layout(p *painter) layout {
 				if j == 0 {
 					lead = prefix
 				}
-				optionLines = append(optionLines, margin+p.style(style, lead+truncate(row.text, max(1, width-2))))
+				optionLines = append(optionLines, margin+p.style(style, truncate(lead+row.text, width)))
 			}
 			if option.Description != "" {
+				descriptionStyle := dim
+				if i == draft.selected {
+					descriptionStyle = style
+				}
 				for _, row := range wrap(clean(option.Description), max(1, width-4)) {
-					optionLines = append(optionLines, margin+p.style(dim, "    "+truncate(row.text, max(1, width-4))))
+					optionLines = append(optionLines, margin+p.style(descriptionStyle, truncate("    "+row.text, width)))
 				}
 			}
 		}
@@ -117,48 +128,83 @@ func (q *questionForm) layout(p *painter) layout {
 			selectedEnd = len(optionLines)
 		}
 	}
-	help := "tab to add notes | enter to submit answer | esc to interrupt"
-	if q.notesMode {
-		help = "tab to select options | enter to submit answer | esc to interrupt"
-	}
-	if len(q.drafts) > 1 {
-		help += " | ←/→ questions"
-	}
-	if q.validation != "" {
-		help = q.validation
-	}
-	if q.helpText != nil {
-		help = q.helpText(help)
-	}
-	var footer []string
-	for _, row := range wrap(help, width) {
-		footer = append(footer, margin+p.style(accent, truncate(row.text, width)))
-		if len(footer) >= max(1, p.height/4) {
-			break
+	var notes layout
+	notesFocused := q.notesMode || len(options) == 0
+	showNotes := notesFocused || (height > 1 && draft.keepNotesOpen)
+	if showNotes {
+		prefix := margin + inputPrefix(p.width-marginWidth)
+		q.noteWidth = max(1, p.width-widthOf(prefix))
+		placeholder := "Add notes"
+		if len(options) == 0 {
+			placeholder = "Type your answer"
+		}
+		notes = p.inputLayoutWithPrefix(draft.notes, placeholder, max(1, min(4, height/3)), prefix)
+		if !notesFocused {
+			notes.cursor = nil
 		}
 	}
-	var notes layout
-	if q.notesMode || len(options) == 0 {
-		notes.rows = append(notes.rows, p.style(dim, truncate(margin+"Notes", p.width)))
-		limit := max(1, min(4, p.height/3))
-		notes.append(p.inputLayout(draft.notes, "Type your answer or additional details", limit))
+	remaining := height - len(notes.rows)
+	optionMinimum := min(1, len(optionLines))
+	footer := q.footer(p, margin, width, min(max(1, height/4), max(0, remaining-min(2, len(lines))-optionMinimum)))
+	remaining -= len(footer)
+	if len(notes.rows) > 0 && remaining >= len(lines)+optionMinimum+2 {
+		border := margin + p.style(dim, strings.Repeat("─", p.width-marginWidth))
+		notes = notes.prepend([]string{border})
+		notes.rows = append(notes.rows, border)
+		remaining -= 2
 	}
-	available := max(0, p.height-len(lines)-len(notes.rows)-len(footer)-1)
-	if len(options) > 0 && available > 0 {
+	lines = lines[:min(len(lines), max(0, remaining-optionMinimum))]
+	if len(optionLines) > 0 && remaining-len(lines) > 1 {
+		lines = append(lines, "")
+	}
+	if available := remaining - len(lines); available > 0 && len(optionLines) > 0 {
 		start := max(0, min(selectedStart, selectedEnd-available))
 		lines = append(lines, optionLines[start:min(len(optionLines), start+available)]...)
 	}
 	view := layout{rows: lines}
-	if notes.cursor != nil {
-		view = view.slice(0, max(0, p.height-len(notes.rows)))
-		notes = notes.slice(max(0, len(notes.rows)-p.height), len(notes.rows))
-	}
 	view.append(notes)
-	if len(view.rows)+len(footer) < p.height {
-		view.rows = append(view.rows, "")
-	}
 	view.rows = append(view.rows, footer...)
-	return view.slice(0, p.height)
+	return view
+}
+
+func (q *questionForm) footer(p *painter, margin string, width, limit int) []string {
+	if limit == 0 {
+		return nil
+	}
+	hint := "tab to add notes | esc to interrupt"
+	switch {
+	case q.editingNotes():
+		hint = "tab or esc to clear notes"
+	case len(q.request.Items[q.index].Options) == 0:
+		hint = "esc to interrupt"
+	}
+	if len(q.drafts) > 1 && !q.notesMode {
+		hint += " | ←/→ questions"
+	}
+	submit := "enter to submit answer"
+	if q.helpText != nil {
+		hint, submit = q.helpText(hint), q.helpText(submit)
+	}
+	if hint != "" && submit != "" {
+		hint += " | "
+	}
+	if q.validation != "" {
+		hint, submit = "", q.validation
+	}
+	var footer []string
+	for _, row := range wrap(hint+submit, width) {
+		if row.text == "" {
+			break
+		}
+		split := min(max(0, len(hint)-row.start), len(row.text))
+		left := truncate(row.text[:split], width)
+		right := truncate(row.text[split:], width-widthOf(left))
+		footer = append(footer, margin+p.style(dim, left)+p.style(accent, right))
+		if len(footer) == limit {
+			break
+		}
+	}
+	return footer
 }
 
 func (q *questionForm) key(input key) bool {
@@ -168,22 +214,28 @@ func (q *questionForm) key(input key) bool {
 	default:
 	}
 	draft := &q.drafts[q.index]
+	selected := draft.selected
 	q.validation = ""
 	options := questionOptions(q.request.Items[q.index])
 	switch input.code {
-	case "tab", "backtab":
-		q.notesMode = !q.notesMode
+	case "escape", "tab", "backtab":
+		if q.editingNotes() {
+			draft.notes = editor{}
+			q.notesMode = false
+		} else if input.code != "escape" {
+			q.notesMode = !q.notesMode
+		}
 	case "up":
 		if !q.notesMode {
 			draft.selected = max(0, draft.selected-1)
 		} else {
-			draft.notes.vertical(-1, max(1, q.width-2))
+			draft.notes.vertical(-1, max(1, q.noteWidth))
 		}
 	case "down":
 		if !q.notesMode {
 			draft.selected = min(max(0, len(options)-1), draft.selected+1)
 		} else {
-			draft.notes.vertical(1, max(1, q.width-2))
+			draft.notes.vertical(1, max(1, q.noteWidth))
 		}
 	case "left", "right":
 		if q.notesMode {
@@ -233,7 +285,7 @@ func (q *questionForm) key(input key) bool {
 		if !q.notesMode && input.code == "text" {
 			if n, err := strconv.Atoi(input.text); err == nil && n >= 1 && n <= len(options) {
 				draft.selected = n - 1
-				return false
+				break
 			}
 		}
 		if input.code == "text" || input.code == "paste" {
@@ -242,6 +294,12 @@ func (q *questionForm) key(input key) bool {
 		if q.notesMode || len(options) == 0 {
 			draft.notes.key(input)
 		}
+	}
+	if draft.selected != selected {
+		draft.keepNotesOpen = false
+	}
+	if q.notesMode && len(options) > 0 && strings.EqualFold(options[draft.selected].Label, noneOfTheAbove) {
+		draft.keepNotesOpen = true
 	}
 	return false
 }

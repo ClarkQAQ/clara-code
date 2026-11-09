@@ -54,10 +54,11 @@ func (a *app) handle(input key) bool {
 		return false
 	}
 	if a.question != nil {
+		interrupt := input.code == "ctrl-c" || (input.code == "escape" && !a.question.editingNotes())
 		if a.question.key(input) {
 			a.question = nil
 			a.activity.resume(time.Now())
-		} else if input.code == "escape" || input.code == "ctrl-c" {
+		} else if interrupt {
 			a.interrupt()
 		}
 		return false

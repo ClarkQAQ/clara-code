@@ -691,10 +691,11 @@ func (a *app) draw() error {
 		a.reflow = false
 	}
 	pane := a.pane()
-	pane = pane.slice(0, p.height)
+	height := p.contentHeight()
+	pane = pane.slice(0, height)
 	if a.stream != "" {
 		rows := p.messageRows("assistant", a.stream)
-		live := max(1, min(5, p.height-len(pane.rows)))
+		live := max(1, min(5, height-len(pane.rows)))
 		commitTo := max(0, len(rows)-live)
 		if commitTo < a.streamRows {
 			p.rebuild()
@@ -705,7 +706,7 @@ func (a *app) draw() error {
 			a.streamRows++
 			a.continued = true
 		}
-		available := max(0, p.height-len(pane.rows))
+		available := max(0, height-len(pane.rows))
 		tail := rows[min(a.streamRows, len(rows)):]
 		if len(tail) > available {
 			tail = tail[len(tail)-available:]
@@ -727,33 +728,25 @@ func (a *app) pane() layout {
 		if a.picker.kind == "rewind" {
 			return layout{rows: a.rewindRows()}
 		}
-		rows := a.picker.rows(p)
-		if len(rows) > 0 {
-			rows[len(rows)-1] = a.hints(rows[len(rows)-1])
-		}
-		return layout{rows: rows}
+		help := a.hints("↑/↓ Select   Enter Confirm   Esc Back")
+		return layout{rows: a.picker.rows(p, help)}
 	}
 	if a.question != nil {
 		return a.question.layout(p)
 	}
+	height := p.contentHeight()
 	matches := a.menuMatches()
 	skillsVisible := a.skillMatches()
-	chrome := min(3, max(0, p.height-1))
-	if len(matches) == 0 && !skillsVisible && p.height > 4 {
-		chrome++
-	}
-	input := p.inputLayout(a.editor, "Run /review on my current changes", min(7, max(1, p.height-chrome)))
+	chrome := min(3, max(0, height-1))
+	input := p.inputLayout(a.editor, "Run /review on my current changes", min(7, max(1, height-chrome)))
 	var footer []string
 	if len(matches) > 0 {
-		menuHeight := max(0, p.height-min(2, chrome)-len(input.rows))
+		menuHeight := max(0, height-min(2, chrome)-len(input.rows))
 		footer = a.commandRows(menuHeight)
 	} else if skillsVisible {
-		footer = a.skillRows(max(0, p.height-min(2, chrome)-len(input.rows)))
-	} else if p.height > 3 {
+		footer = a.skillRows(max(0, height-min(2, chrome)-len(input.rows)))
+	} else if height > 3 {
 		footer = []string{a.statusLine()}
-		if p.height > 4 {
-			footer = append(footer, "")
-		}
 	}
 	var lines []string
 	hasActivity := false
@@ -768,16 +761,16 @@ func (a *app) pane() layout {
 	if summary := a.backgroundSummary(); summary != "" && !hasActivity {
 		lines = append(lines, p.style(dim, truncate("  "+summary, p.width)), "")
 	}
-	borderRows := min(2, max(0, p.height-1))
-	if maxRows := max(0, p.height-borderRows-len(input.rows)-len(footer)); len(lines) > maxRows {
+	borderRows := min(2, max(0, height-1))
+	if maxRows := max(0, height-borderRows-len(input.rows)-len(footer)); len(lines) > maxRows {
 		lines = lines[len(lines)-maxRows:]
 	}
-	if p.height > 1 {
+	if height > 1 {
 		lines = append(lines, p.style(dim, strings.Repeat("─", p.width)))
 	}
 	view := layout{rows: lines}
 	view.append(input)
-	if p.height > 2 {
+	if height > 2 {
 		view.rows = append(view.rows, p.style(dim, strings.Repeat("─", p.width)))
 	}
 	view.rows = append(view.rows, footer...)

@@ -25,16 +25,16 @@ type picker struct {
 	more, followSelection  bool
 }
 
-func (p *picker) rows(view *painter) []string {
+func (p *picker) rows(view *painter, help string) []string {
 	if p.kind == "effort" {
-		return p.effortRows(view)
+		return p.effortRows(view, help)
 	}
-	return listRows(view, p.title, p.items, p.selected, "↑/↓ Select   Enter Confirm   Esc Back", 0)
+	return listRows(view, p.title, p.items, p.selected, help, 0)
 }
 
 func listRows(view *painter, title string, items []choice, selected int, help string, reserved int) []string {
 	lines := []string{view.style(bold, truncate(title, view.width))}
-	limit := min(8, max(1, view.height-2-reserved))
+	limit := min(8, max(1, view.contentHeight()-2-reserved))
 	start := min(max(0, selected-limit+1), max(0, len(items)-limit))
 	for i := start; i < min(len(items), start+limit); i++ {
 		prefix, style := "  ", ""
@@ -43,7 +43,7 @@ func listRows(view *painter, title string, items []choice, selected int, help st
 		}
 		lines = append(lines, view.style(style, truncate(prefix+singleLine(items[i].label), view.width)))
 	}
-	if view.height > 2+reserved {
+	if help != "" && view.contentHeight() > 2+reserved {
 		lines = append(lines, view.style(dim, truncate(help, view.width)))
 	}
 	return lines

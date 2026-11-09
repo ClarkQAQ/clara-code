@@ -98,9 +98,9 @@ func reasoningChoice(level string) (string, string) {
 	return string(unicode.ToUpper(first)) + level[size:], "Provider-defined reasoning level."
 }
 
-func (p *picker) effortRows(v *painter) []string {
+func (p *picker) effortRows(v *painter, help string) []string {
 	rows := []string{v.style(bold, truncate(p.title, v.width))}
-	limit := min(8, max(1, v.height-2))
+	limit := min(8, max(1, v.contentHeight()-2))
 	start := min(max(0, p.selected-limit+1), max(0, len(p.items)-limit))
 	leftWidth := 0
 	for i, item := range p.items {
@@ -127,8 +127,8 @@ func (p *picker) effortRows(v *painter) []string {
 			rows = append(rows, left+v.style(dim, description))
 		}
 	}
-	if v.height > 2 {
-		rows = append(rows, v.style(dim, truncate("↑/↓ Select   Enter Confirm   Esc Back", v.width)))
+	if help != "" && v.contentHeight() > 2 {
+		rows = append(rows, v.style(dim, truncate(help, v.width)))
 	}
 	return rows
 }

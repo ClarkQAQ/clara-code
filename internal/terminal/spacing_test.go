@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"clara-code/internal/coding"
 	"clara-code/internal/session"
 	"context"
 	"encoding/json"
@@ -237,4 +238,42 @@ func TestLongStreamGapSurvivesResizeToolAndInterruption(t *testing.T) {
 		t.Fatal("interruption lost separator or cursor")
 	}
 
+}
+
+func TestTransientViewsShareOneBottomBlankLine(t *testing.T) {
+	a := testApp(t)
+	screen := newScreen(100, 12)
+	screen.y = screen.height - 1
+	a.view.output = screen
+	a.view.width, a.view.height = screen.width, screen.height
+
+	assertBottom := func(lastText string) {
+		t.Helper()
+		if err := a.draw(); err != nil {
+			t.Fatal(err)
+		}
+		last := screen.y - a.view.cursorRow + a.view.rows - 1
+		lines := screen.lines()
+		if last < 1 || last >= len(lines) || lines[last] != "" || !strings.Contains(lines[last-1], lastText) {
+			t.Fatalf("expected one blank after %q:\n%s", lastText, strings.Join(lines, "\n"))
+		}
+	}
+	assertBottom("Ready")
+	a.question = newQuestionForm(coding.QuestionRequest{Items: []coding.Question{
+		{Question: "Pick an option", Options: []coding.QuestionOption{{Label: "First"}}},
+	}})
+	a.handle(key{code: "tab"})
+	assertBottom("enter to submit answer")
+	a.handle(key{code: "escape"})
+	assertBottom("enter to submit answer")
+	a.question = nil
+	a.picker = &picker{kind: "model", title: "Select model", items: []choice{{label: "demo"}}}
+	assertBottom("Enter Confirm")
+	tooltips := false
+	a.host.Config.TUI.ShowTooltips = &tooltips
+	assertBottom("demo")
+	a.skillsMenu()
+	assertBottom("Enable/Disable Skills")
+	a.picker = nil
+	assertBottom("Ready")
 }

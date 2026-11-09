@@ -144,14 +144,14 @@ func (a *app) skillPickerLayout() layout {
 	}
 	s := p.skillState
 	rows = append(rows, v.style(dim, truncate("  Turn skills on or off. Your changes are saved automatically.", v.width)))
-	if v.height < 6 {
+	if v.contentHeight() < 6 {
 		rows = nil
 	}
 	view := layout{rows: rows}
 	view.append(v.inputLayout(s.query, "Type to search skills", 1))
 	matches := s.matches()
 	s.selected = min(s.selected, max(0, len(matches)-1))
-	limit := min(8, max(0, v.height-len(view.rows)-2))
+	limit := min(8, max(0, v.contentHeight()-len(view.rows)-2))
 	start := min(max(0, s.selected-limit+1), max(0, len(matches)-limit))
 	for at := start; at < min(len(matches), start+limit); at++ {
 		skill := s.skills[matches[at]]

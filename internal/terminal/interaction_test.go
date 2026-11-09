@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"clara-code/pkg/core"
 	"clara-code/pkg/core/prompt"
 	"clara-code/pkg/model"
 
@@ -72,6 +73,96 @@ func TestStructuredQuestionAndLegacyOptions(t *testing.T) {
 	}
 }
 
+func TestQuestionNoteCancellationReturnsToSelection(t *testing.T) {
+	for _, cancel := range []string{"tab", "backtab", "escape"} {
+		t.Run(cancel, func(t *testing.T) {
+			a := testApp(t)
+			a.run = &core.Run{ID: "question"}
+			request := coding.QuestionRequest{Items: []coding.Question{
+				{ID: "pick", Question: "Pick a direction", Options: []coding.QuestionOption{{Label: "First"}, {Label: "Second"}}},
+			}, Answer: make(chan map[string]string, 1)}
+			form := newQuestionForm(request)
+			a.question = form
+			a.handle(key{code: "down"})
+			a.handle(key{code: "tab"})
+			view := form.layout(&a.view)
+			rows := strings.Join(view.rows, "\n")
+			border := "  " + strings.Repeat("─", a.view.width-2)
+			if view.cursor == nil || !strings.Contains(rows, border+"\n  ❯ Add notes\n"+border) || !strings.Contains(rows, "tab or esc to clear notes | enter to submit answer") {
+				t.Fatalf("missing notes editor or help: %q", rows)
+			}
+			a.handle(key{code: "paste", text: "discard this"})
+			a.handle(key{code: cancel})
+			if a.question != form || form.notesMode || form.drafts[0].selected != 1 || form.drafts[0].notes.text != "" {
+				t.Fatalf("%s did not return to the same selection", cancel)
+			}
+			view = form.layout(&a.view)
+			if view.cursor != nil || !strings.Contains(strings.Join(view.rows, "\n"), "› 2. Second") {
+				t.Fatalf("selection view was not restored: %+v", view)
+			}
+			a.handle(key{code: "enter"})
+			if a.question != nil || len(request.Answer) != 1 {
+				t.Fatal("did not submit selection")
+			}
+			var answer coding.QuestionAnswer
+			if err := json.Unmarshal([]byte((<-request.Answer)["pick"]), &answer); err != nil {
+				t.Fatal(err)
+			}
+			if len(answer.Answers) != 1 || answer.Answers[0] != "Second" || answer.Notes != "" {
+				t.Fatalf("submitted %+v", answer)
+			}
+		})
+	}
+}
+
+func TestNoneOfTheAboveKeepsNotesOpenOnlyAfterEditing(t *testing.T) {
+	for _, label := range []string{noneOfTheAbove, "none of the above"} {
+		t.Run(label, func(t *testing.T) {
+			options := []coding.QuestionOption{{Label: "First"}}
+			if label != noneOfTheAbove {
+				options = append(options, coding.QuestionOption{Label: label})
+			}
+			form := newQuestionForm(coding.QuestionRequest{Items: []coding.Question{
+				{Question: "First question", Options: options},
+				{Question: "Second question", Options: []coding.QuestionOption{{Label: "Next"}}},
+			}})
+			a := &app{question: form, run: &core.Run{ID: "question"}, view: painter{width: 100, height: 24}}
+			press := func(code string) { a.handle(key{code: code}) }
+			assertNotes := func(open bool) {
+				t.Helper()
+				view := form.layout(&a.view)
+				rows := strings.Join(view.rows, "\n")
+				if a.question != form || view.cursor != nil || !strings.Contains(rows, "› 2. "+label) || strings.Contains(rows, "Add notes") != open {
+					t.Fatalf("expected selected option with notes open=%t: %q", open, rows)
+				}
+			}
+			press("down")
+			assertNotes(false)
+			for _, cancel := range []string{"tab", "escape"} {
+				press("tab")
+				if form.layout(&a.view).cursor == nil {
+					t.Fatal("Tab did not focus notes")
+				}
+				a.handle(key{code: "paste", text: "discard this"})
+				press(cancel)
+				assertNotes(true)
+			}
+			press("right")
+			if form.index != 1 {
+				t.Fatal("open notes blocked navigation to the next question")
+			}
+			press("left")
+			assertNotes(true)
+			press("up")
+			if rows := strings.Join(form.layout(&a.view).rows, "\n"); strings.Contains(rows, "Add notes") {
+				t.Fatalf("notes stayed open on another option: %q", rows)
+			}
+			a.handle(key{code: "text", text: "2"})
+			assertNotes(false)
+		})
+	}
+}
+
 func TestMultipleQuestionsRetainAnswersAndNotes(t *testing.T) {
 	request := coding.QuestionRequest{Items: []coding.Question{
 		{ID: "one", Question: "First", Options: []coding.QuestionOption{{Label: "A"}, {Label: "B"}}},
@@ -81,8 +172,9 @@ func TestMultipleQuestionsRetainAnswersAndNotes(t *testing.T) {
 	q.key(key{code: "text", text: "2"})
 	q.key(key{code: "tab"})
 	q.key(key{code: "paste", text: "first note"})
-	q.key(key{code: "tab"})
-	q.key(key{code: "right"})
+	if q.key(key{code: "enter"}) {
+		t.Fatal("submitted with unanswered question")
+	}
 	q.key(key{code: "paste", text: "free answer"})
 	q.key(key{code: "tab"})
 	q.key(key{code: "left"})

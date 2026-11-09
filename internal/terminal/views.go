@@ -43,7 +43,7 @@ func (a *app) diffRows() []string {
 	p, v := a.picker, &a.view
 	lines := []string{v.style(bold, truncate(p.title, v.width))}
 	rows := v.messageRows("diff", p.preview)
-	height := max(1, v.height-2)
+	height := max(1, v.contentHeight()-2)
 	p.scroll = min(max(0, p.scroll), max(0, len(rows)-height))
 	lines = append(lines, rows[p.scroll:min(len(rows), p.scroll+height)]...)
 	help := "↑/↓ Scroll  Tab Section  n/p Page  Esc Back"
@@ -51,7 +51,7 @@ func (a *app) diffRows() []string {
 		help = "More changes · " + help
 	}
 	lines = append(lines, v.style(dim, truncate(a.hints(help), v.width)))
-	return lines[:min(len(lines), v.height)]
+	return lines[:min(len(lines), v.contentHeight())]
 }
 
 func (a *app) rewindRows() []string {
@@ -82,7 +82,7 @@ func (a *app) rewindRows() []string {
 			selectedEnd = len(lines)
 		}
 	}
-	height := max(1, v.height-2)
+	height := max(1, v.contentHeight()-2)
 	if p.followSelection {
 		p.scroll = max(0, selectedStart-min(2, height/4))
 		if selectedEnd-selectedStart < height {
@@ -94,7 +94,7 @@ func (a *app) rewindRows() []string {
 	result := []string{v.style(dim, truncate(fmt.Sprintf("Edit a previous message · %d/%d", p.selected+1, len(a.prompts)), v.width))}
 	result = append(result, lines[p.scroll:min(len(lines), p.scroll+height)]...)
 	result = append(result, v.style(dim, truncate(a.hints("←/→ Message  ↑/↓ Scroll  Ctrl+T Details  Enter Edit  Esc Cancel"), v.width)))
-	return result[:min(len(result), v.height)]
+	return result[:min(len(result), v.contentHeight())]
 }
 
 func (a *app) reloadRunDisplay(turn *session.Turn) {
@@ -134,9 +134,9 @@ func (a *app) handleTranscriptPicker(input key) bool {
 	case "down":
 		p.scroll++
 	case "page-up":
-		p.scroll = max(0, p.scroll-max(1, a.view.height-3))
+		p.scroll = max(0, p.scroll-max(1, a.view.contentHeight()-3))
 	case "page-down":
-		p.scroll += max(1, a.view.height-3)
+		p.scroll += max(1, a.view.contentHeight()-3)
 	case "home":
 		p.scroll = 0
 	case "end":

@@ -7,11 +7,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
-	"time"
 
 	"clara-code/pkg/core/prompt"
 	"clara-code/pkg/model"
@@ -21,6 +19,7 @@ import (
 	"clara-code/pkg/tool/fs/local"
 	"clara-code/pkg/tool/fs/mount"
 
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/pelletier/go-toml/v2"
 	"go.yaml.in/yaml/v3"
 )
@@ -68,24 +67,21 @@ func ResolveWorkspace(path string) (Workspace, error) {
 }
 
 func (w Workspace) Branch(ctx context.Context) string {
-	if !w.Git {
+	if !w.Git || ctx.Err() != nil {
 		return ""
 	}
-	limit, cancel := context.WithTimeout(ctx, time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(limit, "git", "-C", w.Root, "branch", "--show-current")
-	out, err := cmd.Output()
+	repo, err := openGit(w.Root)
 	if err != nil {
 		return ""
 	}
-	if branch := strings.TrimSpace(string(out)); branch != "" {
-		return branch
-	}
-	out, err = exec.CommandContext(limit, "git", "-C", w.Root, "rev-parse", "--short", "HEAD").Output()
-	if err != nil {
+	head, err := repo.Reference(plumbing.HEAD, false)
+	if err != nil || ctx.Err() != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	if head.Type() == plumbing.SymbolicReference {
+		return head.Target().Short()
+	}
+	return head.Hash().String()[:7]
 }
 
 type runner struct {

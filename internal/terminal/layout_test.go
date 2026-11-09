@@ -82,7 +82,7 @@ func TestQuestionCursorFollowsNotesAndFreeAnswer(t *testing.T) {
 	for _, height := range []int{20, 8, 4, 2, 1} {
 		p.height = height
 		view := q.layout(&p)
-		if view.cursor == nil || view.cursor.row >= len(view.rows) || !strings.Contains(view.rows[view.cursor.row], "ni hao") || view.cursor.column != 8 {
+		if view.cursor == nil || view.cursor.row >= len(view.rows) || !strings.Contains(view.rows[view.cursor.row], "ni hao") || view.cursor.column != 10 {
 			t.Fatalf("notes cursor lost when clipped to %d rows: %+v", height, view)
 		}
 	}

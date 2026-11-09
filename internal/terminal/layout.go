@@ -40,11 +40,18 @@ func (v layout) slice(start, end int) layout {
 	return v
 }
 
-func (p *painter) inputLayout(e editor, placeholder string, limit int) layout {
-	prefix := "❯ "
-	if p.width < 4 {
-		prefix = ""
+func inputPrefix(width int) string {
+	if width < 4 {
+		return ""
 	}
+	return "❯ "
+}
+
+func (p *painter) inputLayout(e editor, placeholder string, limit int) layout {
+	return p.inputLayoutWithPrefix(e, placeholder, limit, inputPrefix(p.width))
+}
+
+func (p *painter) inputLayoutWithPrefix(e editor, placeholder string, limit int, prefix string) layout {
 	width := max(1, p.width-widthOf(prefix))
 	if e.text == "" {
 		return layout{

@@ -134,8 +134,22 @@ func (p *painter) setCursorVisible(visible bool) {
 	p.cursorHidden = !visible
 }
 
+func (p *painter) contentHeight() int {
+	return max(1, p.height-1)
+}
+
 func (p *painter) frame(view layout) error {
-	view = view.slice(0, p.height)
+	view = view.slice(0, p.contentHeight())
+	if p.height > 1 {
+		minRows := 0
+		if view.cursor != nil {
+			minRows = view.cursor.row + 1
+		}
+		for len(view.rows) > minRows && view.rows[len(view.rows)-1] == "" {
+			view.rows = view.rows[:len(view.rows)-1]
+		}
+		view.rows = append(view.rows, "")
+	}
 	p.erase()
 	for index, line := range view.rows {
 		if index > 0 {

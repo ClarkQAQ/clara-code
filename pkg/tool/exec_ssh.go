@@ -3,9 +3,12 @@ package tool
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"maps"
 	"net"
-	"sort"
+	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -45,8 +48,9 @@ func NewSSH(config SSHConfig) (*SSH, error) {
 }
 
 func (s *SSH) Start(ctx context.Context, spec Spec) (Process, error) {
-	if strings.TrimSpace(spec.Command) == "" {
-		return nil, errs.New(errs.CodeInvalidArgument, "command is empty")
+	command, err := sshCommand(spec)
+	if err != nil {
+		return nil, err
 	}
 	timeout := spec.Timeout
 	if timeout <= 0 {
@@ -100,22 +104,6 @@ func (s *SSH) Start(ctx context.Context, spec Spec) (Process, error) {
 	output := newCapture(spec.MaxOutput)
 	session.Stdout = output
 	session.Stderr = output
-	command := spec.Command
-	if len(spec.Env) > 0 {
-		keys := make([]string, 0, len(spec.Env))
-		for key := range spec.Env {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		parts := make([]string, 0, len(keys))
-		for _, key := range keys {
-			parts = append(parts, key+"="+shellQuote(spec.Env[key]))
-		}
-		command = "export " + strings.Join(parts, " ") + " && " + command
-	}
-	if spec.Workdir != "" {
-		command = "cd -- " + shellQuote(spec.Workdir) + " && " + command
-	}
 	started := time.Now()
 	if err := session.Start(command); err != nil {
 		session.Close()
@@ -174,8 +162,57 @@ func sshAuth(config SSHConfig) ([]ssh.AuthMethod, error) {
 	return methods, nil
 }
 
-func shellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+var sshEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// SSH exec carries a single command string. Encode metadata as shell words
+// and leave the requested script in the remote shell's own syntax.
+func sshCommand(spec Spec) (string, error) {
+	if strings.TrimSpace(spec.Command) == "" {
+		return "", errs.New(errs.CodeInvalidArgument, "command is empty")
+	}
+	if strings.ContainsRune(spec.Command, 0) || strings.ContainsRune(spec.Workdir, 0) {
+		return "", errs.New(errs.CodeInvalidArgument, "SSH command and working directory must not contain NUL bytes")
+	}
+	if spec.Workdir == "" && len(spec.Env) == 0 {
+		return spec.Command, nil
+	}
+
+	var command strings.Builder
+	if spec.Workdir != "" {
+		command.WriteString("cd ")
+		// An explicit relative path bypasses CDPATH and cd's special "-" operand.
+		prefix := "./"
+		if strings.HasPrefix(spec.Workdir, "/") {
+			prefix = ""
+		}
+		writeSSHShellWord(&command, prefix, spec.Workdir)
+		command.WriteString(" || exit\n")
+	}
+	if len(spec.Env) > 0 {
+		command.WriteString("export")
+		for _, name := range slices.Sorted(maps.Keys(spec.Env)) {
+			if !sshEnvName.MatchString(name) {
+				return "", errs.New(errs.CodeInvalidArgument, fmt.Sprintf("invalid SSH environment variable name %q", name))
+			}
+			value := spec.Env[name]
+			if strings.ContainsRune(value, 0) {
+				return "", errs.New(errs.CodeInvalidArgument, fmt.Sprintf("SSH environment variable %q contains a NUL byte", name))
+			}
+			command.WriteByte(' ')
+			writeSSHShellWord(&command, name, "=", value)
+		}
+		command.WriteString(" || exit\n")
+	}
+	command.WriteString(spec.Command)
+	return command.String(), nil
+}
+
+func writeSSHShellWord(command *strings.Builder, parts ...string) {
+	command.WriteByte('\'')
+	for _, part := range parts {
+		command.WriteString(strings.ReplaceAll(part, "'", "'\\''"))
+	}
+	command.WriteByte('\'')
 }
 
 type sshProcess struct {
