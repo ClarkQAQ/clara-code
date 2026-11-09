@@ -82,7 +82,7 @@ func parse(args []string, stderr io.Writer) (arguments, error) {
 // Run starts the CLI with process-owned streams and a build version.
 func Run(ctx context.Context, args []string, input, output, stderr *os.File, version string) error {
 	if len(args) > 0 && args[0] == "__acp_exec" {
-		return coding.ExecACP(args[1:])
+		return coding.ExecACP(ctx, args[1:])
 	}
 	options, err := parse(args, stderr)
 	if err != nil {

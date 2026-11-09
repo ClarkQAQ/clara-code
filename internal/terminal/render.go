@@ -175,8 +175,9 @@ func (p *painter) frame(view layout) error {
 	return err
 }
 
-func (p *painter) finish() error {
+func (p *painter) finish(restoreKeys string) error {
 	p.erase()
+	p.buf.WriteString(restoreKeys)
 	p.buf.WriteString("\x1b[0m\x1b[?2004l\x1b[?25h")
 	p.cursorHidden = false
 	_, err := p.buf.WriteTo(p.output)

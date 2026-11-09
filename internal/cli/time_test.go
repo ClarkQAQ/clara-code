@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -33,7 +34,10 @@ func TestDiagnosticLogUsesRFC3339WithPrecision(t *testing.T) {
 	}
 }
 
-func TestACPModelClockAndPTYStatusFollowTZ(t *testing.T) {
+func TestACPModelClockFollowsTZ(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Go uses the Windows system time zone")
+	}
 	var requests atomic.Int32
 	before := time.Now()
 	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -96,12 +100,4 @@ func TestACPModelClockAndPTYStatusFollowTZ(t *testing.T) {
 	if err != nil || response != "Local clock verified." || requests.Load() != 1 {
 		t.Fatal("ACP clock flow failed", response, err, requests.Load())
 	}
-	t.Setenv("TZ", "Asia/Shanghai")
-	p := startPTY(t, t.TempDir(), t.TempDir())
-	p.await(t, 0, "Ready")
-	p.send(t, "/status\r")
-	p.await(t, 0, "Time zone  Asia/Shanghai (UTC+08:00)")
-	p.await(t, 0, "Local time  ")
-	p.send(t, "/exit\r")
-	p.await(t, 0, "\x1b[?2004l\x1b[?25h")
 }

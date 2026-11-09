@@ -2,13 +2,10 @@ package terminal
 
 import (
 	"bytes"
-	"context"
-	"errors"
 	"os"
+	"strconv"
 	"strings"
 	"unicode/utf8"
-
-	"golang.org/x/sys/unix"
 )
 
 type key struct {
@@ -19,6 +16,15 @@ type key struct {
 const inputLimit = 256 << 10
 
 var pasteEnd = []byte("\x1b[201~")
+
+func keyboardMode() (enable, restore string) {
+	if os.Getenv("TMUX") != "" {
+		// tmux requests extended keys per pane through modifyOtherKeys.
+		return "\x1b[>4;1m", "\x1b[>4m"
+	}
+	// Push Kitty's disambiguation flag and pop it on exit.
+	return "\x1b[>1u", "\x1b[<1u"
+}
 
 type decoder struct {
 	buffer  []byte
@@ -114,17 +120,17 @@ func (d *decoder) addPaste(data []byte) {
 
 func sequenceKey(sequence string) string {
 	switch sequence {
-	case "A", "1;2A":
+	case "A", "1A", "1;2A":
 		return "up"
-	case "B", "1;2B":
+	case "B", "1B", "1;2B":
 		return "down"
-	case "C":
+	case "C", "1C":
 		return "right"
-	case "D":
+	case "D", "1D":
 		return "left"
-	case "H", "1~", "7~":
+	case "H", "1H", "1~", "7~":
 		return "home"
-	case "F", "4~", "8~":
+	case "F", "1F", "4~", "8~":
 		return "end"
 	case "3~":
 		return "delete"
@@ -132,12 +138,11 @@ func sequenceKey(sequence string) string {
 		return "page-up"
 	case "6~":
 		return "page-down"
-	case "Z", "1;2Z", "9;2u":
+	case "Z", "1;2Z":
 		return "backtab"
-	case "13;2u", "13;3u", "27;2;13~", "27;3;13~":
-		return "newline"
-	case "13u":
-		return "enter"
+	}
+	if strings.HasSuffix(sequence, "u") || strings.HasPrefix(sequence, "27;") && strings.HasSuffix(sequence, "~") {
+		return extendedKey(sequence)
 	}
 	if strings.HasPrefix(sequence, "1;") {
 		switch sequence[len(sequence)-1] {
@@ -150,46 +155,89 @@ func sequenceKey(sequence string) string {
 	return ""
 }
 
-func readInput(ctx context.Context, file *os.File, keys chan<- key, failure chan<- error) {
-	defer close(keys)
-	fd := int(file.Fd())
-	fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
-	var data [8192]byte
-	var parser decoder
-	for ctx.Err() == nil {
-		wait := 100
-		if len(parser.buffer) > 0 && !parser.pasting {
-			wait = 35
+func extendedKey(sequence string) string {
+	params := sequence[:len(sequence)-1]
+	char, modifier, modified := strings.Cut(params, ";")
+	if strings.HasSuffix(sequence, "~") {
+		modifier, char, modified = strings.Cut(modifier, ";")
+		if !modified {
+			return ""
 		}
-		n, err := unix.Poll(fds, wait)
-		if errors.Is(err, unix.EINTR) {
-			continue
-		}
-		if err != nil {
-			failure <- err
-			return
-		}
-		emit := func(input key) {
-			select {
-			case keys <- input:
-			case <-ctx.Done():
-			}
-		}
-		if n == 0 {
-			parser.feed(nil, true, emit)
-			continue
-		}
-		size, err := unix.Read(fd, data[:])
-		if errors.Is(err, unix.EINTR) || errors.Is(err, unix.EAGAIN) {
-			continue
-		}
-		if err != nil {
-			failure <- err
-			return
-		}
-		if size == 0 {
-			return
-		}
-		parser.feed(data[:size], false, emit)
 	}
+	mods := 0
+	if modified {
+		value, err := strconv.Atoi(modifier)
+		if err != nil || value < 1 || value > 256 {
+			return ""
+		}
+		mods = (value - 1) &^ (64 | 128) // Ignore Caps Lock and Num Lock.
+	}
+	if mods == 0 {
+		switch char {
+		case "57417":
+			return "left"
+		case "57418":
+			return "right"
+		case "57419":
+			return "up"
+		case "57420":
+			return "down"
+		case "57421":
+			return "page-up"
+		case "57422":
+			return "page-down"
+		case "57423":
+			return "home"
+		case "57424":
+			return "end"
+		case "57426":
+			return "delete"
+		}
+	}
+	switch char {
+	case "13", "57414":
+		switch mods {
+		case 0:
+			return "enter"
+		case 1, 2, 3:
+			return "newline"
+		}
+	case "27":
+		if mods == 0 {
+			return "escape"
+		}
+	case "9":
+		switch mods {
+		case 0:
+			return "tab"
+		case 1:
+			return "backtab"
+		}
+	case "8", "127":
+		if mods == 0 || mods == 4 {
+			return "backspace"
+		}
+	}
+	value, err := strconv.Atoi(char)
+	if err != nil || value < 'a' || value > 'z' {
+		return ""
+	}
+	switch mods {
+	case 2:
+		return "alt-" + string(rune(value))
+	case 4:
+		switch value {
+		case 'h':
+			return "backspace"
+		case 'i':
+			return "tab"
+		case 'j':
+			return "newline"
+		case 'm':
+			return "enter"
+		default:
+			return "ctrl-" + string(rune(value))
+		}
+	}
+	return ""
 }

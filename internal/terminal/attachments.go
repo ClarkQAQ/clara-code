@@ -232,6 +232,9 @@ func (a *app) hints(text string) string {
 		replacements["Enter"] = a.host.Config.TUI.Hint(context, "submit")
 		replacements["Shift+Tab"] = a.host.Config.TUI.Hint(context, "cycle_mode")
 		replacements["Alt+Enter"] = a.host.Config.TUI.Hint(context, "newline")
+		if replacements["Alt+Enter"] == "Alt+Enter" {
+			replacements["Alt+Enter"] = "Shift+Enter / Alt+Enter"
+		}
 	}
 	if context == "question" {
 		replacements["Enter"] = a.host.Config.TUI.Hint(context, "submit")

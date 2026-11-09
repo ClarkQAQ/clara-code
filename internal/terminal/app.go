@@ -7,9 +7,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
 	"clara-code/pkg/core"
@@ -136,15 +134,17 @@ func Run(ctx context.Context, options Options) (err error) {
 			err = errors.Join(err, a.conv.Close())
 		}
 	}()
-	state, err := term.MakeRaw(int(in.Fd()))
+	restore, err := setupTerminal(in, out)
 	if err != nil {
 		return err
 	}
+	enableKeys, restoreKeys := keyboardMode()
 	defer func() {
-		err = errors.Join(err, a.view.finish(), a.title.close(out), term.Restore(int(in.Fd()), state))
+		err = errors.Join(err, a.view.finish(restoreKeys), a.title.close(out), restore())
 	}()
 	a.title.screen = os.Getenv("STY") != ""
 	a.view.setCursorVisible(false)
+	a.view.buf.WriteString(enableKeys)
 	a.view.buf.WriteString("\x1b[?2004h")
 	if !options.PickSession && options.Resume == "" && a.host.Models == nil && a.host.Config.NeedsSetup() {
 		a.setup = newSetupForm(a.host.Config)
@@ -154,10 +154,17 @@ func Run(ctx context.Context, options Options) (err error) {
 
 	keys := make(chan key, 256)
 	inputErr := make(chan error, 1)
-	go readInput(ctx, in, keys, inputErr)
-	resizes := make(chan os.Signal, 1)
-	signal.Notify(resizes, syscall.SIGWINCH)
-	defer signal.Stop(resizes)
+	inputDone := make(chan struct{})
+	go func() {
+		defer close(inputDone)
+		readInput(ctx, in, keys, inputErr)
+	}()
+	defer func() {
+		cancel()
+		<-inputDone
+	}()
+	resizes, stopResizes := resizeEvents(ctx, out)
+	defer stopResizes()
 	ticks := time.NewTicker(time.Second / 45)
 	defer ticks.Stop()
 	if err := a.draw(); err != nil {

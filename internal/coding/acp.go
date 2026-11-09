@@ -8,7 +8,6 @@ import (
 	"errors"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -17,7 +16,6 @@ import (
 	"clara-code/pkg/core/prompt"
 	"clara-code/pkg/tool/mcp"
 	acpsdk "github.com/coder/acp-go-sdk"
-	"golang.org/x/sys/unix"
 
 	"clara-code/internal/session"
 )
@@ -201,25 +199,4 @@ func acpServers(servers []acpsdk.McpServer, cwd string) ([]mcp.ServerConfig, err
 		}
 	}
 	return out, nil
-}
-
-// ExecACP runs inside the child process. Core forwards ACP child stderr to the
-// host stderr, so redirect it here before replacing the child with the server.
-func ExecACP(args []string) error {
-	if len(args) == 0 {
-		return errors.New("external ACP command is missing")
-	}
-	null, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
-	if err != nil {
-		return err
-	}
-	defer null.Close()
-	if err := unix.Dup2(int(null.Fd()), int(os.Stderr.Fd())); err != nil {
-		return err
-	}
-	path, err := exec.LookPath(args[0])
-	if err != nil {
-		return err
-	}
-	return unix.Exec(path, args, os.Environ())
 }

@@ -8,9 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
-	"runtime"
 	"strings"
 	"time"
 )
@@ -43,7 +41,7 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 func Read(ctx context.Context) (Content, error) {
 	ctx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
-	return ReadWith(ctx, runtime.GOOS, os.Getenv("WAYLAND_DISPLAY") != "", command)
+	return readPlatform(ctx)
 }
 func ReadWith(ctx context.Context, platform string, wayland bool, run Runner) (Content, error) {
 	switch platform {
@@ -87,7 +85,7 @@ func ReadWith(ctx context.Context, platform string, wayland bool, run Runner) (C
 		}
 		return Content{}, fmt.Errorf("clipboard unavailable; install %s for your display or use /attach PATH", name)
 	default:
-		return Content{}, errors.New("clipboard images are supported on macOS and Linux; use /attach PATH")
+		return Content{}, errors.New("system clipboard is unavailable; use /attach PATH")
 	}
 }
 
