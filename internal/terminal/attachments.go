@@ -193,6 +193,9 @@ func (a *app) replayAttachments(items []session.Attachment) {
 	}
 }
 func (a *app) keyContext() string {
+	if a.setup != nil && a.setup.step == setupProtocol {
+		return "picker"
+	}
 	if a.question != nil {
 		return "question"
 	}

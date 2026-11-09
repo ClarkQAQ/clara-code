@@ -22,11 +22,8 @@ func (c Config) validate() error {
 		if strings.ContainsAny(p.APIKey, "\r\n") {
 			return c.invalid(path+".api_key", "must not contain line breaks")
 		}
-		if p.BaseURL != "" {
-			u, err := url.Parse(p.BaseURL)
-			if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil {
-				return c.invalid(path+".base_url", "must be an HTTP(S) URL without credentials")
-			}
+		if p.BaseURL != "" && !ValidBaseURL(p.BaseURL) {
+			return c.invalid(path+".base_url", "must be an HTTP(S) URL without credentials")
 		}
 		if p.WireAPI != "" && p.WireAPI != "responses" && p.WireAPI != "completions" {
 			return c.invalid(path+".wire_api", "must be responses or completions")
@@ -120,4 +117,9 @@ func (c Config) validate() error {
 		return c.invalid("images", "invalid attachment count, dimensions or byte limit")
 	}
 	return nil
+}
+
+func ValidBaseURL(value string) bool {
+	u, err := url.Parse(value)
+	return err == nil && u.Hostname() != "" && (u.Scheme == "http" || u.Scheme == "https") && u.User == nil
 }

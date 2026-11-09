@@ -50,6 +50,7 @@ type app struct {
 	stopOp               context.CancelFunc
 	opLabel              string
 	picker               *picker
+	setup                *setupForm
 	question             *questionForm
 	backgroundEvents     <-chan struct{}
 	stopTerminalResults  chan error
@@ -140,20 +141,10 @@ func Run(ctx context.Context, options Options) (err error) {
 	a.title.screen = os.Getenv("STY") != ""
 	a.view.setCursorVisible(false)
 	a.view.buf.WriteString("\x1b[?2004h")
-	if options.PickSession {
-		a.openResume(true)
-	} else {
-		label := ""
-		if options.Resume != "" {
-			label = "Resumed conversation"
-		}
-		result := a.open(ctx, options.Resume, false, -1, "", label)
-		if result.err != nil {
-			return result.err
-		}
-		if err := a.install(result); err != nil {
-			return err
-		}
+	if !options.PickSession && options.Resume == "" && a.host.Models == nil && a.host.Config.NeedsSetup() {
+		a.setup = newSetupForm(a.host.Config)
+	} else if err := a.startup(); err != nil {
+		return err
 	}
 
 	keys := make(chan key, 256)
@@ -183,7 +174,16 @@ func Run(ctx context.Context, options Options) (err error) {
 					return nil
 				}
 			}
-			if a.handle(input) {
+			if a.setup != nil {
+				if a.handleSetup(input) {
+					return nil
+				}
+				if a.setup == nil {
+					if err := a.startup(); err != nil {
+						return err
+					}
+				}
+			} else if a.handle(input) {
 				return nil
 			}
 			a.dirty = true
@@ -260,6 +260,22 @@ func Run(ctx context.Context, options Options) (err error) {
 			}
 		}
 	}
+}
+
+func (a *app) startup() error {
+	if a.options.PickSession {
+		a.openResume(true)
+		return nil
+	}
+	label := ""
+	if a.options.Resume != "" {
+		label = "Resumed conversation"
+	}
+	result := a.open(a.ctx, a.options.Resume, false, -1, "", label)
+	if result.err != nil {
+		return result.err
+	}
+	return a.install(result)
 }
 
 func (a *app) resize() error {
@@ -727,6 +743,9 @@ func (a *app) draw() error {
 
 func (a *app) pane() layout {
 	p := &a.view
+	if a.setup != nil {
+		return a.setup.layout(p, a.hints)
+	}
 	if a.picker != nil {
 		if a.picker.kind == "skills" || a.picker.kind == "skill-toggle" {
 			return a.skillPickerLayout()
@@ -747,13 +766,14 @@ func (a *app) pane() layout {
 	matches := a.menuMatches()
 	skillsVisible := a.skillMatches()
 	chrome := min(3, max(0, height-1))
-	input := p.inputLayout(a.editor, "Run /review on my current changes", min(7, max(1, height-chrome)))
+	borderRows := min(2, height-1)
+	input := p.inputBox(a.editor, "Run /review on my current changes", min(7, max(1, height-chrome)), borderRows)
 	var footer []string
 	if len(matches) > 0 {
-		menuHeight := max(0, height-min(2, chrome)-len(input.rows))
+		menuHeight := max(0, height-len(input.rows))
 		footer = a.commandRows(menuHeight)
 	} else if skillsVisible {
-		footer = a.skillRows(max(0, height-min(2, chrome)-len(input.rows)))
+		footer = a.skillRows(max(0, height-len(input.rows)))
 	} else if height > 3 {
 		footer = []string{a.statusLine()}
 	}
@@ -770,18 +790,11 @@ func (a *app) pane() layout {
 	if summary := a.backgroundSummary(); summary != "" && !hasActivity {
 		lines = append(lines, p.style(dim, truncate("  "+summary, p.width)), "")
 	}
-	borderRows := min(2, max(0, height-1))
-	if maxRows := max(0, height-borderRows-len(input.rows)-len(footer)); len(lines) > maxRows {
+	if maxRows := max(0, height-len(input.rows)-len(footer)); len(lines) > maxRows {
 		lines = lines[len(lines)-maxRows:]
-	}
-	if height > 1 {
-		lines = append(lines, p.style(dim, strings.Repeat("─", p.width)))
 	}
 	view := layout{rows: lines}
 	view.append(input)
-	if height > 2 {
-		view.rows = append(view.rows, p.style(dim, strings.Repeat("─", p.width)))
-	}
 	view.rows = append(view.rows, footer...)
 	return view
 }

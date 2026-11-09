@@ -148,6 +148,7 @@ type Config struct {
 	Sources                   []string              `toml:"-"`
 	Origins                   map[string]string     `toml:"-"`
 	Models                    map[string]Model      `toml:"-"`
+	hasConfigFile             bool
 	// Connection fields are resolved internal values, never accepted as TOML keys.
 	Endpoint string      `toml:"-"`
 	Protocol string      `toml:"-"`

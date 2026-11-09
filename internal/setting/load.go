@@ -33,6 +33,10 @@ func LoadWith(ctx context.Context, o LoadOptions) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	return loadWith(ctx, o, home, nil)
+}
+
+func loadWith(ctx context.Context, o LoadOptions, home string, initial map[string]any) (Config, error) {
 	merged := map[string]any{"auto_compact_context_percent": int64(90)}
 	origins := map[string]string{}
 	var sources []string
@@ -42,6 +46,9 @@ func LoadWith(ctx context.Context, o LoadOptions) (Config, error) {
 		sources = append(sources, source)
 	}
 	paths := []string{filepath.Join(home, "config.toml")}
+	if initial != nil {
+		apply(initial, paths[0])
+	}
 	cwd, err := canonical(o.Cwd)
 	if err != nil {
 		return Config{}, err
@@ -65,6 +72,7 @@ func LoadWith(ctx context.Context, o LoadOptions) (Config, error) {
 	for _, dir := range dirs {
 		paths = append(paths, filepath.Join(dir, ".agents", "clara-code.toml"))
 	}
+	hasConfigFile := false
 	for _, path := range paths {
 		if err := ctx.Err(); err != nil {
 			return Config{}, err
@@ -76,6 +84,11 @@ func LoadWith(ctx context.Context, o LoadOptions) (Config, error) {
 		if err != nil {
 			return Config{}, fmt.Errorf("configuration %s: cannot open file", path)
 		}
+		if initial != nil {
+			_ = file.Close()
+			return Config{}, configAlreadyExists(path)
+		}
+		hasConfigFile = true
 		body, err := io.ReadAll(io.LimitReader(file, (1<<20)+1))
 		closeErr := file.Close()
 		if err != nil || closeErr != nil || len(body) > 1<<20 {
@@ -178,6 +191,7 @@ func LoadWith(ctx context.Context, o LoadOptions) (Config, error) {
 		return Config{}, errors.New("configuration contains an invalid field or type")
 	}
 	c.Home = home
+	c.hasConfigFile = hasConfigFile || initial != nil
 	c.Sources = sources
 	c.Origins = origins
 	c.Options = o

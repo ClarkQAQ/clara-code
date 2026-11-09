@@ -51,6 +51,18 @@ func (p *painter) inputLayout(e editor, placeholder string, limit int) layout {
 	return p.inputLayoutWithPrefix(e, placeholder, limit, inputPrefix(p.width))
 }
 
+func (p *painter) inputBox(e editor, placeholder string, limit, borders int) layout {
+	view := p.inputLayout(e, placeholder, limit)
+	border := p.style(dim, strings.Repeat("─", p.width))
+	if borders > 0 {
+		view = view.prepend([]string{border})
+	}
+	if borders > 1 {
+		view.rows = append(view.rows, border)
+	}
+	return view
+}
+
 func (p *painter) inputLayoutWithPrefix(e editor, placeholder string, limit int, prefix string) layout {
 	width := max(1, p.width-widthOf(prefix))
 	if e.text == "" {

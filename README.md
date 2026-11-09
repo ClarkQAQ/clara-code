@@ -62,6 +62,8 @@ export CLARA_CODE_API_KEY='your-key'
 
 On Linux, the data directory defaults to `~/.local/share/clara-code`, or `clara-code` under `XDG_DATA_HOME` when set. On macOS, it is `~/Library/Application Support/clara-code`. `CLARA_CODE_HOME` overrides the directory on either platform.
 
+On a regular interactive launch with no configuration files and no complete model configuration from environment variables or flags, Clara Code guides you through setting up a provider and a default model. Enter the provider's base URL and API protocol, the model ID, and optionally the API key and model token limits. The key is masked as you type. Use Shift+Tab to go back or Esc to cancel. The last step saves a private `config.toml` in the data directory and opens the normal composer. No connection is made until you send a message. Demo, resume, and ACP launches skip the guide.
+
 Use [config.example.toml](config.example.toml) for the complete supported schema. The old top-level `endpoint`, `protocol`, `api_key_*`, and `[models]` format is no longer accepted. There are no profiles. Existing saved sessions are not deleted by this configuration change.
 
 Configuration precedence, from lowest to highest:
