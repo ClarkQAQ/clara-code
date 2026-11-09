@@ -45,25 +45,10 @@ func splitPlan(text string, streaming bool) ([]Cell, int) {
 	}
 	normal, start, body, end := 0, -1, 0, 0
 	blocks := 0
-	fence := ""
 	for line := range strings.SplitAfterSeq(text, "\n") {
 		at := end
 		end += len(line)
 		tag := strings.TrimSpace(line)
-		indented := strings.HasPrefix(line, "    ") || strings.HasPrefix(line, "\t")
-		if indented {
-			continue
-		}
-		if fence != "" {
-			if strings.HasPrefix(tag, fence) && strings.Trim(tag, fence[:1]) == "" {
-				fence = ""
-			}
-			continue
-		}
-		if strings.HasPrefix(tag, "```") || strings.HasPrefix(tag, "~~~") {
-			fence = tag[:len(tag)-len(strings.TrimLeft(tag, tag[:1]))]
-			continue
-		}
 		expected := open
 		if start >= 0 {
 			expected = close

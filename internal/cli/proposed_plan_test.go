@@ -52,7 +52,7 @@ func TestPlanImplementationPTY(t *testing.T) {
 					send("<proposed_plan>\n# Revised plan\n\n- Run verification.\n</proposed_plan>")
 				default:
 					send("Planning preface.\n\n<proposed_")
-					send("plan>\n# Example plan\n\n- Verify `go test`.\n</proposed_")
+					send("plan>\n# Example plan\n\n```markdown\n# Target\n\n```sh\ngo test ./...\n```\n\n```sh\ngo vet ./...\n```\n```\n\n- Verify `go test`.\n</proposed_")
 					select {
 					case <-finishFirst:
 					case <-r.Context().Done():
@@ -100,7 +100,9 @@ func TestPlanImplementationPTY(t *testing.T) {
 			p.await(t, 0, "Keep my draft")
 			close(finishFirst)
 			p.await(t, 0, "Implement this plan?")
+			p.await(t, 0, "1. Yes, implement this plan")
 			p.await(t, 0, "2. Yes, clear context and implement")
+			p.await(t, 0, "3. No, stay in Plan mode")
 			mark := len(p.output())
 			p.send(t, "\x1b")
 			p.await(t, mark, "Keep my draft")
