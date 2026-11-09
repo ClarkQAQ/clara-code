@@ -52,7 +52,10 @@ jobs:
 
       - name: Publish packages and update Homebrew Tap
         env:
-          FORGEJO_USER: clark
-          HOMEBREW_TAP: homebrew-clara-code
+          FORGEJO_URL: ${{ vars.PUBLISH_URL }}
+          FORGEJO_OWNER: ${{ vars.PUBLISH_OWNER }}
+          FORGEJO_REPO: clara-code
+          FORGEJO_USER: ${{ vars.PUBLISH_USER }}
+          HOMEBREW_TAP: ${{ vars.HOMEBREW_TAP }}
           PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
         run: bash .forgejo/scripts/publish-packages.sh

@@ -43,7 +43,7 @@ tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owne
 tar -tzf "$package_dir/clara-code-darwin-arm64.tar.gz"
 rm -r "$context/homebrew"
 
-cp packaging/arch/Dockerfile packaging/arch/PKGBUILD "$context/"
+cp .forgejo/packaging/arch/{Dockerfile,PKGBUILD} "$context/"
 docker build --platform linux/amd64 --tag "$image" \
   --build-arg "VERSION=$VERSION" \
   --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" "$context"

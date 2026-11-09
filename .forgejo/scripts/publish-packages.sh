@@ -1,22 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${RUNNER_TEMP:?}" "${VERSION:?}" "${GITHUB_SERVER_URL:?}" "${GITHUB_REPOSITORY:?}"
-: "${FORGEJO_USER:?}" "${HOMEBREW_TAP:?}" "${PUBLISH_TOKEN:?Configure the Forgejo Actions secret}"
-owner="${GITHUB_REPOSITORY%%/*}"
-registry="$GITHUB_SERVER_URL/api/packages/$owner"
+: "${RUNNER_TEMP:?}" "${VERSION:?}" "${FORGEJO_URL:?}"
+: "${FORGEJO_OWNER:?}" "${FORGEJO_REPO:?}" "${FORGEJO_USER:?}"
+: "${HOMEBREW_TAP:?}" "${PUBLISH_TOKEN:?Configure the Forgejo Actions secret}"
+registry="$FORGEJO_URL/api/packages/$FORGEJO_OWNER"
 archive_url="$registry/generic/clara-code/$VERSION/clara-code-darwin-arm64.tar.gz"
-tap_url="$GITHUB_SERVER_URL/api/v1/repos/$owner/$HOMEBREW_TAP/contents/Formula/clara-code.rb"
+tap_repo_url="$FORGEJO_URL/api/v1/repos/$FORGEJO_OWNER/$HOMEBREW_TAP"
+tap_url="$tap_repo_url/contents/Formula/clara-code.rb"
 auth="Authorization: token $PUBLISH_TOKEN"
 package_dir="$RUNNER_TEMP/clara-code-packages"
 work="$(mktemp -d "$RUNNER_TEMP/clara-code-publish.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 
-login="$(curl -fsS -H "$auth" "$GITHUB_SERVER_URL/api/v1/user" | jq -er '.login')"
+login="$(curl -fsS -H "$auth" "$FORGEJO_URL/api/v1/user" | jq -er '.login')"
 if [[ "$login" != "$FORGEJO_USER" ]]; then
   echo "PUBLISH_TOKEN belongs to $login, expected $FORGEJO_USER" >&2
   exit 1
 fi
+tap_branch="$(curl -fsS -H "$auth" "$tap_repo_url" | jq -er '.default_branch')"
 
 upload() {
   local url="$1" file="$2" status
@@ -41,8 +43,8 @@ sed \
   -e "s|@ARCHIVE_URL@|$archive_url|g" \
   -e "s|@VERSION@|$VERSION|g" \
   -e "s|@SHA256@|${checksum%% *}|g" \
-  -e "s|@HOMEPAGE@|$GITHUB_SERVER_URL/$GITHUB_REPOSITORY|g" \
-  packaging/homebrew/clara-code.rb.template > "$work/formula.rb"
+  -e "s|@HOMEPAGE@|$FORGEJO_URL/$FORGEJO_OWNER/$FORGEJO_REPO|g" \
+  .forgejo/packaging/homebrew/clara-code.rb.template > "$work/formula.rb"
 docker run --rm -i ruby:3.4-alpine ruby -c < "$work/formula.rb"
 
 for arch in x86_64 aarch64; do
@@ -73,8 +75,10 @@ case "$status" in
 esac
 
 content="$(base64 < "$work/formula.rb" | tr -d '\n')"
-payload="$(jq -n --arg content "$content" --arg message "clara-code $VERSION" --arg sha "$sha" \
-  '{content: $content, message: $message} + (if $sha == "" then {} else {sha: $sha} end)')"
+payload="$(jq -n --arg content "$content" --arg message "clara-code $VERSION" \
+  --arg branch "$tap_branch" --arg sha "$sha" \
+  '{content: $content, message: $message, branch: $branch} +
+   (if $sha == "" then {} else {sha: $sha} end)')"
 curl -fsS -X "$method" -H "$auth" -H 'Content-Type: application/json' \
   -d "$payload" "$tap_url" -o /dev/null
-echo "Updated $owner/$HOMEBREW_TAP to Clara Code $VERSION"
+echo "Updated $FORGEJO_OWNER/$HOMEBREW_TAP to Clara Code $VERSION"
