@@ -11,7 +11,7 @@ import (
 	"slices"
 	"time"
 
-	"golang.org/x/sys/unix"
+	"clara-code/internal/filelock"
 )
 
 var errInputHistoryMalformed = errors.New("history.jsonl contains malformed records; valid entries were retained")
@@ -29,7 +29,7 @@ type InputHistoryEntry struct {
 }
 
 func ReadInputHistory(home string) ([]InputHistoryEntry, error) {
-	file, err := os.OpenFile(filepath.Join(home, "history.jsonl"), os.O_RDONLY|unix.O_NONBLOCK, 0)
+	file, err := openInputHistory(filepath.Join(home, "history.jsonl"))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
@@ -96,28 +96,11 @@ func AppendInputHistory(ctx context.Context, home string, entry InputHistoryEntr
 	if err := os.MkdirAll(home, 0700); err != nil {
 		return err
 	}
-	lock, err := os.OpenFile(filepath.Join(home, "history.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	lock, err := filelock.Acquire(ctx, filepath.Join(home, "history.lock"))
 	if err != nil {
 		return err
 	}
 	defer lock.Close()
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		err := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB)
-		if err == nil {
-			break
-		}
-		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
-			return err
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
 	entries, readErr := ReadInputHistory(home)
 	// Recover malformed lines, but never replace a history file that cannot be read.
 	if readErr != nil && !errors.Is(readErr, errInputHistoryMalformed) {

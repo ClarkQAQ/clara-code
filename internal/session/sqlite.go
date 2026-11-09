@@ -13,10 +13,10 @@ import (
 	"path/filepath"
 	"time"
 
+	"clara-code/internal/filelock"
 	"clara-code/internal/session/internal/sessiondb"
 	"clara-code/pkg/util/errs"
 	"github.com/pressly/goose/v3"
-	"golang.org/x/sys/unix"
 	_ "modernc.org/sqlite"
 )
 
@@ -77,7 +77,7 @@ func openDatabase(ctx context.Context, home string, create bool) (*sql.DB, error
 		"_pragma": {"busy_timeout(5000)", "foreign_keys(ON)", "synchronous(FULL)"},
 		"_txlock": {"immediate"},
 	}
-	uri := url.URL{Scheme: "file", Path: path, RawQuery: params.Encode()}
+	uri := databaseURI(path, params)
 	db, err := sql.Open("sqlite", uri.String())
 	if err != nil {
 		return nil, err
@@ -90,28 +90,13 @@ func openDatabase(ctx context.Context, home string, create bool) (*sql.DB, error
 }
 
 func lockMigrations(ctx context.Context, path string) (*os.File, error) {
-	lock, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, err
-	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	retry := time.NewTicker(20 * time.Millisecond)
-	defer retry.Stop()
-	for {
-		err := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB)
-		if err == nil {
-			return lock, nil
-		}
-		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EINTR) {
-			return nil, errors.Join(err, lock.Close())
-		}
-		select {
-		case <-ctx.Done():
-			return nil, errors.Join(fmt.Errorf("lock session migrations: %w", ctx.Err()), lock.Close())
-		case <-retry.C:
-		}
+	lock, err := filelock.Acquire(ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("lock session migrations: %w", err)
 	}
+	return lock, nil
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {

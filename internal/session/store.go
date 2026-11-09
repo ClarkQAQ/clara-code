@@ -15,12 +15,12 @@ import (
 	"sync"
 	"time"
 
+	"clara-code/internal/filelock"
 	"clara-code/internal/session/internal/sessiondb"
 	"clara-code/pkg/core"
 	modelapi "clara-code/pkg/model"
 	"clara-code/pkg/util/errs"
 	"clara-code/pkg/util/id"
-	"golang.org/x/sys/unix"
 )
 
 const maxCheckpoint = core.MaxStateBytes + 12<<20
@@ -181,15 +181,11 @@ func (s *Store) acquire(sessionID string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	lock, err := os.OpenFile(filepath.Join(dir, sessionID+".lock"), os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return err
+	lock, err := filelock.Try(filepath.Join(dir, sessionID+".lock"))
+	if errors.Is(err, filelock.ErrBusy) {
+		return fmt.Errorf("session %s is open in another process", sessionID)
 	}
-	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		lock.Close()
-		if errors.Is(err, unix.EWOULDBLOCK) {
-			return fmt.Errorf("session %s is open in another process", sessionID)
-		}
+	if err != nil {
 		return err
 	}
 	s.lock = lock

@@ -8,9 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"time"
 
-	"golang.org/x/sys/unix"
+	"clara-code/internal/filelock"
 )
 
 type skillPreferences struct {
@@ -59,28 +58,11 @@ func (c *Conversation) SetSkillEnabled(ctx context.Context, source string, enabl
 	if err := os.MkdirAll(home, 0700); err != nil {
 		return err
 	}
-	lock, err := os.OpenFile(filepath.Join(home, "skills-state.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	lock, err := filelock.Acquire(ctx, filepath.Join(home, "skills-state.lock"))
 	if err != nil {
 		return err
 	}
 	defer lock.Close()
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		err := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB)
-		if err == nil {
-			break
-		}
-		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
-			return err
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
 	state, err := readSkillPreferences(home)
 	if err != nil {
 		return err

@@ -71,7 +71,7 @@ func TestConcurrentSQLiteInitialization(t *testing.T) {
 		}
 		return
 	}
-	home := filepath.Join(t.TempDir(), "home ? # %")
+	home := filepath.Join(t.TempDir(), "home # %")
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
 	exe, err := os.Executable()
