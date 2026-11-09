@@ -25,13 +25,9 @@ func InstructionsFrom(ctx context.Context, storage Reader, root, target Path) (s
 	if root != "/" && target != root && !strings.HasPrefix(target.String(), strings.TrimRight(root.String(), "/")+"/") {
 		return "", errs.ErrForbidden
 	}
-	scoped := At(storage, "/")
-	dir := target.Dir()
-	if target == root {
-		dir = root
-	}
+	dir := ruleParent(root, target)
 	if target != root {
-		entry, err := scoped.Stat(ctx, target)
+		entry, err := storage.Stat(ctx, target)
 		if err != nil && !errs.IsCode(err, errs.CodeNotFound) {
 			return "", err
 		}
@@ -44,18 +40,15 @@ func InstructionsFrom(ctx context.Context, storage Reader, root, target Path) (s
 		if len(dirs) >= 64 {
 			return "", errs.New(errs.CodeLimit, "project path is too deep")
 		}
-		dir = dir.Dir()
+		dir = ruleParent(root, dir)
 		dirs = append(dirs, dir)
 	}
 	remaining := 32 << 10
 	var text strings.Builder
 	for i := len(dirs) - 1; i >= 0; i-- {
 		for _, name := range []string{"AGENTS.override.md", "AGENTS.md"} {
-			path, err := Join(dirs[i], name)
-			if err != nil {
-				return "", err
-			}
-			data, err := scoped.ReadFile(ctx, path, int64(remaining+1))
+			path := Path(strings.TrimSuffix(dirs[i].String(), "/") + "/" + name)
+			data, err := readStorageFile(ctx, storage, path, int64(remaining+1))
 			if errs.IsCode(err, errs.CodeNotFound) {
 				continue
 			}
@@ -73,4 +66,19 @@ func InstructionsFrom(ctx context.Context, storage Reader, root, target Path) (s
 		}
 	}
 	return strings.TrimSpace(text.String()), nil
+}
+
+// ruleParent preserves a native volume or share prefix while walking canonical paths.
+func ruleParent(root, target Path) Path {
+	if target == root {
+		return root
+	}
+	parent := target.String()
+	if at := strings.LastIndexByte(parent, '/'); at >= 0 {
+		parent = parent[:at]
+	}
+	if parent == strings.TrimSuffix(root.String(), "/") {
+		return root
+	}
+	return Path(parent)
 }

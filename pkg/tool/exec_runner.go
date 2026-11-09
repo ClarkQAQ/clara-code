@@ -6,8 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
-	"runtime"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -63,6 +62,16 @@ type Local struct{}
 // NewLocal creates a local runner.
 func NewLocal() *Local { return &Local{} }
 
+// LocalShellName reports the shell selected by the local runner, or an empty name
+// when no supported shell is available.
+func LocalShellName() string {
+	shell, err := resolveLocalShell()
+	if err != nil {
+		return ""
+	}
+	return filepath.Base(shell)
+}
+
 func (l *Local) Start(ctx context.Context, spec Spec) (Process, error) {
 	if strings.TrimSpace(spec.Command) == "" {
 		return nil, errs.New(errs.CodeInvalidArgument, "command is empty")
@@ -79,31 +88,21 @@ func (l *Local) Start(ctx context.Context, spec Spec) (Process, error) {
 		cancel()
 		runCtx, cancel = context.WithTimeout(ctx, timeout)
 	}
-	// The watcher below cancels the process group, including terminal children.
-	var command *exec.Cmd
-	if runtime.GOOS == "windows" {
-		command = exec.CommandContext(context.WithoutCancel(runCtx), "cmd", "/C", spec.Command)
-	} else {
-		shell := os.Getenv("SHELL")
-		if shell == "" {
-			shell = "/bin/sh"
-		}
-		command = exec.CommandContext(context.WithoutCancel(runCtx), shell, "-lc", spec.Command)
-	}
-	command.Dir = spec.Workdir
-	command.Env = environment(spec.Env)
-	command.WaitDelay = 2 * time.Second
-	output := newCapture(spec.MaxOutput)
-	stdin, drain, err := startProcess(command, spec.TTY, output)
+	shell, err := resolveLocalShell()
 	if err != nil {
 		cancel()
 		return nil, err
 	}
-	process := &localProcess{command: command, stdin: stdin, output: output, done: make(chan struct{}), started: time.Now(), cancel: cancel}
+	output := newCapture(spec.MaxOutput)
+	stdin, wait, kill, err := startLocalProcess(context.WithoutCancel(runCtx), shell, spec, output)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	process := &localProcess{kill: kill, stdin: stdin, output: output, done: make(chan struct{}), started: time.Now(), cancel: cancel}
 	go func() {
-		err := command.Wait()
-		drain()
-		process.finish(err)
+		code, err := wait()
+		process.finish(code, err)
 		close(process.done)
 		cancel()
 	}()
@@ -189,7 +188,7 @@ type localProcess struct {
 	writeMu  sync.Mutex
 	killMu   sync.Mutex
 	killSent bool
-	command  *exec.Cmd
+	kill     func() error
 	stdin    interface {
 		Write([]byte) (int, error)
 		Close() error
@@ -214,17 +213,13 @@ func (p *localProcess) markTimedOut() {
 	p.mu.Unlock()
 }
 
-func (p *localProcess) finish(err error) {
+func (p *localProcess) finish(code int, err error) {
 	p.mu.Lock()
 	if !p.finished {
 		p.finished = true
 		p.finishedAt = time.Now()
 		p.waitErr = err
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			p.exitCode = exit.ExitCode()
-			p.waitErr = nil
-		}
+		p.exitCode = code
 	}
 	p.mu.Unlock()
 }
@@ -264,10 +259,10 @@ func (p *localProcess) Kill(context.Context) error {
 	p.mu.Lock()
 	finished := p.finished
 	p.mu.Unlock()
-	if finished || p.killSent || p.command.Process == nil {
+	if finished || p.killSent {
 		return nil
 	}
-	err := killProcess(p.command.Process)
+	err := p.kill()
 	if err == nil {
 		p.killSent = true
 	}
@@ -311,22 +306,6 @@ func awaitProcessExit(done <-chan struct{}) error {
 	case <-timer.C:
 		return errs.New(errs.CodeInternal, "command did not exit after cancellation")
 	}
-}
-
-func startProcess(command *exec.Cmd, tty bool, output io.Writer) (io.WriteCloser, func(), error) {
-	if tty {
-		return startTerminal(command, output)
-	}
-	configureProcess(command)
-	stdin, err := command.StdinPipe()
-	if err != nil {
-		return nil, nil, err
-	}
-	command.Stdout, command.Stderr = output, output
-	if err := command.Start(); err != nil {
-		return nil, nil, errors.Join(err, stdin.Close())
-	}
-	return stdin, func() {}, nil
 }
 
 // Commands exposes exec and write_stdin over one Runner.

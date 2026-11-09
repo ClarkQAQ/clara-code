@@ -73,6 +73,7 @@ func TestNativePathsAndSymlinkOperations(t *testing.T) {
 		t.Fatalf("missing path %v", err)
 	}
 	t.Setenv("HOME", outside)
+	t.Setenv("USERPROFILE", outside)
 	if p := absolute("~/new.txt"); p != corefs.Path(filepath.ToSlash(filepath.Join(outside, "new.txt"))) {
 		t.Fatal(p)
 	}

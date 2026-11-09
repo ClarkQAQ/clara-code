@@ -40,21 +40,11 @@ func (f *FS) ResolvePath(value string) (corefs.Path, error) {
 	if strings.IndexByte(value, 0) >= 0 {
 		return "", errs.New(errs.CodeInvalidArgument, "invalid path")
 	}
-	if value == "~" || strings.HasPrefix(value, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		if value == "~" {
-			value = home
-		} else {
-			value = filepath.Join(home, strings.TrimPrefix(value, "~/"))
-		}
+	native, err := resolveNative(f.cwd, value)
+	if err != nil {
+		return "", err
 	}
-	if !filepath.IsAbs(value) {
-		value = filepath.Join(f.cwd, value)
-	}
-	return corefs.Path(filepath.ToSlash(filepath.Clean(value))), nil
+	return corefs.Path(filepath.ToSlash(native)), nil
 }
 
 func (f *FS) native(ctx context.Context, p corefs.Path) (string, error) {
@@ -100,7 +90,7 @@ func (f *FS) Stat(ctx context.Context, p corefs.Path) (corefs.Entry, error) {
 	if err != nil {
 		return corefs.Entry{}, mapError(err)
 	}
-	return corefs.Entry{Path: corefs.Path(filepath.ToSlash(value)), Name: info.Name(), Size: info.Size(), Mode: info.Mode(), ModTime: info.ModTime(), IsDir: info.IsDir(), IsLink: info.Mode()&os.ModeSymlink != 0}, nil
+	return corefs.Entry{Path: corefs.Path(filepath.ToSlash(value)), Name: info.Name(), Size: info.Size(), Mode: info.Mode(), ModTime: info.ModTime(), IsDir: info.IsDir(), IsLink: isLink(info)}, nil
 }
 
 func (f *FS) ReadDir(ctx context.Context, p corefs.Path) ([]corefs.Entry, error) {
@@ -186,7 +176,7 @@ func (f *FS) WriteFile(ctx context.Context, p corefs.Path, data []byte, options 
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return corefs.Entry{}, mapError(err)
 		}
-		if err == nil && info.Mode()&os.ModeSymlink != 0 {
+		if err == nil && isLink(info) {
 			target, err := filepath.EvalSymlinks(value)
 			if err != nil {
 				return corefs.Entry{}, mapError(err)
@@ -246,7 +236,7 @@ func (f *FS) Remove(ctx context.Context, p corefs.Path, options corefs.RemoveOpt
 	if err != nil {
 		return err
 	}
-	if err := corefs.EnsureNotRoot(corefs.Path(filepath.ToSlash(value))); err != nil {
+	if err := ensureNotVolumeRoot(value); err != nil {
 		return err
 	}
 	if options.Recursive {
@@ -265,7 +255,7 @@ func (f *FS) Rename(ctx context.Context, from, to corefs.Path) error {
 		return err
 	}
 	for _, value := range []string{source, target} {
-		if err := corefs.EnsureNotRoot(corefs.Path(filepath.ToSlash(value))); err != nil {
+		if err := ensureNotVolumeRoot(value); err != nil {
 			return err
 		}
 	}
@@ -273,6 +263,13 @@ func (f *FS) Rename(ctx context.Context, from, to corefs.Path) error {
 		return mapError(err)
 	}
 	return mapError(os.Rename(source, target))
+}
+
+func ensureNotVolumeRoot(value string) error {
+	if filepath.Dir(value) == value || strings.TrimRight(value, string(filepath.Separator)) == filepath.VolumeName(value) {
+		return errs.New(errs.CodeForbidden, "the filesystem root cannot be removed or renamed")
+	}
+	return nil
 }
 
 func mapError(err error) error {

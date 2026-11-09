@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"unicode"
 
@@ -42,7 +43,7 @@ func ImagePaths(text string, cwd ...string) ([]string, bool, error) {
 			escaped = false
 			continue
 		}
-		if r == '\\' && quote != '\'' {
+		if r == '\\' && quote != '\'' && runtime.GOOS != "windows" {
 			escaped = true
 			continue
 		}
@@ -100,12 +101,20 @@ func imagePath(raw string) (string, error) {
 	path := strings.Trim(raw, "\"'")
 	if strings.HasPrefix(path, "file://") {
 		u, err := url.Parse(path)
-		if err != nil || u.Host != "" && u.Host != "localhost" {
-			return "", errors.New("only local file:// image paths are supported")
+		if err != nil || u.Path == "" || u.User != nil || u.Port() != "" {
+			return "", errors.New("invalid file:// image path")
 		}
 		path = u.Path
+		if u.Host != "" && !strings.EqualFold(u.Host, "localhost") {
+			if runtime.GOOS != "windows" {
+				return "", errors.New("only local file:// image paths are supported")
+			}
+			path = "//" + u.Host + path
+		} else if runtime.GOOS == "windows" && len(path) >= 4 && path[0] == '/' && path[2] == ':' && path[3] == '/' {
+			path = path[1:]
+		}
 	}
-	if strings.HasPrefix(path, "~/") {
+	if strings.HasPrefix(path, "~/") || runtime.GOOS == "windows" && strings.HasPrefix(path, `~\`) {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", err

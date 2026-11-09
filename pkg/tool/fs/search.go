@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -45,6 +46,7 @@ type SearchResult struct {
 
 type filePattern struct {
 	parts              []string
+	volume             string
 	absolute, basename bool
 }
 
@@ -52,7 +54,12 @@ func compilePattern(pattern string) (filePattern, error) {
 	if pattern == "" || len(pattern) > 4096 || strings.IndexByte(pattern, 0) >= 0 {
 		return filePattern{}, errs.New(errs.CodeInvalidArgument, "glob pattern must contain 1 to 4096 bytes")
 	}
-	p := filePattern{absolute: strings.HasPrefix(pattern, "/"), basename: !strings.Contains(pattern, "/")}
+	volume := ""
+	if !strings.Contains(pattern, `\`) && filepath.IsAbs(pattern) {
+		volume = filepath.ToSlash(filepath.VolumeName(pattern))
+		pattern = strings.TrimPrefix(pattern, volume)
+	}
+	p := filePattern{volume: volume, absolute: strings.HasPrefix(pattern, "/"), basename: !strings.Contains(pattern, "/")}
 	p.parts = strings.Split(strings.TrimPrefix(pattern, "/"), "/")
 	if len(p.parts) > 64 {
 		return filePattern{}, errs.New(errs.CodeInvalidArgument, "glob pattern has more than 64 components")
@@ -69,7 +76,15 @@ func compilePattern(pattern string) (filePattern, error) {
 }
 
 func (p filePattern) matches(root Path, entry Entry) bool {
-	value := strings.TrimPrefix(entry.Path.String(), "/")
+	value := entry.Path.String()
+	if p.absolute {
+		volume := filepath.ToSlash(filepath.VolumeName(value))
+		if p.volume != "" && !strings.EqualFold(p.volume, volume) {
+			return false
+		}
+		value = strings.TrimPrefix(value, volume)
+	}
+	value = strings.TrimPrefix(value, "/")
 	if p.basename {
 		value = entry.Name
 	} else if !p.absolute && root != "/" {
@@ -102,10 +117,6 @@ func (p filePattern) matches(root Path, entry Entry) bool {
 
 func (s *Service) searchFiles(ctx context.Context, root Path, options WalkOptions) ([]Entry, SearchDiagnostics, error) {
 	var diagnostic SearchDiagnostics
-	root, err := Clean(root.String())
-	if err != nil {
-		return nil, diagnostic, err
-	}
 	entry, err := s.FS.Stat(ctx, root)
 	if err != nil {
 		return nil, diagnostic, err
@@ -170,7 +181,7 @@ func (s *Service) GlobDetailed(ctx context.Context, root Path, options GlobOptio
 	if err != nil {
 		return result, err
 	}
-	root, err = Clean(root.String())
+	root, err = ResolvePath(s.FS, root.String())
 	if err != nil {
 		return result, err
 	}
@@ -215,7 +226,7 @@ func (s *Service) GrepDetailed(ctx context.Context, root Path, options SearchOpt
 		}
 		patterns = append(patterns, pattern)
 	}
-	root, err := Clean(root.String())
+	root, err := ResolvePath(s.FS, root.String())
 	if err != nil {
 		return result, err
 	}

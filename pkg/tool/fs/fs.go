@@ -318,6 +318,11 @@ func (s *Service) Copy(ctx context.Context, source, destination Path) error {
 		_, err = s.Create(ctx, destination, data, entry.Mode.Perm())
 		return err
 	}
+	source = entry.Path
+	destination, err = ResolvePath(s.FS, destination.String())
+	if err != nil {
+		return err
+	}
 	walk, err := s.Walk(ctx, source, WalkOptions{})
 	if err != nil {
 		return err
@@ -333,9 +338,9 @@ func (s *Service) Copy(ctx context.Context, source, destination Path) error {
 	for _, item := range walk.Entries {
 		relative := strings.TrimPrefix(item.Path.String(), source.String())
 		relative = strings.TrimPrefix(relative, "/")
-		target, err := Join(destination, relative)
-		if err != nil {
-			return err
+		target := destination
+		if relative != "" {
+			target = Path(strings.TrimSuffix(destination.String(), "/") + "/" + relative)
 		}
 		if item.IsDir {
 			if err := s.FS.MkdirAll(ctx, target, item.Mode.Perm()); err != nil {

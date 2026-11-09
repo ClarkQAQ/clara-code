@@ -32,6 +32,9 @@ type Workspace struct {
 }
 
 func ResolveWorkspace(path string) (Workspace, error) {
+	if filepath.VolumeName(path) != "" && !filepath.IsAbs(path) {
+		return Workspace{}, fmt.Errorf("drive-relative working directory %q requires an absolute drive path", path)
+	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return Workspace{}, err
@@ -358,7 +361,7 @@ func projectForPath(value string) (string, bool, error) {
 			break
 		}
 	}
-	return string(filepath.Separator), false, nil
+	return filepath.VolumeName(value) + string(filepath.Separator), false, nil
 }
 
 func (w Workspace) targetRules(ctx context.Context, target corefs.Path) (string, error) {

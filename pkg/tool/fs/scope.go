@@ -47,12 +47,16 @@ func (s scoped) ReadFile(ctx context.Context, value Path, limit int64) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
-	if reader, ok := s.storage.(interface {
+	return readStorageFile(ctx, s.storage, p, limit)
+}
+
+func readStorageFile(ctx context.Context, storage Reader, p Path, limit int64) ([]byte, error) {
+	if reader, ok := storage.(interface {
 		ReadFile(context.Context, Path, int64) ([]byte, error)
 	}); ok {
 		return reader.ReadFile(ctx, p, limit)
 	}
-	file, err := s.storage.Open(ctx, p)
+	file, err := storage.Open(ctx, p)
 	if err != nil {
 		return nil, err
 	}
