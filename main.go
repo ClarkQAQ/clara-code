@@ -11,7 +11,7 @@ import (
 	"clara-code/internal/cli"
 )
 
-var version = "0.1.0"
+var version = "dev"
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
