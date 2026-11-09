@@ -1,10 +1,151 @@
 # frozen_string_literal: true
 
+require "uri"
+
 class ClaraCode < Formula
+  FORGEJO_HOST = "forgejo.gulugulu.moe"
+  MAX_CREDENTIAL_FILE_SIZE = 1_048_576
+
+  def self.authorization_header
+    credentials = git_credentials || netrc_credentials
+    return if credentials.nil?
+
+    username = credentials.fetch(:username)
+    password = credentials.fetch(:password)
+    encoded = ["#{username}:#{password}"].pack("m0")
+    "Authorization: Basic #{encoded}"
+  end
+
+  def self.git_credentials
+    contents = read_credentials_file(".git-credentials")
+    return if contents.nil?
+
+    contents.each_line do |line|
+      line = line.strip
+      next if line.empty? || line.start_with?("#")
+
+      uri = URI.parse(line)
+      next unless uri.scheme == "https" &&
+                  uri.host == FORGEJO_HOST &&
+                  uri.port == URI::HTTPS::DEFAULT_PORT &&
+                  uri.userinfo
+
+      username, password = uri.userinfo.split(":", 2)
+      next if username.nil? || username.empty? || password.nil? || password.empty?
+
+      return {
+        username: URI.decode_www_form_component(username),
+        password: URI.decode_www_form_component(password),
+      }
+    rescue URI::InvalidURIError, ArgumentError
+      next
+    end
+
+    nil
+  end
+
+  def self.netrc_credentials
+    contents = read_credentials_file(".netrc")
+    return if contents.nil?
+
+    tokens = netrc_tokens(contents)
+    credentials = {}
+    machine = nil
+    index = 0
+
+    while index < tokens.length
+      key = tokens[index]
+      value = tokens[index + 1]
+
+      case key
+      when "machine"
+        machine = value
+        credentials = {}
+        index += 2
+      when "default"
+        machine = nil
+        credentials = {}
+        index += 1
+      when "login", "password"
+        if machine == FORGEJO_HOST && value && !value.empty?
+          credentials[key.to_sym] = value
+          if credentials[:login] && credentials[:password]
+            return {
+              username: credentials.fetch(:login),
+              password: credentials.fetch(:password),
+            }
+          end
+        end
+        index += 2
+      else
+        index += 1
+      end
+    end
+
+    nil
+  end
+
+  def self.read_credentials_file(name)
+    home = ENV["HOME"]
+    return if home.nil? || home.empty?
+
+    path = File.join(home, name)
+    return unless File.file?(path)
+
+    File.open(path, "rb") do |file|
+      contents = file.read(MAX_CREDENTIAL_FILE_SIZE) || +""
+      contents.force_encoding(Encoding::UTF_8).scrub
+    end
+  rescue SystemCallError
+    nil
+  end
+
+  def self.netrc_tokens(contents)
+    tokens = []
+    token = +""
+    quoted = false
+    escaped = false
+    comment = false
+
+    contents.each_char do |character|
+      if comment
+        comment = false if character == "\n"
+      elsif escaped
+        token << character
+        escaped = false
+      elsif quoted
+        if character == "\\"
+          escaped = true
+        elsif character == "\""
+          tokens << token
+          token = +""
+          quoted = false
+        else
+          token << character
+        end
+      elsif character == "\""
+        quoted = true
+      elsif character == "#"
+        comment = true
+      elsif character.match?(/\s/)
+        tokens << token unless token.empty?
+        token = +""
+      elsif character == "\\"
+        escaped = true
+      else
+        token << character
+      end
+    end
+
+    tokens << token unless token.empty?
+    tokens
+  end
+
   desc "Terminal coding assistant built on Clara Core"
   homepage "@HOMEPAGE@"
-  url "@ARCHIVE_URL@",
-      header: "Authorization: token #{ENV.fetch("HOMEBREW_CLARA_CODE_TOKEN", "")}"
+  authorization = authorization_header
+  archive_options = authorization ? { header: authorization } : {}
+  url "@ARCHIVE_URL@", **archive_options
   version "@VERSION@"
   sha256 "@SHA256@"
   license "Apache-2.0"

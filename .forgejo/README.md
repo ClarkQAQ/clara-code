@@ -24,9 +24,39 @@ The release workflow uses the service URL and owner above and creates or updates
 sudo pacman -Syu clara-code
 ```
 
-**macOS (Apple Silicon):** Export `HOMEBREW_CLARA_CODE_TOKEN`, set to a dedicated Forgejo package read token. Add the tap with a Git account that has access, then install:
+**macOS (Apple Silicon):** Authenticate the private tap with a Forgejo token that can read the repository and packages. The formula first reads `~/.git-credentials`, then falls back to `~/.netrc`; `HOMEBREW_CLARA_CODE_TOKEN` is no longer used.
+
+The preferred setup stores the token with Git's credential helper:
+
+```sh
+git config --global credential.helper store
+git credential approve <<'EOF'
+protocol=https
+host=forgejo.gulugulu.moe
+username=YOUR_FORGEJO_USER
+password=YOUR_FORGEJO_TOKEN
+EOF
+```
+
+Alternatively, create `~/.netrc` when no valid `~/.git-credentials` entry exists:
+
+```text
+machine forgejo.gulugulu.moe
+  login YOUR_FORGEJO_USER
+  password YOUR_FORGEJO_TOKEN
+```
+
+Then restrict the file to the current user:
+
+```sh
+chmod 600 ~/.netrc
+```
+
+Add the tap, then install:
 
 ```sh
 brew tap gulugulu/clara-code https://forgejo.gulugulu.moe/gulugulu/homebrew-clara-code.git
 brew install gulugulu/clara-code/clara-code
 ```
+
+If authentication fails, update the first matching `~/.git-credentials` entry before retrying. The formula does not retry package downloads with the `.netrc` credential after a rejected Git credential.
