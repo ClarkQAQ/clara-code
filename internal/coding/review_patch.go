@@ -20,9 +20,11 @@ import (
 	"unicode"
 
 	git "github.com/go-git/go-git/v5"
+	gitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/format/diff"
+	"github.com/go-git/go-git/v5/plumbing/format/gitattributes"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	gitdiff "github.com/go-git/go-git/v5/utils/diff"
 	"github.com/sergi/go-diff/diffmatchpatch"
@@ -284,6 +286,13 @@ func unstagedReview(ctx context.Context, repo *git.Repository, root *os.Root, en
 		return err
 	}
 	core := config.Raw.Section("core")
+	autocrlf := core.Option("autocrlf")
+	if autocrlf == "" {
+		if global, err := gitconfig.LoadConfig(gitconfig.GlobalScope); err == nil {
+			autocrlf = global.Raw.Section("core").Option("autocrlf")
+		}
+	}
+	endings := reviewEOL{root: root, autocrlf: strings.EqualFold(autocrlf, "true") || strings.EqualFold(autocrlf, "input"), dirs: make(map[string][]gitattributes.MatchAttribute)}
 	fileMode := !strings.EqualFold(core.Option("filemode"), "false")
 	symlinks := !strings.EqualFold(core.Option("symlinks"), "false")
 	for _, name := range slices.Sorted(maps.Keys(entries)) {
@@ -329,6 +338,17 @@ func unstagedReview(ctx context.Context, repo *git.Repository, root *os.Root, en
 		before, err := reviewBlob(repo, from)
 		if err != nil {
 			return err
+		}
+		if to.mode.IsFile() && to.mode != filemode.Symlink {
+			if len(after) > reviewTextLimit {
+				to.hash, err = endings.normalizeLarge(ctx, repo, from, to)
+			} else if bytes.Contains(after, []byte("\r\n")) {
+				after, err = endings.normalize(name, before, after)
+				to.hash = plumbing.ComputeHash(plumbing.BlobObject, after)
+			}
+			if err != nil {
+				return err
+			}
 		}
 		if err := writeReviewPatch(ctx, out, reviewPatch{from: from, to: to}, before, after); err != nil {
 			return err
@@ -405,7 +425,7 @@ func worktreeReviewFile(ctx context.Context, root *os.Root, name string, indexMo
 var errSubmoduleUninitialized = errors.New("uninitialized submodule")
 
 func openWorktreeFile(root *os.Root, name string) (*os.File, error) {
-	file, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
+	file, err := openReviewFile(root, name)
 	if err != nil {
 		return nil, err
 	}

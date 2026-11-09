@@ -169,3 +169,37 @@ func TestGitLinkedWorktree(t *testing.T) {
 		t.Fatal(diff)
 	}
 }
+
+func TestGitReviewNormalizesConfiguredTextEndings(t *testing.T) {
+	root := t.TempDir()
+	repo := initTestGit(t, root)
+	cfg, err := repo.Config()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Raw.Section("core").SetOption("autocrlf", "true")
+	if err := repo.SetConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, root, ".gitattributes", "raw.txt -text\n*.ps1 text eol=crlf\n")
+	writeTestFile(t, root, "tracked.txt", "one\ntwo\n")
+	writeTestFile(t, root, "script.ps1", "old\nunchanged\n")
+	writeTestFile(t, root, "raw.txt", "unchanged\n")
+	writeTestFile(t, root, "large.txt", strings.Repeat("large line\n", reviewTextLimit/10))
+	worktree := stageTestFiles(t, repo, ".gitattributes", "tracked.txt", "script.ps1", "raw.txt", "large.txt")
+	commitTestGit(t, worktree)
+
+	writeTestFile(t, root, "tracked.txt", "one\r\ntwo\r\n")
+	writeTestFile(t, root, "script.ps1", "new\r\nunchanged\r\n")
+	writeTestFile(t, root, "raw.txt", "unchanged\r\n")
+	writeTestFile(t, root, "large.txt", strings.Repeat("large line\r\n", reviewTextLimit/10))
+	space, err := ResolveWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diff := reviewText(t, space, "unstaged")
+	if strings.Contains(diff, "tracked.txt") || strings.Contains(diff, "large.txt") || !strings.Contains(diff, "raw.txt") ||
+		!strings.Contains(diff, "-old\n+new\n unchanged\n") {
+		t.Fatalf("unexpected line ending diff:\n%s", diff)
+	}
+}
