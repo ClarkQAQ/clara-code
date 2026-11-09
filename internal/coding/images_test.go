@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -155,6 +156,24 @@ func TestImagePathsLimitsAndUnsupportedNewInput(t *testing.T) {
 		t.Fatal("bad image accepted")
 	}
 }
+func TestImageAttachmentsResizeAndRespectOptionalSubmissionLimits(t *testing.T) {
+	home := t.TempDir()
+	item, err := AttachBytes(t.Context(), home, "shot.png", imageFixture(t), setting.Images{MaxPixels: 12})
+	if err != nil || item.Width != 4 || item.Height != 3 {
+		t.Fatalf("pixel limit did not resize the attachment: %+v, %v", item, err)
+	}
+	attachments := slices.Repeat([]session.Attachment{item}, 5)
+	for _, limits := range []setting.Images{{}, {MaxAttachments: -1, MaxTotalBytes: -1}} {
+		files, err := AttachmentFiles(home, attachments, limits)
+		if err != nil || len(files) != len(attachments) {
+			t.Fatalf("unlimited submission returned %d files: %v", len(files), err)
+		}
+	}
+	if _, err := AttachmentFiles(home, attachments, setting.Images{MaxTotalBytes: item.Size * 4}); err == nil {
+		t.Fatal("configured total byte limit was ignored")
+	}
+}
+
 func TestImagesReachBothProtocols(t *testing.T) {
 	for _, protocol := range []string{"completions", "responses"} {
 		t.Run(protocol, func(t *testing.T) {

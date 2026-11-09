@@ -129,11 +129,12 @@ yield_seconds = 5
 # timeout_seconds = 120 # omit for unlimited total command runtime; maximum 600
 
 [images]
-max_attachments = 4
+# Omit these limits, or set them to 0 or -1, to allow any submission count or total size.
+max_attachments = 0
+max_total_bytes = 0
 max_source_bytes = 16777216
-max_pixels = 64000000
-max_dimension = 2048
-max_total_bytes = 8388608
+max_pixels = 64000000 # resize target in pixels
+max_dimension = 2048 # resize target for the longest side
 
 # Optional services below are disabled until configured.
 [mcp_servers.files]

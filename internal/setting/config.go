@@ -113,9 +113,6 @@ type Images struct {
 }
 
 func (i Images) Defaults() Images {
-	if i.MaxAttachments == 0 {
-		i.MaxAttachments = 4
-	}
 	if i.MaxSourceBytes == 0 {
 		i.MaxSourceBytes = 16 << 20
 	}
@@ -125,11 +122,16 @@ func (i Images) Defaults() Images {
 	if i.MaxDimension == 0 {
 		i.MaxDimension = 2048
 	}
-	if i.MaxTotalBytes == 0 {
-		i.MaxTotalBytes = 8 << 20
-	}
 	return i
 }
+func (i Images) ExceedsAttachmentCount(count int) bool {
+	return i.MaxAttachments > 0 && count > i.MaxAttachments
+}
+
+func (i Images) ExceedsTotalBytes(size int) bool {
+	return i.MaxTotalBytes > 0 && size > i.MaxTotalBytes
+}
+
 func Enabled(value *bool) bool { return value == nil || *value }
 
 type Config struct {

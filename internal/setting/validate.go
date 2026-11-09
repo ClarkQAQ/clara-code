@@ -113,7 +113,7 @@ func (c Config) validate() error {
 		}
 	}
 	i := c.Images.Defaults()
-	if i.MaxAttachments < 1 || i.MaxAttachments > 16 || i.MaxSourceBytes < 1 || i.MaxSourceBytes > 64<<20 || i.MaxPixels < 1 || i.MaxPixels > 64_000_000 || i.MaxDimension < 1 || i.MaxDimension > 8192 || i.MaxTotalBytes < 1 || i.MaxTotalBytes > 16<<20 {
+	if i.MaxAttachments < -1 || i.MaxAttachments > 16 || i.MaxSourceBytes < 1 || i.MaxSourceBytes > 64<<20 || i.MaxPixels < 1 || i.MaxPixels > 64_000_000 || i.MaxDimension < 1 || i.MaxDimension > 8192 || i.MaxTotalBytes < -1 || i.MaxTotalBytes > 16<<20 {
 		return c.invalid("images", "invalid attachment count, dimensions or byte limit")
 	}
 	return nil

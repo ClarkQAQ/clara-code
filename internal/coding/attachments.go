@@ -151,26 +151,32 @@ func LoadAttachment(ctx context.Context, home, cwd, path string, limits setting.
 	}
 	return AttachBytes(ctx, home, filepath.Base(path), data, limits)
 }
+func imageOptions(limits setting.Images) claraimage.Options {
+	return claraimage.Options{
+		MaxBytes: limits.MaxSourceBytes, MaxDimension: limits.MaxDimension, MaxOutputPixels: limits.MaxPixels,
+	}
+}
+
 func AttachBytes(ctx context.Context, home, name string, data []byte, limits setting.Images) (session.Attachment, error) {
 	if err := ctx.Err(); err != nil {
 		return session.Attachment{}, err
 	}
 	limits = limits.Defaults()
-	view, err := claraimage.Normalize(data, name, claraimage.Options{MaxBytes: limits.MaxSourceBytes, MaxDimension: limits.MaxDimension, MaxPixels: limits.MaxPixels})
+	view, err := claraimage.Normalize(data, name, imageOptions(limits))
 	if err != nil {
 		return session.Attachment{}, err
 	}
 	if err := ctx.Err(); err != nil {
 		return session.Attachment{}, err
 	}
-	if len(view.Data) > limits.MaxTotalBytes {
+	if limits.ExceedsTotalBytes(len(view.Data)) {
 		return session.Attachment{}, errors.New("normalized image exceeds the attachment byte limit")
 	}
 	return session.SaveAttachment(home, session.Attachment{Filename: name, MediaType: view.MIME, Width: view.Width, Height: view.Height}, view.Data)
 }
 func AttachmentFiles(home string, attachments []session.Attachment, limits setting.Images) ([]model.FilePart, error) {
 	limits = limits.Defaults()
-	if len(attachments) > limits.MaxAttachments {
+	if limits.ExceedsAttachmentCount(len(attachments)) {
 		return nil, errors.New("too many image attachments")
 	}
 	var files []model.FilePart
@@ -181,7 +187,7 @@ func AttachmentFiles(home string, attachments []session.Attachment, limits setti
 			return nil, err
 		}
 		total += len(file.Data)
-		if total > limits.MaxTotalBytes {
+		if limits.ExceedsTotalBytes(total) {
 			return nil, errors.New("images exceed the total attachment byte limit")
 		}
 		files = append(files, file)
@@ -226,7 +232,7 @@ func (c *Conversation) PrepareImages(ctx context.Context, messages []model.Messa
 			f.ProviderOptions = file.ProviderOptions
 			count++
 			total += len(f.Data)
-			if count > limits.MaxAttachments || total > limits.MaxTotalBytes {
+			if limits.ExceedsAttachmentCount(count) || limits.ExceedsTotalBytes(total) {
 				return nil, errors.New("image attachment limits exceeded")
 			}
 			out[i].Content[j] = f

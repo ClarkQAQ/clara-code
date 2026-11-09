@@ -14,7 +14,6 @@ import (
 	"clara-code/pkg/core/prompt"
 	"clara-code/pkg/model"
 	"clara-code/pkg/tool"
-	claraimage "clara-code/pkg/tool/fs/image"
 )
 
 const omittedImage = "[Image content omitted because this model does not support image input.]"
@@ -79,8 +78,7 @@ func (c *Conversation) SupportsImages() bool {
 	return c.CurrentConfig().Models[c.Store.Meta().Model].Images()
 }
 func (c *Conversation) imageTool(profile setting.Model) model.AgentTool {
-	opts := c.Host.Config.Images.Defaults()
-	inner := tool.NewImages(c.Workspace.toolFS(), claraimage.Options{MaxBytes: opts.MaxSourceBytes, MaxDimension: opts.MaxDimension, MaxPixels: opts.MaxPixels}).View()
+	inner := tool.NewImages(c.Workspace.toolFS(), imageOptions(c.Host.Config.Images.Defaults())).View()
 	return imageCapability{AgentTool: inner, enabled: profile.Images()}
 }
 

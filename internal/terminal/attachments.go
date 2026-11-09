@@ -75,7 +75,7 @@ func (a *app) loadAttachments(paths []string, fromClipboard bool, original ...st
 				return
 			}
 		}
-		if len(paths) > limits.MaxAttachments {
+		if limits.ExceedsAttachmentCount(len(paths)) {
 			result.err = errors.New("too many image attachments")
 			out <- result
 			return
@@ -88,7 +88,7 @@ func (a *app) loadAttachments(paths []string, fromClipboard bool, original ...st
 				break
 			}
 			total += item.Size
-			if total > limits.MaxTotalBytes {
+			if limits.ExceedsTotalBytes(total) {
 				result.err = errors.New("images exceed the total attachment byte limit")
 				break
 			}

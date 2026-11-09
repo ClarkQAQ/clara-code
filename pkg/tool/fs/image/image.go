@@ -11,6 +11,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
+	"math"
 	"net/http"
 	"path"
 	"strings"
@@ -33,7 +34,9 @@ const (
 type Options struct {
 	MaxBytes     int64
 	MaxDimension int
-	MaxPixels    int64
+	MaxPixels    int64 // Source pixel limit checked before decoding.
+	// MaxOutputPixels bounds the area of the resized image. Zero leaves the area unrestricted.
+	MaxOutputPixels int64
 }
 
 // View is one image normalized for a model.
@@ -86,15 +89,6 @@ func Normalize(data []byte, filename string, options Options) (View, error) {
 	if !strings.HasPrefix(mime, "image/") {
 		return View{}, fmt.Errorf("file is not a supported image (%s)", mime)
 	}
-	if mime == "image/gif" {
-		frames, err := gif.DecodeAll(bytes.NewReader(data))
-		if err != nil {
-			return View{}, fmt.Errorf("decode GIF: %w", err)
-		}
-		if len(frames.Image) != 1 {
-			return View{}, errors.New("animated GIF images are not supported")
-		}
-	}
 	if isAnimatedWebP(data) {
 		return View{}, errors.New("animated WebP images are not supported")
 	}
@@ -108,14 +102,23 @@ func Normalize(data []byte, filename string, options Options) (View, error) {
 	if config.Width <= 0 || config.Height <= 0 {
 		return View{}, errors.New("image has no pixels")
 	}
-	if int64(config.Width)*int64(config.Height) > options.MaxPixels {
-		return View{}, fmt.Errorf("image exceeds %d pixels", options.MaxPixels)
+	if int64(config.Width) > options.MaxPixels/int64(config.Height) {
+		return View{}, fmt.Errorf("image exceeds the %d-pixel decoding limit", options.MaxPixels)
+	}
+	if mime == "image/gif" {
+		frames, err := gif.DecodeAll(bytes.NewReader(data))
+		if err != nil {
+			return View{}, fmt.Errorf("decode GIF: %w", err)
+		}
+		if len(frames.Image) != 1 {
+			return View{}, errors.New("animated GIF images are not supported")
+		}
 	}
 	source, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
 		return View{}, fmt.Errorf("decode image: %w", err)
 	}
-	source = scale(source, options.MaxDimension)
+	source = scale(source, options.MaxDimension, options.MaxOutputPixels)
 	width := source.Bounds().Dx()
 	height := source.Bounds().Dy()
 	hasAlpha := imageHasAlpha(source)
@@ -170,15 +173,26 @@ func isAnimatedWebP(data []byte) bool {
 		bytes.Contains(data, []byte("ANIM"))
 }
 
-func scale(source image.Image, maxDimension int) image.Image {
+func scale(source image.Image, maxDimension int, maxPixels int64) image.Image {
 	bounds := source.Bounds()
 	width, height := bounds.Dx(), bounds.Dy()
-	if width <= maxDimension && height <= maxDimension {
+	ratio := min(1, float64(maxDimension)/float64(max(width, height)))
+	if maxPixels > 0 {
+		ratio = min(ratio, math.Sqrt(float64(maxPixels)/(float64(width)*float64(height))))
+	}
+	if ratio >= 1 {
 		return source
 	}
-	ratio := float64(maxDimension) / float64(max(width, height))
 	targetWidth := max(1, int(float64(width)*ratio))
 	targetHeight := max(1, int(float64(height)*ratio))
+	// A one-pixel short side can force a smaller long side for very narrow images.
+	if maxPixels > 0 {
+		if targetWidth >= targetHeight {
+			targetWidth = int(min(int64(targetWidth), maxPixels/int64(targetHeight)))
+		} else {
+			targetHeight = int(min(int64(targetHeight), maxPixels/int64(targetWidth)))
+		}
+	}
 	target := image.NewRGBA(image.Rect(0, 0, targetWidth, targetHeight))
 	draw.CatmullRom.Scale(target, target.Bounds(), source, bounds, draw.Over, nil)
 	return target
@@ -220,7 +234,7 @@ func encode(source image.Image, alpha bool, maxBytes int64) ([]byte, string, err
 			return nil, "", fmt.Errorf("image cannot fit within %d bytes", maxBytes)
 		}
 		dimension = int(float64(dimension) * 0.8)
-		current = scale(current, dimension)
+		current = scale(current, dimension, 0)
 	}
 }
 

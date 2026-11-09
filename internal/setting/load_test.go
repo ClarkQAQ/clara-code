@@ -170,3 +170,27 @@ func TestInlineAPIKeyOverridesAndRedaction(t *testing.T) {
 		}
 	}
 }
+
+func TestImageSubmissionLimitsAreOptional(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	t.Setenv("CLARA_CODE_HOME", home)
+	configFile(t, filepath.Join(home, "config.toml"), exampleConfig)
+	for _, overrides := range [][]string{
+		nil,
+		{"images.max_attachments=0", "images.max_total_bytes=0"},
+		{"images.max_attachments=-1", "images.max_total_bytes=-1"},
+	} {
+		cfg, err := LoadWith(t.Context(), LoadOptions{Cwd: root, Root: root, Overrides: overrides})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if limits := cfg.Images.Defaults(); limits.ExceedsAttachmentCount(17) || limits.ExceedsTotalBytes(17<<20) {
+			t.Fatalf("unexpected image submission caps: %+v", limits)
+		}
+	}
+	for _, override := range []string{"images.max_attachments=-2", "images.max_total_bytes=-2"} {
+		if _, err := LoadWith(t.Context(), LoadOptions{Cwd: root, Root: root, Overrides: []string{override}}); err == nil {
+			t.Fatalf("accepted %s", override)
+		}
+	}
+}
