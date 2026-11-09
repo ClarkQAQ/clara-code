@@ -179,9 +179,17 @@ func TestInlineRewindAndResumeAfterCrash(t *testing.T) {
 	}
 	p := startPTY(t, home, cwd)
 	p.await(t, 0, "Ready")
+	planLabel := "Plan mode (Shift+Tab to cycle)"
+	interrupted := "■ Conversation interrupted"
+	replayedInterruption := interrupted + " - tell the model what to do differently."
+	if _, noColor := os.LookupEnv("NO_COLOR"); !noColor {
+		planLabel = "\x1b[95m" + planLabel + "\x1b[0m"
+		interrupted = "\x1b[31m" + interrupted
+		replayedInterruption = "\x1b[31m" + replayedInterruption + "\x1b[0m"
+	}
 	mark := len(p.output())
 	p.send(t, "\x1b[Z")
-	p.await(t, mark, "Plan mode")
+	p.await(t, mark, planLabel)
 	p.send(t, "\x1b[Z")
 	p.send(t, "\x1b[200~你好\x1b[201~\r")
 	p.await(t, mark, "有什么可以帮你的吗")
@@ -204,7 +212,7 @@ func TestInlineRewindAndResumeAfterCrash(t *testing.T) {
 	p.send(t, "CANCEL_SLOW_TURN\r")
 	p.await(t, mark, "Working")
 	p.send(t, "\x1b")
-	p.await(t, mark, "Interrupted")
+	p.await(t, mark, interrupted)
 	mark = len(p.output())
 	p.send(t, "CANCEL_SLOW_TURN\r")
 	p.await(t, mark, "Working")
@@ -220,7 +228,7 @@ func TestInlineRewindAndResumeAfterCrash(t *testing.T) {
 	}
 	resumed := startPTY(t, home, cwd, "resume", items[0].ID)
 	resumed.await(t, 0, "Demo response: 你好 changed")
-	resumed.await(t, 0, "Interrupted")
+	resumed.await(t, 0, replayedInterruption)
 	resumed.await(t, 0, "Ready")
 	mark = len(resumed.output())
 	resumed.send(t, "/exit\r")

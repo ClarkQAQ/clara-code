@@ -125,7 +125,7 @@ func (a *app) statusLine() string {
 	}
 	left = truncate("  "+left, available)
 	spaces := max(gap, p.width-widthOf(left)-widthOf(right))
-	return p.style(dim, left) + strings.Repeat(" ", spaces) + p.style(dim, right)
+	return p.style(dim, left) + strings.Repeat(" ", spaces) + p.style(purple, right)
 }
 
 func (a *app) showStatus() {

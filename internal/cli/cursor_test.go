@@ -86,7 +86,7 @@ func TestInlineNativeCursorInTmux(t *testing.T) {
 	}
 	call("send-keys", "-t", "cursor", "Escape")
 	await("interrupted draft", func(text string, cursor tmuxCursor) bool {
-		return strings.Contains(text, "Interrupted") && onInput(text, cursor, "ni hao", 8)
+		return strings.Contains(text, "■ Conversation interrupted") && onInput(text, cursor, "ni hao", 8)
 	})
 	call("send-keys", "-t", "cursor", "C-u")
 	call("send-keys", "-t", "cursor", "-l", "/model")

@@ -88,10 +88,11 @@ func (p *painter) trimHistory() {
 
 const (
 	reset  = "\x1b[0m"
-	dim    = "\x1b[90m"
+	dim    = "\x1b[2m"
 	bold   = "\x1b[1m"
 	accent = "\x1b[36m"
 	purple = "\x1b[95m"
+	red    = "\x1b[31m"
 )
 
 func (p *painter) style(code, text string) string {
@@ -244,6 +245,12 @@ func (p *painter) messageRows(kind, text string) []string {
 	if text == "" {
 		return nil
 	}
+	// Live and saved cancellations share this transcript notice.
+	interrupted := kind == "notice" && text == "Interrupted"
+	if interrupted {
+		kind = "error"
+		text = "Conversation interrupted - tell the model what to do differently."
+	}
 	width := max(1, p.width-2)
 	var body []string
 	switch kind {
@@ -262,7 +269,7 @@ func (p *painter) messageRows(kind, text string) []string {
 				style = "\x1b[32m"
 			}
 			if strings.HasPrefix(row.text, "-") {
-				style = "\x1b[31m"
+				style = red
 			}
 			body = append(body, p.style(style, truncate(row.text, width)))
 		}
@@ -272,15 +279,21 @@ func (p *painter) messageRows(kind, text string) []string {
 		}
 	}
 	marker, style := markerFor(kind)
+	if !interrupted {
+		marker = p.style(style, marker)
+	}
 	for i := range body {
 		prefix := "  "
 		if i == 0 {
-			prefix = p.style(style, marker) + " "
+			prefix = marker + " "
 		}
 		if p.width < 4 {
 			prefix = ""
 		}
 		body[i] = prefix + body[i]
+		if interrupted {
+			body[i] = p.style(style, body[i])
+		}
 	}
 	return append(body, "")
 }
@@ -298,7 +311,7 @@ func markerFor(kind string) (string, string) {
 	case "activity":
 		return "↳", dim
 	case "error":
-		return "■", "\x1b[31m"
+		return "■", red
 	default:
 		return "·", accent
 	}

@@ -13,6 +13,8 @@ go build -o clara-code .
 ./clara-code resume --cwd /path/to/project
 ```
 
+Clara's terminal title shows the project name, with a spinner during requests and an `Action Required` prefix while it waits for an answer. In VS Code, use `${sequence}` for `terminal.integrated.tabs.title` if your tab only shows the process name.
+
 ## Project Structure and Library Usage
 
 Root `main.go` provides the CLI entry point. Startup, terminal UI, configuration, session storage, and other application features live in `internal`. Reusable mechanisms live in `pkg/core`, `pkg/model`, `pkg/tool`, and `pkg/util`. Public packages do not depend on Clara's application layer. Examples live in `examples`; see [Public Go Packages](CORE.md) for assembly details.

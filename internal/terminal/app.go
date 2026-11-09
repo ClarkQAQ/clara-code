@@ -36,6 +36,7 @@ type app struct {
 	ctx                  context.Context
 	options              Options
 	view                 painter
+	title                terminalTitle
 	host                 coding.Host
 	space                coding.Workspace
 	conv                 *coding.Conversation
@@ -134,8 +135,9 @@ func Run(ctx context.Context, options Options) (err error) {
 		return err
 	}
 	defer func() {
-		err = errors.Join(err, a.view.finish(), term.Restore(int(in.Fd()), state))
+		err = errors.Join(err, a.view.finish(), a.title.close(out), term.Restore(int(in.Fd()), state))
 	}()
+	a.title.screen = os.Getenv("STY") != ""
 	a.view.setCursorVisible(false)
 	a.view.buf.WriteString("\x1b[?2004h")
 	if options.PickSession {
@@ -163,6 +165,9 @@ func Run(ctx context.Context, options Options) (err error) {
 	ticks := time.NewTicker(time.Second / 45)
 	defer ticks.Stop()
 	if err := a.draw(); err != nil {
+		return err
+	}
+	if err := a.updateTitle(time.Now()); err != nil {
 		return err
 	}
 	for {
@@ -240,14 +245,18 @@ func Run(ctx context.Context, options Options) (err error) {
 			}
 			a.dirty = true
 		case <-ticks.C:
-			if (a.run != nil || a.op != nil || len(a.toolGroup) > 0) && a.question == nil && time.Since(a.lastAnimation) >= a.animationInterval() {
-				a.lastAnimation = time.Now()
+			now := time.Now()
+			if (a.run != nil || a.op != nil || len(a.toolGroup) > 0) && a.question == nil && now.Sub(a.lastAnimation) >= a.animationInterval() {
+				a.lastAnimation = now
 				a.dirty = true
 			}
-			if a.dirty && time.Now().After(a.resizeUntil) {
+			if a.dirty && now.After(a.resizeUntil) {
 				if err := a.draw(); err != nil {
 					return err
 				}
+			}
+			if err := a.updateTitle(now); err != nil {
+				return err
 			}
 		}
 	}
