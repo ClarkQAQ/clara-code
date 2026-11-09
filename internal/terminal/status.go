@@ -145,6 +145,10 @@ func (a *app) showStatus() {
 	if a.mode == prompt.Plan {
 		mode = "Plan"
 	}
+	compaction := fmt.Sprintf("Auto-compaction  %d%% of raw context window (capped by input budget)", a.host.Config.CompactionPercent(profile))
+	if profile.EffectiveWindow() <= 0 {
+		compaction += " (estimated 256K-token window; model limit unknown)"
+	}
 	a.view.message("notice", strings.Join([]string{
 		"Session  " + meta.ID, "Directory  " + a.space.Cwd, "Project  " + a.space.Root,
 		"Local time  " + localtime.DateTime(now), "Time zone  " + localtime.Zone(now),
@@ -152,6 +156,7 @@ func (a *app) showStatus() {
 		"Model  " + modelLabel(meta),
 		"Agent effort  " + meta.Effort, "Plan effort  " + a.conv.ModeEffort(prompt.Plan),
 		fmt.Sprintf("Images  %t", a.conv.SupportsImages()),
+		compaction,
 		fmt.Sprintf("Capabilities  reasoning=%v · output=%d · parallel=%s · summary=%s · verbosity=%s", profile.Levels(), profile.MaxOutputTokens, parallelLabel(profile.SupportsParallelToolCalls), profile.DefaultReasoningSummary, profile.DefaultVerbosity),
 		fmt.Sprintf("Provider authentication  configured=%t", auth),
 		"Configuration sources  " + strings.Join(a.host.Config.Sources, " → "), "Mode  " + mode, "Context  " + a.contextLabel(), "Total usage  " + total + " tokens",

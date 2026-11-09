@@ -65,6 +65,10 @@ func (a *app) handle(input key) bool {
 	if a.picker != nil {
 		return a.handlePicker(input)
 	}
+	if a.historyAt >= 0 && (input.code == "up" || input.code == "down") {
+		a.recall(input.code)
+		return false
+	}
 	if a.handleSkillMenu(input) {
 		return false
 	}
@@ -143,35 +147,17 @@ func (a *app) handle(input key) bool {
 	case "ctrl-l":
 		return false
 	}
+	before := a.editor.text
 	a.editor.key(input)
+	if a.editor.text != before {
+		a.historyAt = -1
+	}
 	a.syncDraftImages()
 	return false
 }
 
-func (a *app) recall(direction string) {
-	if len(a.prompts) == 0 {
-		return
-	}
-	if a.historyAt == -1 {
-		if direction == "down" || a.editor.text != "" {
-			return
-		}
-		a.draft = a.editor.text
-		a.historyAt = len(a.prompts) - 1
-	} else if direction == "up" {
-		a.historyAt = max(0, a.historyAt-1)
-	} else {
-		a.historyAt++
-	}
-	if a.historyAt == len(a.prompts) {
-		a.historyAt = -1
-		a.editor.replace(a.draft)
-		return
-	}
-	a.editor.replace(a.prompts[a.historyAt])
-}
-
 func (a *app) submit(line string) bool {
+	a.recordInput(line)
 	command, arg := splitCommand(line)
 	if command == "/exit" || command == "/quit" {
 		return true

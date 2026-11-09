@@ -354,6 +354,7 @@ func wrap(text string, width int) []row {
 
 type editor struct {
 	images         []imageSpan
+	skills         []inlineSpan
 	text           string
 	at             int
 	verticalColumn int
@@ -363,6 +364,7 @@ type editor struct {
 func (e *editor) replace(text string) {
 	e.text, e.at = "", 0
 	e.images = nil
+	e.skills = nil
 	e.insert(text)
 }
 
@@ -382,13 +384,14 @@ func (e *editor) insert(text string) {
 			e.images[i].end += len(text)
 		}
 	}
+	e.shiftSkills(e.at, len(text))
 	e.text = e.text[:e.at] + text + e.text[e.at:]
 	e.at += len(text)
 	e.at = e.boundary(e.at, 1)
 }
 
 func (e *editor) boundary(at, direction int) int {
-	for _, span := range e.images {
+	for _, span := range e.inlineSpans() {
 		if span.start < at && at < span.end {
 			if direction < 0 {
 				return span.start
@@ -425,7 +428,7 @@ func (e *editor) next(direction int) int {
 
 func (e *editor) delete(start, end int) {
 	e.verticalSet = false
-	for _, span := range e.images {
+	for _, span := range e.inlineSpans() {
 		if start < span.end && end > span.start {
 			start, end = min(start, span.start), max(end, span.end)
 		}
@@ -442,6 +445,18 @@ func (e *editor) delete(start, end int) {
 		images = append(images, span)
 	}
 	e.images = images
+	skills := e.skills[:0]
+	for _, span := range e.skills {
+		if start < span.end && end > span.start {
+			continue
+		}
+		if span.start >= end {
+			span.start -= end - start
+			span.end -= end - start
+		}
+		skills = append(skills, span)
+	}
+	e.skills = skills
 	e.text = e.text[:start] + e.text[end:]
 	e.at = e.boundary(start, -1)
 }

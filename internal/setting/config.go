@@ -19,6 +19,7 @@ type Model struct {
 	Visibility                    string                  `toml:"visibility"`
 	ContextWindow                 int64                   `toml:"context_window"`
 	EffectiveContextWindowPercent int                     `toml:"effective_context_window_percent"`
+	AutoCompactContextPercent     *int                    `toml:"auto_compact_context_percent"`
 	MaxOutputTokens               int64                   `toml:"max_output_tokens"`
 	InputModalities               []string                `toml:"input_modalities"`
 	DefaultReasoningLevel         model.ReasoningEffort   `toml:"default_reasoning_level"`
@@ -132,26 +133,37 @@ func (i Images) Defaults() Images {
 func Enabled(value *bool) bool { return value == nil || *value }
 
 type Config struct {
-	Home            string                `toml:"-"`
-	DefaultModel    string                `toml:"model"`
-	ModelProvider   string                `toml:"model_provider"`
-	ReasoningEffort model.ReasoningEffort `toml:"model_reasoning_effort"`
-	PlanEffort      model.ReasoningEffort `toml:"plan_mode_reasoning_effort"`
-	ContextBytes    int                   `toml:"context_bytes"`
-	Providers       map[string]Provider   `toml:"model_providers"`
-	MCP             map[string]MCP        `toml:"mcp_servers"`
-	ACP             map[string]ACP        `toml:"acp_agents"`
-	TUI             TUI                   `toml:"tui"`
-	Tools           Tools                 `toml:"tools"`
-	Images          Images                `toml:"images"`
-	Sources         []string              `toml:"-"`
-	Origins         map[string]string     `toml:"-"`
-	Models          map[string]Model      `toml:"-"`
+	Home                      string                `toml:"-"`
+	DefaultModel              string                `toml:"model"`
+	ModelProvider             string                `toml:"model_provider"`
+	ReasoningEffort           model.ReasoningEffort `toml:"model_reasoning_effort"`
+	PlanEffort                model.ReasoningEffort `toml:"plan_mode_reasoning_effort"`
+	AutoCompactContextPercent int                   `toml:"auto_compact_context_percent"`
+	Providers                 map[string]Provider   `toml:"model_providers"`
+	MCP                       map[string]MCP        `toml:"mcp_servers"`
+	ACP                       map[string]ACP        `toml:"acp_agents"`
+	TUI                       TUI                   `toml:"tui"`
+	Tools                     Tools                 `toml:"tools"`
+	Images                    Images                `toml:"images"`
+	Sources                   []string              `toml:"-"`
+	Origins                   map[string]string     `toml:"-"`
+	Models                    map[string]Model      `toml:"-"`
 	// Connection fields are resolved internal values, never accepted as TOML keys.
 	Endpoint string      `toml:"-"`
 	Protocol string      `toml:"-"`
 	APIKey   string      `toml:"-"`
 	Options  LoadOptions `toml:"-"`
+}
+
+// CompactionPercent resolves a per-model override and applies Codex's 90% ceiling.
+func (c Config) CompactionPercent(m Model) int {
+	if m.AutoCompactContextPercent != nil {
+		return min(90, *m.AutoCompactContextPercent)
+	}
+	if c.AutoCompactContextPercent != 0 {
+		return min(90, c.AutoCompactContextPercent)
+	}
+	return 90
 }
 
 func (c Config) SelectProvider(name string) (Config, error) {

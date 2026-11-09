@@ -62,25 +62,36 @@ func TestContextRefreshAndSubmissionOrder(t *testing.T) {
 	}
 }
 
-func TestModelWindowBudgetAndExplicitByteLimit(t *testing.T) {
+func TestModelWindowBudgetAndCompactionPercent(t *testing.T) {
 	c, _ := testHost(t, t.TempDir(), DemoModel{})
-	c.Host.Config.ContextBytes = 512 << 10
-	c.Host.Config.Origins = map[string]string{}
-	profile := setting.Model{ContextWindow: 100000, MaxOutputTokens: 10000}
+	profile := setting.Model{ContextWindow: 100000, MaxOutputTokens: 1000}
 	budget := c.compactor(profile)
-	if budget.BudgetBytes != 0 || budget.BudgetTokens != 85000 {
-		t.Fatal("window and output reservation", budget)
+	if budget.BudgetBytes != 0 || budget.BudgetTokens != 94000 || budget.TriggerTokens != 90000 {
+		t.Fatal("window/output cap", budget)
 	}
-	c.Host.Config.Origins["context_bytes"] = "project config"
-	if c.compactor(profile).BudgetBytes != 512<<10 {
-		t.Fatal("explicit byte limit ignored")
+	c.Host.Config.AutoCompactContextPercent = 80
+	if c.compactor(profile).TriggerTokens != 80000 {
+		t.Fatal("global compaction percent ignored")
 	}
-	if c.compactor(setting.Model{}).BudgetBytes != 512<<10 {
-		t.Fatal("unknown model lost fallback")
+	profile.AutoCompactContextPercent = new(60)
+	if c.compactor(profile).TriggerTokens != 60000 {
+		t.Fatal("model override ignored")
 	}
-	c.Host.Config.ContextBytes = 0
-	if c.compactor(profile).BudgetBytes != 0 {
-		t.Fatal("zero byte limit not disabled")
+	if c.compactor(setting.Model{}).BudgetBytes != 0 || c.compactor(setting.Model{}).BudgetTokens <= 0 {
+		t.Fatal("unknown model lost token fallback")
+	}
+	profile.AutoCompactContextPercent = new(100)
+	if c.compactor(profile).TriggerTokens != 90000 {
+		t.Fatal("trigger exceeded Codex's 90% raw-window ceiling")
+	}
+	profile.MaxOutputTokens = 10000
+	if c.compactor(profile).TriggerTokens != 85000 {
+		t.Fatal("trigger ignored output reservation")
+	}
+	profile.MaxOutputTokens = 1000
+	profile.EffectiveContextWindowPercent = 99
+	if c.compactor(profile).TriggerTokens != 90000 {
+		t.Fatal("effective window ratio changed the raw-window compaction threshold")
 	}
 }
 

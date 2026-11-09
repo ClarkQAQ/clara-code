@@ -105,21 +105,20 @@ func toolDefinitions(items []model.AgentTool) []model.ToolInfo {
 }
 
 func (c *Conversation) compactor(profile setting.Model) prompt.Compactor {
-	config := c.Host.Config
-	bytes := config.ContextBytes
-	window := profile.EffectiveWindow()
-	if window > 0 && config.Origins != nil && config.Origins["context_bytes"] == "" {
-		bytes = 0
+	rawWindow := profile.ContextWindow
+	window := max(int64(1), profile.EffectiveWindow())
+	if rawWindow <= 0 {
+		// Unknown windows retain a bounded heuristic in tokens, not a byte ceiling.
+		rawWindow, window = 256<<10, 256<<10
 	}
-	var tokens int64
-	if window > 0 {
-		reserve := profile.MaxOutputTokens
-		if reserve <= 0 {
-			reserve = min(int64(4096), max(int64(1), window/4))
-		}
-		tokens = max(int64(1), window-reserve)
+	reserve := profile.MaxOutputTokens
+	if reserve <= 0 {
+		reserve = min(int64(4096), max(int64(1), window/4))
 	}
-	compactor := prompt.Compactor{BudgetBytes: bytes, BudgetTokens: tokens}
+	budget := max(int64(1), window-reserve)
+	percent := int64(c.Host.Config.CompactionPercent(profile))
+	trigger := max(int64(1), min(budget, rawWindow/100*percent+rawWindow%100*percent/100))
+	compactor := prompt.Compactor{BudgetTokens: budget, TriggerTokens: trigger}
 	if !profile.Images() {
 		compactor.Project = withoutImages
 	}

@@ -222,6 +222,33 @@ func (c *Conversation) ChangeSelection(ctx context.Context, provider, name, effo
 	} else {
 		agent = effort
 	}
+	return c.setReasoningSelection(ctx, config, name, agent, plan)
+}
+
+// ChangeReasoningSelection commits Agent and Plan settings together.
+func (c *Conversation) ChangeReasoningSelection(ctx context.Context, provider, name, agent, plan string) error {
+	if c.Session.Active() != nil {
+		return errors.New("finish or cancel the current turn before switching models")
+	}
+	config := c.CurrentConfig()
+	if provider != "" && len(config.Providers) > 0 {
+		var err error
+		config, err = config.SelectProvider(provider)
+		if err != nil {
+			return err
+		}
+	}
+	return c.setReasoningSelection(ctx, config, name, agent, plan)
+}
+
+func (c *Conversation) setReasoningSelection(ctx context.Context, config setting.Config, name, agent, plan string) error {
+	profile, ok := config.Models[name]
+	if !ok {
+		return errors.New("model is not configured")
+	}
+	if !profile.Allows(model.ReasoningEffort(agent)) || !profile.Allows(model.ReasoningEffort(plan)) {
+		return errors.New("agent or plan reasoning effort is not supported by this model")
+	}
 	h := c.Host
 	h.Config = config
 	next, err := h.model(ctx, name, agent)

@@ -325,11 +325,19 @@ func TestAutomaticCompactionKeepsVisibleTurns(t *testing.T) {
 	for _, item := range prepared.Tools {
 		definitions = append(definitions, item.Info())
 	}
-	baseline, err := json.Marshal([]any{*prepared.System, []modelapi.Message{}, definitions})
+	estimate, err := prompt.Measure(*prepared.System, prepared.Messages, definitions)
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.Host.Config.ContextBytes = len(baseline) + len(jsonText(prepared.Messages[0])) + 9500
+	profile := c.Host.Config.Models["fixture"]
+	profile.ContextWindow = 2 * (estimate.Tokens + 4500)
+	profile.EffectiveContextWindowPercent = 100
+	profile.MaxOutputTokens = 1
+	profile.AutoCompactContextPercent = new(50)
+	c.Host.Config.Models["fixture"] = profile
+	if err := c.ChangeModel(t.Context(), "fixture", ""); err != nil {
+		t.Fatal(err)
+	}
 	first, second := strings.Repeat("a", 7000), strings.Repeat("b", 6000)
 	finish(t, c, prompt.Execute, first)
 	finish(t, c, prompt.Execute, second)

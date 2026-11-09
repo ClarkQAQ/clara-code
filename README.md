@@ -94,7 +94,7 @@ default_reasoning_level = "high"
 supported_reasoning_levels = ["low", "high", "max"]
 ```
 
-Environment overrides: `CLARA_CODE_MODEL_PROVIDER`, `CLARA_CODE_MODEL`, `CLARA_CODE_MODEL_REASONING_EFFORT` (preferred over `CLARA_CODE_EFFORT`), `CLARA_CODE_PLAN_MODE_REASONING_EFFORT`, and `CLARA_CODE_CONTEXT_BYTES`. `CLARA_CODE_ENDPOINT`, `CLARA_CODE_PROTOCOL`, and `CLARA_CODE_API_KEY` override the provider selected at the environment layer. They are not reused as credentials for other providers. `CLARA_CORE_*` fallback is reserved for standalone framework examples, not application configuration.
+Environment overrides: `CLARA_CODE_MODEL_PROVIDER`, `CLARA_CODE_MODEL`, `CLARA_CODE_MODEL_REASONING_EFFORT` (preferred over `CLARA_CODE_EFFORT`), `CLARA_CODE_PLAN_MODE_REASONING_EFFORT`, and `CLARA_CODE_AUTO_COMPACT_CONTEXT_PERCENT`. `CLARA_CODE_ENDPOINT`, `CLARA_CODE_PROTOCOL`, and `CLARA_CODE_API_KEY` override the provider selected at the environment layer. They are not reused as credentials for other providers. `CLARA_CORE_*` fallback is reserved for standalone framework examples, not application configuration.
 
 ```sh
 clara-code --cwd /path/to/project \
@@ -125,7 +125,7 @@ Configured model IDs are declared to the Responses provider, including custom de
 
 `default_reasoning_summary = "none"` disables summaries by omitting `reasoning.summary` from requests. The wire values are `auto`, `concise`, and `detailed`; `none` is a local configuration value and does not change the reasoning effort.
 
-`context_window` is the model's raw token limit. Its effective window defaults to 95%; change it with `effective_context_window_percent`. Automatic compaction uses this window minus output reservation, calibrated by recent model usage and conservative estimates. Explicit `context_bytes` adds a byte ceiling; `0` disables that ceiling. Models without a declared window retain the 512 KiB fallback unless overridden. Compaction preserves the latest turn and its images; `/compact` requires an older complete turn. Failed or truncated summaries preserve the original working history. See [Prompt and Context Architecture](PROMPTS.md) for details and the Codex comparison.
+`context_window` is the model's raw token limit. Its effective window defaults to 95%; change it with `effective_context_window_percent`. Automatic compaction defaults to 90% of the raw window, matching the local Codex reference; it does not multiply the effective-window ratio again. Set root `auto_compact_context_percent` (1–100) for the application default or the same field under an individual model to override it. Resolved values above 90% are clamped to 90%, following Codex's raw-window ceiling. The trigger is capped by the effective window minus output reservation; the resulting summary must fit that hard input budget. Recent usage and conservative estimates calibrate triggering. Models without a declared window use a bounded 256K-token heuristic for compaction only; the UI still labels their actual context limit unknown. Configure `context_window` to replace that heuristic. Application `context_bytes` and `CLARA_CODE_CONTEXT_BYTES` have been removed; delete old keys and use token-window settings instead. `CLARA_CODE_AUTO_COMPACT_CONTEXT_PERCENT` overrides the root setting. Compaction preserves the latest turn and its images; `/compact` requires an older complete turn. Failed or truncated summaries preserve the original working history. See [Prompt and Context Architecture](PROMPTS.md) for details and the Codex comparison.
 
 Current context usage in the status bar comes from the most recent valid request's total tokens, independently of budget estimates. The percentage calculation subtracts a fixed 12,000-token baseline, following the reference Codex implementation. Cumulative usage appears separately in `/status`; unavailable usage is shown as unknown. Put global rules in `AGENTS.md` in the data directory and global skills in `skills/<name>/SKILL.md`. Project rules load from the Git root downward; project skills live in `.agents/skills/` at the applicable directory. Skill files declare `name` and `description` in YAML or TOML front matter. Rules are checked each model step, provided in full in the initial prefix, and updated only when changed or removed. Skill bodies load only when requested.
 
@@ -179,7 +179,7 @@ Asynchronous command states are saved separately using atomic writes; completed 
 
 The activity line above the composer shows waiting, execution, compaction, and reconnection states, including elapsed time and the Esc interruption hint. It is temporarily hidden for interactive questions. Public reasoning summaries may supply an activity title; raw reasoning is not displayed as a progress update. Core retries eligible connection-establishment errors up to three times, displaying the attempt, delay, and redacted reason. Interruptions after streaming begins preserve received text and report the error without automatically replaying executed tools. Final failures preserve the current draft; an empty composer is refilled with that turn's prompt for editing and retrying.
 
-Interactive questions contain numbered choices and descriptions. Use Up/Down or number keys to select, Tab to edit notes, Left/Right to switch questions, Enter to submit, and Esc to interrupt. Type `$` at a word boundary to open the inline skill menu, type to filter names or descriptions, use Up/Down to select, and Enter or Tab to insert `$skill-name` without submitting. Esc closes the menu; shell expansions such as `$HOME` and `${HOME}` stay ordinary text. Text before and after the mention and image attachments are preserved. The model loads selected skills and supporting text files with `read_skill` and `read_skill_resource`.
+Interactive questions contain numbered choices and descriptions. Use Up/Down or number keys to select, Tab to edit notes, Left/Right to switch questions, Enter to submit, and Esc to interrupt. Type `$` at a word boundary to open the inline skill menu, type to filter names or descriptions, use Up/Down to select, and Enter or Tab to insert `$skill-name` without submitting. Inserted skill references are highlighted and edited as atomic tokens: Left/Right jumps over them, and Backspace/Delete removes the whole reference, like an image attachment. Restored drafts recover known skill references without changing their submitted text. Esc closes the menu; shell expansions such as `$HOME` and `${HOME}` stay ordinary text. Text before and after the mention and image attachments are preserved. The model loads selected skills and supporting text files with `read_skill` and `read_skill_resource`.
 
 `/skills` opens the **Skills** management menu: **List skills** opens the same `$` menu, and **Enable/Disable Skills** opens a searchable checkbox list. Up/Down selects, Space or Enter toggles, and Esc goes back. Changes save automatically in `skills-state.json` under the Clara data directory, without rewriting `config.toml` or skill files. Preferences use canonical `SKILL.md` paths, so disabling a project skill does not disable unrelated skills with the same name. The nearest definition still wins: disabling it does not expose a shadowed global definition. Disabled skills are removed from completion, model catalogs and catalog-reading tools on the next request, for main agents, children and ACP. Re-enabling restores them. This is a discovery preference, not a filesystem access restriction. Atomic saves and a process lock protect concurrent changes.
 
@@ -213,3 +213,28 @@ a timeout leaves the child running, so inspect `list_agents` and wait again.
 `send_message` steers running work, `followup_task` can continue finished work,
 `interrupt_agent` retains its session, and `close_agent` ends it and its descendants.
 Read and verify results before closing. Filesystem changes remain shared.
+
+
+### Reasoning selection and input history
+
+`/model` selects a provider/model, then shows separate Agent and Plan reasoning
+pickers with numbered choices, explanations, `(default)` and `(current)` markers.
+Plan can inherit the staged Agent level. Both values are saved to the session only
+after the final confirmation; Esc goes back without partially changing settings.
+The choices do not rewrite the global configuration or clear model context.
+
+Submitted prompts and slash commands are saved in `history.jsonl` in the Clara
+data directory and loaded on startup for Up/Down recall across conversations.
+Menu commands record their canonical form (`/status`, not `/sta`); consecutive
+identical inputs are collapsed. Like Codex's local command recall, `/clear` itself
+is omitted. Each JSONL record contains `session_id`, an RFC3339 `ts`, `text`, kind,
+and optional attachment references. Files use private permissions, process locking
+and atomic replacement; retention keeps at most 1000 entries and 4 MiB. Malformed
+records are reported while valid records remain usable. History write failures do
+not prevent command dispatch or discard the draft.
+
+Input recall is separate from terminal scrollback, saved model turns and the
+Esc-Esc conversation preview. Commands do not become model user messages or
+rewind checkpoints. Recalled images and available skill mentions are restored in
+the composer. A recalled command stays in history navigation until edited rather
+than opening a new slash-command menu over the Up/Down keys.

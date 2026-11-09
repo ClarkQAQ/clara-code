@@ -2,17 +2,19 @@ package terminal
 
 import (
 	"clara-code/pkg/core/prompt"
-	"clara-code/pkg/model"
 )
 
 type choice struct {
-	id, label string
+	id, label   string
+	description string
 }
 
 type picker struct {
 	skillState             *skillManager
 	kind, title, model     string
 	provider               string
+	effortMode             prompt.Mode
+	agentEffort            string
 	items                  []choice
 	selected               int
 	startup, detail        bool
@@ -24,6 +26,9 @@ type picker struct {
 }
 
 func (p *picker) rows(view *painter) []string {
+	if p.kind == "effort" {
+		return p.effortRows(view)
+	}
 	return listRows(view, p.title, p.items, p.selected, "↑/↓ Select   Enter Confirm   Esc Back", 0)
 }
 
@@ -53,6 +58,14 @@ func (a *app) handlePicker(input key) bool {
 		return a.handleTranscriptPicker(input)
 	}
 	if input.code == "escape" || input.code == "ctrl-c" {
+		if p.kind == "effort" && input.code == "escape" {
+			if p.effortMode == prompt.Plan {
+				a.showEfforts(p.provider, p.model, prompt.Execute, p.agentEffort, true)
+			} else {
+				a.showModels(p.provider)
+			}
+			return false
+		}
 		a.picker = nil
 		return p.startup
 	}
@@ -78,6 +91,13 @@ func (a *app) handlePicker(input key) bool {
 		}
 		return false
 	}
+	if p.kind == "effort" && input.code == "text" && len(input.text) == 1 && input.text[0] >= '1' && input.text[0] <= '9' {
+		index := int(input.text[0] - '1')
+		if index < len(p.items) {
+			p.selected = index
+			return a.handlePicker(key{code: "enter"})
+		}
+	}
 	switch input.code {
 	case "up", "left":
 		p.selected = max(0, p.selected-1)
@@ -102,42 +122,18 @@ func (a *app) handlePicker(input key) bool {
 		case "attachments":
 			a.picker = nil
 		case "model":
-			config := a.host.Config
-			if len(config.Providers) > 0 {
-				var err error
-				config, err = config.SelectProvider(p.provider)
-				if err != nil {
-					a.notice(err)
-					return false
-				}
-			}
-			profile := config.Models[selected.id]
-			levels := profile.Levels()
-			if len(levels) == 0 || levels[0] != "" {
-				levels = append([]model.ReasoningEffort{""}, levels...)
-			}
-			next := &picker{kind: "effort", title: "Select reasoning effort", model: selected.id, provider: p.provider}
-			effort := string(profile.Effort)
-			if meta := a.conv.Store.Meta(); meta.Model == selected.id && meta.Provider == p.provider {
-				effort = a.conv.ModeEffort(a.mode)
-			}
-			for i, level := range levels {
-				label := string(level)
-				if level == "" {
-					label = "Provider default"
-					if a.mode == prompt.Plan {
-						label = "Inherit Agent reasoning effort"
-					}
-				}
-				if effort == string(level) {
-					next.selected = i
-				}
-				next.items = append(next.items, choice{id: string(level), label: label})
-			}
-			a.picker = next
+			a.showEfforts(p.provider, selected.id, prompt.Execute, "", false)
 		case "effort":
-			a.picker = nil
-			a.applySelection(p.provider, p.model, selected.id)
+			if p.effortMode != prompt.Plan {
+				a.showEfforts(p.provider, p.model, prompt.Plan, selected.id, false)
+			} else if err := a.conv.ChangeReasoningSelection(a.ctx, p.provider, p.model, p.agentEffort, selected.id); err != nil {
+				a.notice(err)
+			} else {
+				a.picker = nil
+				a.host = a.conv.Host
+				a.host.Config = a.conv.CurrentConfig()
+				a.view.message("notice", "Model set to "+modelLabel(a.conv.Store.Meta())+" · Plan "+a.conv.ModeEffort(prompt.Plan))
+			}
 		}
 	}
 	return false

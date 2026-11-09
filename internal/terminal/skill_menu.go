@@ -20,6 +20,10 @@ type skillMenu struct {
 	hidden      bool
 }
 
+func skillNameRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || strings.ContainsRune("_-.:/", r)
+}
+
 // A mention starts at a word boundary. Shell expansions are ordinary text.
 func skillMention(text string, at int) (start, end int, query string, ok bool) {
 	if at < 0 || at > len(text) {
@@ -38,7 +42,7 @@ func skillMention(text string, at int) (start, end int, query string, ok bool) {
 	}
 	query = text[start+1 : at]
 	for _, r := range query {
-		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && !strings.ContainsRune("_-.:/", r) {
+		if !skillNameRune(r) {
 			return start, at, query, false
 		}
 	}
@@ -51,7 +55,7 @@ func skillMention(text string, at int) (start, end int, query string, ok bool) {
 	end = at
 	for end < len(text) {
 		r, size := utf8.DecodeRuneInString(text[end:])
-		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && !strings.ContainsRune("_-.:/", r) {
+		if !skillNameRune(r) {
 			break
 		}
 		end += size
@@ -65,6 +69,12 @@ func (a *app) skillMatches() bool {
 	if !ok || a.conv == nil {
 		m.active = false
 		return false
+	}
+	for _, span := range a.editor.skills {
+		if start == span.start && a.editor.at <= span.end {
+			m.active = false
+			return false
+		}
 	}
 	changed := m.text != a.editor.text || m.at != a.editor.at
 	if !m.active || m.owner != a.conv {
@@ -162,7 +172,8 @@ func (a *app) handleSkillMenu(input key) bool {
 			return true
 		}
 		a.editor.delete(m.start, end)
-		a.editor.insert(text + " ")
+		a.editor.insertSkill(m.matches[m.selected].Name)
+		a.editor.insert(" ")
 		a.skillMenu = skillMenu{}
 		a.syncDraftImages()
 	default:

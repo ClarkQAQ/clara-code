@@ -66,3 +66,22 @@ func TestCustomDeploymentEffortReachesBothProtocols(t *testing.T) {
 		})
 	}
 }
+
+func TestAgentAndPlanSelectionRejectsPartialChanges(t *testing.T) {
+	c, _ := testHost(t, t.TempDir(), DemoModel{})
+	c.Host.Config.Models["fixture"] = setting.Model{ID: "fixture", SupportedReasoningLevels: []model.ReasoningEffort{"low", "high"}}
+	before := c.Store.Meta()
+	if err := c.ChangeReasoningSelection(t.Context(), "", "fixture", "low", "unsupported"); err == nil {
+		t.Fatal("unsupported Plan effort accepted")
+	}
+	after := c.Store.Meta()
+	if after.Model != before.Model || after.Effort != before.Effort || after.PlanEffort != before.PlanEffort {
+		t.Fatal("invalid settings partially committed")
+	}
+	if err := c.ChangeReasoningSelection(t.Context(), "", "fixture", "low", "high"); err != nil {
+		t.Fatal(err)
+	}
+	if c.ModeEffort(prompt.Execute) != "low" || c.ModeEffort(prompt.Plan) != "high" {
+		t.Fatal("mode efforts not independently saved")
+	}
+}

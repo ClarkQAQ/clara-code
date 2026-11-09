@@ -33,7 +33,7 @@ func LoadWith(ctx context.Context, o LoadOptions) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	merged := map[string]any{"context_bytes": int64(512 << 10)}
+	merged := map[string]any{"auto_compact_context_percent": int64(90)}
 	origins := map[string]string{}
 	var sources []string
 	apply := func(layer map[string]any, source string) {
@@ -90,6 +90,9 @@ func LoadWith(ctx context.Context, o LoadOptions) (Config, error) {
 			}
 			return Config{}, fmt.Errorf("configuration %s: invalid TOML", path)
 		}
+		if _, exists := layer["context_bytes"]; exists {
+			return Config{}, fmt.Errorf("configuration %s: context_bytes was removed; use auto_compact_context_percent and model context_window", path)
+		}
 		apply(layer, path)
 	}
 	env := map[string]any{}
@@ -98,12 +101,15 @@ func LoadWith(ctx context.Context, o LoadOptions) (Config, error) {
 			env[name] = value
 		}
 	}
-	if v := os.Getenv("CLARA_CODE_CONTEXT_BYTES"); v != "" {
+	if os.Getenv("CLARA_CODE_CONTEXT_BYTES") != "" {
+		return Config{}, errors.New("CLARA_CODE_CONTEXT_BYTES was removed; use CLARA_CODE_AUTO_COMPACT_CONTEXT_PERCENT and configure the model context_window")
+	}
+	if v := os.Getenv("CLARA_CODE_AUTO_COMPACT_CONTEXT_PERCENT"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
-			return Config{}, errors.New("CLARA_CODE_CONTEXT_BYTES must be an integer")
+			return Config{}, errors.New("CLARA_CODE_AUTO_COMPACT_CONTEXT_PERCENT must be an integer between 1 and 100")
 		}
-		env["context_bytes"] = n
+		env["auto_compact_context_percent"] = n
 	}
 	selected, _ := merged["model_provider"].(string)
 	if v, ok := env["model_provider"].(string); ok {

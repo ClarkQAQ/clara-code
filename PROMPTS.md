@@ -108,8 +108,16 @@ capability. None of this journal is included in terminal replay or editable prom
 
 Models with a declared window use their effective window, less configured maximum
 output tokens. Without an output limit, Clara reserves 4096 tokens or one quarter
-of a smaller window. Explicit `context_bytes` adds a second ceiling; zero disables
-that byte ceiling. An undeclared window retains the default 512 KiB byte fallback.
+of a smaller window. Automatic compaction uses `auto_compact_context_percent`
+(default 90), with a global default and optional model override, against the
+raw window, independently of the effective-window percentage. Values above 90%
+are clamped to 90%, matching the local Codex model metadata calculation
+(`crates/protocol/src/openai_models.rs`, `auto_compact_token_limit`). Clara also
+caps the trigger by its hard input budget after output
+reservation. A valid replacement must fit that hard budget, not necessarily fall
+below the early trigger. The application no longer accepts `context_bytes`.
+An undeclared window uses a 256K-token heuristic for bounded compaction; this is
+not reported as a known provider context window.
 
 `prompt.Measure` reports estimates separately from provider usage. It includes
 policy, current context, history and tool schemas, using a conservative serialized

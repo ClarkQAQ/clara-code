@@ -56,6 +56,7 @@ func (e *editor) imageAttachments() []session.Attachment {
 		delta := len(label) - (oldEnd - span.start)
 		e.text = e.text[:span.start] + label + e.text[oldEnd:]
 		span.end += delta
+		e.shiftSkills(oldEnd, delta)
 		if e.at >= oldEnd {
 			e.at += delta
 		}
@@ -72,6 +73,11 @@ func (a *app) syncDraftImages() { a.attachments = a.editor.imageAttachments() }
 
 func (a *app) setDraft(text string, items []session.Attachment) {
 	a.editor.restoreImages(text, items)
+	if a.conv != nil {
+		if skills, err := a.conv.ManageSkills(a.ctx); err == nil {
+			a.editor.restoreSkills(skills)
+		}
+	}
 	a.syncDraftImages()
 }
 
@@ -109,15 +115,20 @@ func (e *editor) appendDraft(other editor) bool {
 		span.end += offset
 		e.images = append(e.images, span)
 	}
+	for _, span := range other.skills {
+		span.start += offset
+		span.end += offset
+		e.skills = append(e.skills, span)
+	}
 	e.at = len(e.text)
 	e.imageAttachments()
 	return true
 }
 
-func (p *painter) imageInputRow(e editor, r row) string {
+func (p *painter) inlineInputRow(e editor, r row) string {
 	var out strings.Builder
 	at := r.start
-	for _, span := range e.images {
+	for _, span := range e.inlineSpans() {
 		start, end := max(r.start, span.start), min(r.end, span.end)
 		if start >= end {
 			continue

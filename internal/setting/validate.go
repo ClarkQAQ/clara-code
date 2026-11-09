@@ -11,8 +11,8 @@ func (c Config) invalid(path, reason string) error {
 	return fmt.Errorf("configuration %s: %s: %s", originFor(c.Origins, path), path, reason)
 }
 func (c Config) validate() error {
-	if c.ContextBytes < 0 || c.ContextBytes > 16<<20 {
-		return c.invalid("context_bytes", "must be between 0 and 16 MiB")
+	if c.AutoCompactContextPercent < 1 || c.AutoCompactContextPercent > 100 {
+		return c.invalid("auto_compact_context_percent", "must be between 1 and 100")
 	}
 	for id, p := range c.Providers {
 		path := "model_providers." + id
@@ -41,6 +41,9 @@ func (c Config) validate() error {
 			key := path + ".models." + name
 			if strings.TrimSpace(name) == "" || m.ContextWindow < 0 || m.MaxOutputTokens < 0 || m.EffectiveContextWindowPercent < 0 || m.EffectiveContextWindowPercent > 100 {
 				return c.invalid(key, "invalid model name or context/output budget")
+			}
+			if m.AutoCompactContextPercent != nil && (*m.AutoCompactContextPercent < 1 || *m.AutoCompactContextPercent > 100) {
+				return c.invalid(key+".auto_compact_context_percent", "must be between 1 and 100")
 			}
 			if m.Visibility != "" && m.Visibility != "list" && m.Visibility != "hidden" {
 				return c.invalid(key+".visibility", "must be list or hidden")

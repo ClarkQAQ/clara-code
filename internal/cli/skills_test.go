@@ -41,7 +41,10 @@ func TestSkillsMentionAndManagementInTmux(t *testing.T) {
 	await("mention inserted without submitting", func(s string) bool {
 		return strings.Contains(s, "❯ $review_example") && !strings.Contains(s, "[Skill]")
 	})
-	call("send-keys", "-t", "cursor", "C-u")
+	call("send-keys", "-t", "cursor", "BSpace", "BSpace")
+	await("atomic skill deletion", func(s string) bool {
+		return strings.Contains(s, "❯ Run /review") && !strings.Contains(s, "❯ $review_example")
+	})
 	send("/skills")
 	call("send-keys", "-t", "cursor", "Enter")
 	await("skills management", func(s string) bool {

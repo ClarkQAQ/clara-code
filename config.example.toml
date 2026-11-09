@@ -3,7 +3,7 @@ model = "coding"
 model_provider = "gateway"
 model_reasoning_effort = "high"
 plan_mode_reasoning_effort = "high"
-context_bytes = 524288
+auto_compact_context_percent = 90 # 1-100; fraction of the raw token window, capped at 90% like Codex
 
 [model_providers.gateway]
 name = "My gateway"
@@ -24,6 +24,8 @@ priority = 1
 visibility = "list" # list or hidden
 context_window = 1048576
 effective_context_window_percent = 95
+# Optional per-model override for early compaction (inherits the global value):
+# auto_compact_context_percent = 80
 max_output_tokens = 16384
 input_modalities = ["text", "image"] # defaults to text/image when omitted
 default_reasoning_level = "high"

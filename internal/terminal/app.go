@@ -60,7 +60,9 @@ type app struct {
 
 	prompts        []string
 	historyAt      int
-	draft          string
+	historyDraft   editor
+	inputHistory   []session.InputHistoryEntry
+	historyLoaded  bool
 	branch         string
 	hint           string
 	primed         bool
@@ -337,6 +339,8 @@ func (a *app) install(result operationResult) error {
 	a.activity.retry = nil
 	a.setDraft(result.draft, result.attachments)
 	a.view.welcome(a.options.Version, modelLabel(a.conv.Store.Meta()), a.space.Cwd)
+	a.loadInputHistory()
+	seedHistory := len(a.inputHistory) == 0
 	a.prompts = nil
 	if a.conv.Store.Meta().LegacyPathContext {
 		a.view.message("notice", "Paths now refer to the real filesystem. Older /foo paths referred to the project root; read the intended target again before editing.")
@@ -351,6 +355,9 @@ func (a *app) install(result operationResult) error {
 			a.prompts = append(a.prompts, "[unavailable turn]")
 		} else {
 			a.prompts = append(a.prompts, turn.Prompt)
+			if seedHistory && i >= a.conv.Store.TurnCount()-1000 {
+				a.inputHistory = append(a.inputHistory, session.InputHistoryEntry{SessionID: a.conv.Session.ID(), Text: turn.Prompt, Attachments: turn.Attachments})
+			}
 			a.view.message("user", turn.Prompt)
 			a.replayAttachments(turn.Attachments)
 			for _, cell := range turn.Cells {

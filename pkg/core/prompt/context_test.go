@@ -177,3 +177,20 @@ func TestLegacyCompactionAndNoCompletedTurn(t *testing.T) {
 		t.Fatal("latest turn was summarized away")
 	}
 }
+
+func TestEarlyCompactionTriggerIsSeparateFromHardBudget(t *testing.T) {
+	history := []model.Message{submission(strings.Repeat("old context ", 1000)), submission("latest")}
+	before, err := prompt.Measure("policy", history, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := summaryModel{response: &model.Response{Content: model.ResponseContent{model.TextContent{Text: "summary"}}, FinishReason: model.FinishReasonStop}}
+	out, err := (prompt.Compactor{BudgetTokens: before.Tokens + 100, TriggerTokens: 1}).Fit(t.Context(), m, "policy", history, nil)
+	if err != nil || len(out) != 2 {
+		t.Fatal("early trigger was incorrectly treated as the hard budget", err)
+	}
+	out, err = (prompt.Compactor{BudgetTokens: before.Tokens + 100, TriggerTokens: before.Tokens + 1}).Fit(t.Context(), m, "policy", history, nil)
+	if err != nil || out != nil {
+		t.Fatal("compacted below trigger", err)
+	}
+}

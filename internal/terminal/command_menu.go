@@ -145,6 +145,7 @@ func (a *app) handleCommandMenu(input key) (handled, exit bool) {
 			return true, false
 		}
 		if a.run != nil && !spec.busy {
+			a.recordInput(spec.name)
 			a.hint = "Finish or interrupt the current turn to use " + spec.name
 			return true, false
 		}

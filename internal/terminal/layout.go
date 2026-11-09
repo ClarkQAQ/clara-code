@@ -75,7 +75,7 @@ func (p *painter) inputLayout(e editor, placeholder string, limit int) layout {
 		if i == start {
 			lead = p.style(bold, prefix)
 		}
-		text := p.imageInputRow(e, rows[i])
+		text := p.inlineInputRow(e, rows[i])
 		if widthOf(rows[i].text) > width {
 			text = truncate(rows[i].text, width)
 		}

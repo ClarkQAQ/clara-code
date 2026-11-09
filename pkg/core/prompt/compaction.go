@@ -17,7 +17,10 @@ type Compactor struct {
 	Model        modelapi.LanguageModel
 	BudgetBytes  int
 	BudgetTokens int64
-	Context      []modelapi.Message
+	// TriggerTokens optionally starts automatic compaction before BudgetTokens.
+	// Zero retains the BudgetTokens trigger. The final replacement must fit BudgetTokens.
+	TriggerTokens int64
+	Context       []modelapi.Message
 	// Project applies the model's request-only modality filtering for budgeting.
 	Project func([]modelapi.Message) []modelapi.Message
 	// Assemble measures the exact request layout, including anchored context.
@@ -59,7 +62,12 @@ func (c Compactor) Fit(ctx context.Context, model modelapi.LanguageModel, system
 	over := func(estimate Estimate) bool {
 		return c.BudgetBytes > 0 && estimate.Bytes > c.BudgetBytes || c.BudgetTokens > 0 && estimate.Tokens > c.BudgetTokens
 	}
-	if !c.Force && !over(Estimate{Bytes: before.Bytes, Tokens: tokens}) {
+	trigger := c.TriggerTokens
+	if trigger <= 0 || c.BudgetTokens > 0 && trigger > c.BudgetTokens {
+		trigger = c.BudgetTokens
+	}
+	triggered := c.BudgetBytes > 0 && before.Bytes > c.BudgetBytes || trigger > 0 && tokens > trigger
+	if !c.Force && !triggered {
 		return nil, nil
 	}
 	start := 0
