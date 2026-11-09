@@ -125,3 +125,14 @@ func littleEndian(input []byte) uint32 {
 func rotate(value uint32, bits uint) uint32 {
 	return value<<bits | value>>(32-bits)
 }
+
+// preserveTextFormat reapplies the file's UTF-8 BOM and uniform CRLF endings.
+func preserveTextFormat(original, text string) string {
+	if strings.Contains(original, "\r\n") && !strings.ContainsAny(strings.ReplaceAll(original, "\r\n", ""), "\r\n") {
+		text = strings.ReplaceAll(text, "\n", "\r\n")
+	}
+	if strings.HasPrefix(original, "\ufeff") {
+		text = "\ufeff" + text
+	}
+	return text
+}

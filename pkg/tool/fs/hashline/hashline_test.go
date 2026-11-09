@@ -126,3 +126,22 @@ func FuzzParse(f *testing.F) {
 func writeOptions() clarafs.WriteOptions {
 	return clarafs.WriteOptions{CreateDirs: true, Overwrite: true}
 }
+
+func TestEditorPreservesUTF8BOMAndCRLF(t *testing.T) {
+	ctx := t.Context()
+	storage := memory.New()
+	const original = "\ufeffone\r\ntwo\r\n"
+	if _, err := storage.WriteFile(ctx, "/file.txt", []byte(original), writeOptions()); err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore()
+	snapshot := store.Record("/file.txt", original, []int{2})
+	editor := Editor{FS: storage, Store: store}
+	if _, err := editor.Apply(ctx, "[/file.txt#"+snapshot.Tag+"]\nPUT 2.=2:\n+updated"); err != nil {
+		t.Fatal(err)
+	}
+	body, err := storage.ReadFile(ctx, "/file.txt", 1024)
+	if err != nil || string(body) != "\ufeffone\r\nupdated\r\n" {
+		t.Fatalf("updated file %q, %v", body, err)
+	}
+}

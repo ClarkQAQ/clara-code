@@ -69,6 +69,7 @@ func (e *Editor) Apply(ctx context.Context, input string) (Result, error) {
 		if Normalize(string(current)) != file.Original {
 			return Result{Files: applied}, errs.New(errs.CodeConflict, fmt.Sprintf("file changed before applying edits: %s; read it with anchored=true before retrying", file.Path))
 		}
+		content := preserveTextFormat(string(current), file.Text)
 		final := file.Path
 		if file.MoveTo != "" {
 			final = file.MoveTo
@@ -79,7 +80,7 @@ func (e *Editor) Apply(ctx context.Context, input string) (Result, error) {
 					fmt.Errorf("%w; %d earlier file(s) landed", err, len(applied))
 			}
 		} else if file.MoveTo != "" && file.Text != file.Original {
-			if _, err := e.FS.WriteFile(ctx, file.MoveTo, []byte(file.Text), clarafs.WriteOptions{
+			if _, err := e.FS.WriteFile(ctx, file.MoveTo, []byte(content), clarafs.WriteOptions{
 				Mode: file.Mode, CreateDirs: true, Overwrite: false,
 			}); err != nil {
 				return Result{Files: applied}, fmt.Errorf("write moved file: %w", err)
@@ -92,7 +93,7 @@ func (e *Editor) Apply(ctx context.Context, input string) (Result, error) {
 				return Result{Files: applied}, fmt.Errorf("rename moved file: %w", err)
 			}
 		} else if file.Text != file.Original {
-			if _, err := e.FS.WriteFile(ctx, file.Path, []byte(file.Text), clarafs.WriteOptions{
+			if _, err := e.FS.WriteFile(ctx, file.Path, []byte(content), clarafs.WriteOptions{
 				Mode: file.Mode, CreateDirs: true, Overwrite: true,
 			}); err != nil {
 				return Result{Files: applied}, fmt.Errorf("%w; %d earlier file(s) landed", err, len(applied))
