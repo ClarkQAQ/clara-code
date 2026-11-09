@@ -10,6 +10,8 @@ import (
 	"time"
 
 	acpsdk "github.com/coder/acp-go-sdk"
+
+	"clara-code/pkg/util/errs"
 )
 
 // ACPExternalConfig configures an external ACP Agent process.
@@ -79,6 +81,26 @@ func ConnectACPExternal(ctx context.Context, config ACPExternalConfig) (*ACPExte
 
 // Initialize returns the negotiated Agent information.
 func (e *ACPExternal) Initialize() acpsdk.InitializeResponse { return e.info }
+
+// ListSessions fetches one page of session metadata when the Agent advertises support.
+func (e *ACPExternal) ListSessions(ctx context.Context, req acpsdk.ListSessionsRequest) (acpsdk.ListSessionsResponse, error) {
+	if e.info.AgentCapabilities.SessionCapabilities.List == nil {
+		return acpsdk.ListSessionsResponse{}, errs.New(errs.CodeUnsupported, "external ACP Agent does not support session/list")
+	}
+	return e.conn.ListSessions(ctx, req)
+}
+
+// ResumeSession reconnects to an existing session without requesting history replay.
+func (e *ACPExternal) ResumeSession(ctx context.Context, req acpsdk.ResumeSessionRequest) (acpsdk.ResumeSessionResponse, error) {
+	if e.info.AgentCapabilities.SessionCapabilities.Resume == nil {
+		return acpsdk.ResumeSessionResponse{}, errs.New(errs.CodeUnsupported, "external ACP Agent does not support session/resume")
+	}
+	response, err := e.conn.ResumeSession(ctx, req)
+	if err == nil {
+		e.client.ensure(req.SessionId)
+	}
+	return response, err
+}
 
 // NewSession creates an ACP session.
 func (e *ACPExternal) NewSession(ctx context.Context, cwd string) (acpsdk.SessionId, error) {

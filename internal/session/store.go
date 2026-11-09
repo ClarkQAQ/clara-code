@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +25,11 @@ import (
 const maxManifest = core.MaxStateBytes + 12<<20
 
 var safeID = regexp.MustCompile(`^(session|run)_[a-zA-Z0-9_.-]{1,96}$`)
+
+var (
+	ErrInvalidID       = errors.New("invalid session ID")
+	ErrProjectMismatch = errors.New("session does not belong to this project")
+)
 
 type Meta struct {
 	PathMode                              int  `json:",omitempty"`
@@ -65,9 +69,9 @@ type Turn struct {
 }
 
 type manifest struct {
-	Commands map[string]ToolActivity `json:",omitempty"`
 	Version  int
 	Meta     Meta
+	Commands map[string]ToolActivity `json:",omitempty"`
 	State    core.State
 	Turns    []string
 	Active   *Turn
@@ -89,14 +93,23 @@ func New(home string, meta Meta) *Store {
 
 func Open(home, sessionID, project string) (*Store, error) {
 	s := New(home, Meta{})
+	if !ValidID(sessionID) {
+		return nil, ErrInvalidID
+	}
+	if _, err := os.Stat(s.path(sessionID)); err != nil {
+		return nil, err
+	}
 	if err := s.acquire(sessionID); err != nil {
 		return nil, err
 	}
 	if err := read(s.path(sessionID), maxManifest, &s.data); err != nil {
 		return nil, errors.Join(err, s.Close())
 	}
-	if s.data.Version != 1 || s.data.Meta.ID != sessionID || s.data.State.ID != sessionID || s.data.Meta.Project != project {
-		return nil, errors.Join(errors.New("session does not belong to this project or has an invalid format"), s.Close())
+	if s.data.Version != 1 || s.data.Meta.ID != sessionID || s.data.State.ID != sessionID {
+		return nil, errors.Join(errors.New("invalid session format"), s.Close())
+	}
+	if s.data.Meta.Project != project {
+		return nil, errors.Join(ErrProjectMismatch, s.Close())
 	}
 	collectUsage(&s.data.Meta, s.data.State.Events)
 	return s, nil
@@ -110,9 +123,13 @@ func (s *Store) object(runID, suffix string) string {
 	return filepath.Join(s.home, "turns", runID+suffix+".json")
 }
 
+func ValidID(id string) bool {
+	return strings.HasPrefix(id, "session_") && safeID.MatchString(id)
+}
+
 func (s *Store) acquire(sessionID string) error {
-	if !safeID.MatchString(sessionID) || !strings.HasPrefix(sessionID, "session_") {
-		return errors.New("invalid session ID")
+	if !ValidID(sessionID) {
+		return ErrInvalidID
 	}
 	dir := filepath.Join(s.home, "sessions")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -505,22 +522,78 @@ func List(home, project string) ([]Meta, error) {
 	}
 	var found []Meta
 	for _, entry := range files {
-		sessionID, ok := strings.CutSuffix(entry.Name(), ".json")
-		if !ok || !safeID.MatchString(sessionID) || entry.Type()&os.ModeSymlink != 0 {
-			continue
-		}
-		meta, err := readMeta(filepath.Join(dir, entry.Name()))
-		if err == nil && meta.ID == sessionID && meta.Project == project {
+		if meta, ok := listedMeta(dir, entry); ok && meta.Project == project {
 			found = append(found, meta)
 		}
 	}
-	sort.Slice(found, func(i, j int) bool {
-		if found[i].Updated.Equal(found[j].Updated) {
-			return found[i].ID < found[j].ID
-		}
-		return found[i].Updated.After(found[j].Updated)
-	})
+	slices.SortFunc(found, compareListedMeta)
 	return found, nil
+}
+
+const SessionPageSize = 100
+
+// ListPage returns up to one page plus a lookahead, reading only manifest metadata.
+func ListPage(ctx context.Context, home, cwd string, after *Meta) ([]Meta, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(home, "sessions")
+	file, err := os.Open(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	const maxEntries = 64 << 10
+	found := make([]Meta, 0, SessionPageSize+2)
+	for scanned := 0; ; {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		entries, err := file.ReadDir(128)
+		scanned += len(entries)
+		if scanned > maxEntries {
+			return nil, errs.New(errs.CodeLimit, "session directory exceeds the listing scan limit")
+		}
+		for _, entry := range entries {
+			meta, ok := listedMeta(dir, entry)
+			if !ok || !ValidID(meta.ID) || !filepath.IsAbs(meta.Cwd) || (cwd != "" && meta.Cwd != cwd) ||
+				(after != nil && compareListedMeta(meta, *after) <= 0) {
+				continue
+			}
+			index, _ := slices.BinarySearchFunc(found, meta, compareListedMeta)
+			if index <= SessionPageSize {
+				found = slices.Insert(found, index, meta)
+				if len(found) > SessionPageSize+1 {
+					found = found[:SessionPageSize+1]
+				}
+			}
+		}
+		if errors.Is(err, io.EOF) {
+			return found, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+}
+
+func compareListedMeta(a, b Meta) int {
+	if order := b.Updated.Compare(a.Updated); order != 0 {
+		return order
+	}
+	return strings.Compare(a.ID, b.ID)
+}
+
+func listedMeta(dir string, entry os.DirEntry) (Meta, bool) {
+	id, ok := strings.CutSuffix(entry.Name(), ".json")
+	if !ok || !safeID.MatchString(id) || !entry.Type().IsRegular() {
+		return Meta{}, false
+	}
+	meta, err := readMeta(filepath.Join(dir, entry.Name()))
+	return meta, err == nil && meta.ID == id
 }
 
 func readMeta(path string) (Meta, error) {
@@ -529,13 +602,37 @@ func readMeta(path string) (Meta, error) {
 		return Meta{}, err
 	}
 	defer file.Close()
-	// Version and Meta are the first fields. Listing never loads Core state.
-	decoder := json.NewDecoder(io.LimitReader(file, 64<<10))
+	// Listing stops at Meta and never decodes Core state.
+	const maxMetadata = 64 << 10
+	reader := &io.LimitedReader{R: file, N: maxMetadata}
+	decoder := json.NewDecoder(reader)
 	start, err := decoder.Token()
 	if err != nil || start != json.Delim('{') {
 		return Meta{}, errors.New("invalid session manifest")
 	}
 	key, err := decoder.Token()
+	if err == nil && key == "Commands" {
+		// Older manifests may put command snapshots before Version and Meta.
+		reader.N += maxManifest - maxMetadata
+		start, commandsErr := decoder.Token()
+		if commandsErr != nil || start != json.Delim('{') {
+			return Meta{}, errors.New("invalid session command snapshots")
+		}
+		for decoder.More() {
+			if _, err := decoder.Token(); err != nil {
+				return Meta{}, err
+			}
+			var command struct{}
+			if err := decoder.Decode(&command); err != nil {
+				return Meta{}, err
+			}
+		}
+		if _, err := decoder.Token(); err != nil {
+			return Meta{}, err
+		}
+		reader.N = min(reader.N, maxMetadata)
+		key, err = decoder.Token()
+	}
 	if err != nil || key != "Version" {
 		return Meta{}, errors.New("invalid session version")
 	}
@@ -548,7 +645,11 @@ func readMeta(path string) (Meta, error) {
 		return Meta{}, errors.New("invalid session metadata")
 	}
 	var meta Meta
+	offset := decoder.InputOffset()
 	err = decoder.Decode(&meta)
+	if decoder.InputOffset()-offset > maxMetadata {
+		return Meta{}, errors.New("session metadata exceeds the size limit")
+	}
 	return meta, err
 }
 

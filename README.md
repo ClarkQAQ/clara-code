@@ -204,7 +204,11 @@ Glob patterns support `*.go`, `**/*.go`, `?`, and character classes; `**` can ma
 
 Agent mode lets file tools and Shell operate with the current user's OS permissions, without a project-directory boundary. Reads follow symbolic links; overwrite writes and edits update their targets. Moving or deleting a link operates on the link itself. Creating a file does not overwrite an existing link. Old sessions remain resumable. Their original `/foo` paths referred to project-relative files; recovery displays a migration notice. Read targets again under the new semantics before editing; old snapshots are not reused. Plan mode exposes only read-only and interaction tools. Branching restores model context before the selected prompt; prior file changes and command effects remain in the workspace. Each session has an independent lock, so other processes can open different sessions in the same project. Running goals, subagents, and Shell processes end when the owning session closes.
 
-In an ACP-compatible editor, use `clara-code acp` as the stdio agent command. It supports session creation and loading, prompting, streaming updates, and cancellation, using the same project identification and persistence directories.
+In an ACP-compatible editor, use `clara-code acp` as the stdio agent command. It supports session creation, discovery, loading, and resuming, along with prompting, streaming updates, and cancellation. `session/list` lists persisted sessions in the Clara data directory, optionally filtered to an exact working directory. Pass the returned `nextCursor` to fetch the next page. `session/load` replays history, while `session/resume` restores the original session in its working directory without replaying it.
+
+When an external ACP role is configured, Clara can call `list_acp_sessions` with that role to discover sessions in the current working directory. Pass a returned `sessionId` as `resume_session_id` to `spawn_agent` or `subagent_task` with the same role. The tool sends the task brief to that session and returns a Clara task ID for follow-ups. Omitting `resume_session_id` starts a new session. Discovery and resuming require the corresponding capabilities from the external agent.
+
+Go hosts can opt into these capabilities through the `core.ACPServerConfig.List` and `Resume` callbacks. `core.ACPExternal.ListSessions` and `ResumeSession` check the negotiated capabilities before sending requests.
 
 
 ### Delegated tasks

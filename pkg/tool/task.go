@@ -23,6 +23,8 @@ type TaskSpec struct {
 	Model     string `json:"model,omitempty"`
 	Reasoning string `json:"reasoning,omitempty"`
 	Fork      bool   `json:"fork_history,omitempty"`
+	// ResumeSessionID identifies an existing session for a configured external ACP role.
+	ResumeSessionID string `json:"resume_session_id,omitempty"`
 }
 
 type TaskInfo struct {
@@ -119,6 +121,9 @@ func (s *TaskScope) Spawn(ctx context.Context, spec TaskSpec) (TaskInfo, error) 
 	}
 	if err := validateTaskSpec(spec); err != nil {
 		return TaskInfo{}, err
+	}
+	if spec.ResumeSessionID != "" {
+		return TaskInfo{}, errs.New(errs.CodeInvalidArgument, "resume_session_id requires a configured external ACP role")
 	}
 	m := s.manager
 	if m.build == nil {
@@ -259,6 +264,9 @@ func validateTaskSpec(spec TaskSpec) error {
 	}
 	if len(spec.Message) > 256<<10 {
 		return errs.New(errs.CodeInvalidArgument, "message must be at most 262144 UTF-8 bytes (256 KiB). No task was started")
+	}
+	if spec.ResumeSessionID != "" && (strings.TrimSpace(spec.ResumeSessionID) == "" || len(spec.ResumeSessionID) > 4096) {
+		return errs.New(errs.CodeInvalidArgument, "resume_session_id must be non-blank and at most 4096 bytes")
 	}
 	return nil
 }

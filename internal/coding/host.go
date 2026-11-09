@@ -163,6 +163,9 @@ func (h Host) Open(ctx context.Context, workspace Workspace, store *session.Stor
 		return c.publishActivity(activity)
 	})
 	c.items = append(c.items, taskTools(backend)...)
+	if c.external != nil {
+		c.items = append(c.items, toolapi.ListACPSessions(c.external))
+	}
 	engine := core.NewAgent(model)
 	if meta.ID == "" {
 		c.Session, err = core.NewSession(ctx, engine, store)

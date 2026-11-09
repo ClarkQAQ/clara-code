@@ -23,7 +23,8 @@ const taskInputSchema = `{
   "message":{"type":"string","minLength":1,"pattern":"\\S","description":"Required self-contained task brief, at most 262144 UTF-8 bytes (256 KiB). Include objective, paths, boundaries and expected result. Whitespace-only is invalid."},
   "model":{"type":"string","description":"Optional host model override. Omit to use the host default; only override when explicitly requested or instructed."},
   "reasoning":{"type":"string","description":"Optional reasoning effort override, using a level supported by the selected model. Omit to use the host default."},
-  "fork_history":{"type":"boolean","default":false,"description":"Copy parent conversation when true; default false starts without parent conversation. Always supply a complete message. Does not copy tools, permissions or live processes. External ACP agents do not support this override."}
+  "fork_history":{"type":"boolean","default":false,"description":"Copy parent conversation when true; default false starts without parent conversation. Always supply a complete message. Does not copy tools, permissions or live processes. External ACP agents do not support this override."},
+  "resume_session_id":{"type":"string","minLength":1,"maxLength":4096,"pattern":"\\S","description":"Only for a configured external ACP role. Explicitly continue this remote session before sending message. Use its exact sessionId from list_acp_sessions or the user."}
  },
  "required":["task_name","role","message"],
  "additionalProperties":false

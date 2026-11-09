@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 
@@ -20,21 +23,38 @@ type ACPBinding struct {
 	PrepareInput func(context.Context, []model.Message) ([]model.Message, error)
 	Configure    func(context.Context) AgentStreamCall
 	Close        func(context.Context) error
+	// MatchCwd optionally checks whether a requested cwd identifies this binding's workspace.
+	MatchCwd func(string) bool
 }
 
 type ACPServerConfig struct {
 	Name, Version string
 	Open          func(context.Context, string, string, []sdk.McpServer) (ACPBinding, error)
-	LoadSession   bool
-	Images        bool
-	MCPHTTP       bool
+	// List enables session/list and returns one page of session metadata.
+	List func(context.Context, sdk.ListSessionsRequest) (sdk.ListSessionsResponse, error)
+	// Resume enables session/resume. It opens an existing session without replaying updates.
+	// Like Open, it must clean up any resources it acquires before returning an error.
+	Resume      func(context.Context, sdk.ResumeSessionRequest) (ACPBinding, sdk.ResumeSessionResponse, error)
+	LoadSession bool
+	Images      bool
+	MCPHTTP     bool
 }
 
 type ACPServer struct {
 	config   ACPServerConfig
 	mu       sync.Mutex
 	conn     *sdk.AgentSideConnection
-	sessions map[sdk.SessionId]ACPBinding
+	sessions map[sdk.SessionId]acpSession
+	closed   bool
+	// Serialize lifecycle calls for the same session before acquiring host resources.
+	lifecycle [64]chan struct{}
+}
+
+type acpSession struct {
+	ACPBinding
+	cwd     string
+	servers []sdk.McpServer
+	resume  sdk.ResumeSessionResponse
 }
 
 func NewACPServer(config ACPServerConfig) (*ACPServer, error) {
@@ -47,7 +67,11 @@ func NewACPServer(config ACPServerConfig) (*ACPServer, error) {
 	if config.Version == "" {
 		config.Version = "dev"
 	}
-	return &ACPServer{config: config, sessions: map[sdk.SessionId]ACPBinding{}}, nil
+	server := &ACPServer{config: config, sessions: map[sdk.SessionId]acpSession{}}
+	for i := range server.lifecycle {
+		server.lifecycle[i] = make(chan struct{}, 1)
+	}
+	return server, nil
 }
 
 func (s *ACPServer) Serve(ctx context.Context, input io.Reader, output io.Writer) error {
@@ -63,15 +87,23 @@ func (s *ACPServer) Serve(ctx context.Context, input io.Reader, output io.Writer
 	}
 	s.mu.Lock()
 	active := s.sessions
-	s.sessions = map[sdk.SessionId]ACPBinding{}
+	s.sessions = nil
+	s.closed = true
 	s.mu.Unlock()
 	for _, binding := range active {
-		err = errors.Join(err, closeBinding(context.WithoutCancel(ctx), binding))
+		err = errors.Join(err, closeBinding(context.WithoutCancel(ctx), binding.ACPBinding))
 	}
 	return err
 }
 
 func (s *ACPServer) Initialize(context.Context, sdk.InitializeRequest) (sdk.InitializeResponse, error) {
+	capabilities := sdk.SessionCapabilities{Close: &sdk.SessionCloseCapabilities{}}
+	if s.config.List != nil {
+		capabilities.List = &sdk.SessionListCapabilities{}
+	}
+	if s.config.Resume != nil {
+		capabilities.Resume = &sdk.SessionResumeCapabilities{}
+	}
 	return sdk.InitializeResponse{
 		ProtocolVersion: sdk.ProtocolVersionNumber,
 		AgentInfo:       &sdk.Implementation{Name: s.config.Name, Version: s.config.Version},
@@ -80,7 +112,7 @@ func (s *ACPServer) Initialize(context.Context, sdk.InitializeRequest) (sdk.Init
 			LoadSession:         s.config.LoadSession,
 			PromptCapabilities:  sdk.PromptCapabilities{Image: s.config.Images, EmbeddedContext: true},
 			McpCapabilities:     sdk.McpCapabilities{Http: s.config.MCPHTTP},
-			SessionCapabilities: sdk.SessionCapabilities{Close: &sdk.SessionCloseCapabilities{}},
+			SessionCapabilities: capabilities,
 		},
 	}, nil
 }
@@ -93,12 +125,55 @@ func (*ACPServer) Logout(context.Context, sdk.LogoutRequest) (sdk.LogoutResponse
 	return sdk.LogoutResponse{}, nil
 }
 
-func (*ACPServer) ListSessions(context.Context, sdk.ListSessionsRequest) (sdk.ListSessionsResponse, error) {
-	return sdk.ListSessionsResponse{}, sdk.NewMethodNotFound("session/list")
+func (s *ACPServer) ListSessions(ctx context.Context, req sdk.ListSessionsRequest) (sdk.ListSessionsResponse, error) {
+	if s.config.List == nil {
+		return sdk.ListSessionsResponse{}, sdk.NewMethodNotFound("session/list")
+	}
+	response, err := s.config.List(ctx, req)
+	if response.Sessions == nil {
+		response.Sessions = []sdk.SessionInfo{}
+	}
+	return response, err
 }
 
-func (*ACPServer) ResumeSession(context.Context, sdk.ResumeSessionRequest) (sdk.ResumeSessionResponse, error) {
-	return sdk.ResumeSessionResponse{}, sdk.NewMethodNotFound("session/resume")
+func (s *ACPServer) ResumeSession(ctx context.Context, req sdk.ResumeSessionRequest) (sdk.ResumeSessionResponse, error) {
+	if s.config.Resume == nil {
+		return sdk.ResumeSessionResponse{}, sdk.NewMethodNotFound("session/resume")
+	}
+	if strings.TrimSpace(string(req.SessionId)) == "" || req.Cwd == "" {
+		return sdk.ResumeSessionResponse{}, sdk.NewInvalidParams("sessionId and cwd are required")
+	}
+	if len(req.AdditionalDirectories) > 0 {
+		return sdk.ResumeSessionResponse{}, sdk.NewInvalidParams("additionalDirectories are not supported")
+	}
+	unlock, err := s.lockSession(ctx, req.SessionId)
+	if err != nil {
+		return sdk.ResumeSessionResponse{}, err
+	}
+	defer unlock()
+	if existing, ok := s.lookup(req.SessionId); ok {
+		matches := existing.cwd == req.Cwd
+		if existing.MatchCwd != nil {
+			matches = existing.MatchCwd(req.Cwd)
+		}
+		if !matches {
+			return sdk.ResumeSessionResponse{}, unknownSession()
+		}
+		if !slices.EqualFunc(existing.servers, req.McpServers, func(a, b sdk.McpServer) bool {
+			return reflect.DeepEqual(a, b)
+		}) {
+			return sdk.ResumeSessionResponse{}, sdk.NewInvalidParams("active session has different MCP servers; close it before reconnecting")
+		}
+		return existing.resume, nil
+	}
+	binding, response, err := s.config.Resume(ctx, req)
+	if err != nil {
+		return sdk.ResumeSessionResponse{}, err
+	}
+	_, err = s.register(ctx, req.SessionId, acpSession{
+		ACPBinding: binding, cwd: req.Cwd, servers: req.McpServers, resume: response,
+	})
+	return response, err
 }
 
 func (*ACPServer) SetSessionMode(context.Context, sdk.SetSessionModeRequest) (sdk.SetSessionModeResponse, error) {
@@ -111,28 +186,47 @@ func (*ACPServer) SetSessionConfigOption(context.Context, sdk.SetSessionConfigOp
 
 func (s *ACPServer) open(ctx context.Context, id sdk.SessionId, cwd string, servers []sdk.McpServer) (ACPBinding, error) {
 	if id != "" {
+		unlock, err := s.lockSession(ctx, id)
+		if err != nil {
+			return ACPBinding{}, err
+		}
+		defer unlock()
 		if binding, ok := s.lookup(id); ok {
-			return binding, nil
+			return binding.ACPBinding, nil
 		}
 	}
 	binding, err := s.config.Open(ctx, string(id), cwd, servers)
 	if err != nil {
 		return ACPBinding{}, err
 	}
+	return s.register(ctx, id, acpSession{ACPBinding: binding, cwd: cwd, servers: servers})
+}
+
+func (s *ACPServer) register(ctx context.Context, id sdk.SessionId, binding acpSession) (ACPBinding, error) {
+	cleanup := func(err error) (ACPBinding, error) {
+		return ACPBinding{}, errors.Join(err, closeBinding(context.WithoutCancel(ctx), binding.ACPBinding))
+	}
 	if binding.Session == nil {
-		return ACPBinding{}, errors.New("acp: factory returned no session")
+		return cleanup(errors.New("acp: factory returned no session"))
 	}
 	key := sdk.SessionId(binding.Session.ID())
+	if id != "" && key != id {
+		return cleanup(errors.New("acp: factory returned a different session ID"))
+	}
 	s.mu.Lock()
+	if s.closed || ctx.Err() != nil {
+		s.mu.Unlock()
+		return cleanup(errors.Join(ctx.Err(), errors.New("acp: session registration interrupted")))
+	}
 	existing, ok := s.sessions[key]
 	if !ok {
 		s.sessions[key] = binding
 	}
 	s.mu.Unlock()
 	if ok {
-		return existing, closeBinding(context.WithoutCancel(ctx), binding)
+		return existing.ACPBinding, closeBinding(context.WithoutCancel(ctx), binding.ACPBinding)
 	}
-	return binding, nil
+	return binding.ACPBinding, nil
 }
 
 func (s *ACPServer) NewSession(ctx context.Context, req sdk.NewSessionRequest) (sdk.NewSessionResponse, error) {
@@ -257,6 +351,11 @@ func (s *ACPServer) Cancel(_ context.Context, req sdk.CancelNotification) error 
 }
 
 func (s *ACPServer) CloseSession(ctx context.Context, req sdk.CloseSessionRequest) (sdk.CloseSessionResponse, error) {
+	unlock, err := s.lockSession(ctx, req.SessionId)
+	if err != nil {
+		return sdk.CloseSessionResponse{}, err
+	}
+	defer unlock()
 	s.mu.Lock()
 	binding, ok := s.sessions[req.SessionId]
 	delete(s.sessions, req.SessionId)
@@ -264,18 +363,35 @@ func (s *ACPServer) CloseSession(ctx context.Context, req sdk.CloseSessionReques
 	if !ok {
 		return sdk.CloseSessionResponse{}, unknownSession()
 	}
-	return sdk.CloseSessionResponse{}, closeBinding(ctx, binding)
+	return sdk.CloseSessionResponse{}, closeBinding(ctx, binding.ACPBinding)
 }
 
 func closeBinding(ctx context.Context, binding ACPBinding) error {
-	err := binding.Session.Close(ctx)
+	var err error
+	if binding.Session != nil {
+		err = binding.Session.Close(ctx)
+	}
 	if binding.Close != nil {
 		err = errors.Join(err, binding.Close(ctx))
 	}
 	return err
 }
 
-func (s *ACPServer) lookup(id sdk.SessionId) (ACPBinding, bool) {
+func (s *ACPServer) lockSession(ctx context.Context, id sdk.SessionId) (func(), error) {
+	lock := s.lifecycle[crc32.ChecksumIEEE([]byte(id))%uint32(len(s.lifecycle))]
+	select {
+	case lock <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			<-lock
+			return nil, err
+		}
+		return func() { <-lock }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (s *ACPServer) lookup(id sdk.SessionId) (acpSession, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	binding, ok := s.sessions[id]

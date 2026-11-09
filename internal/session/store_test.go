@@ -1,12 +1,42 @@
 package session
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"clara-code/pkg/core"
 	"clara-code/pkg/model"
 	"clara-code/pkg/util/id"
 )
+
+func TestListPageReadsLegacyCommandSnapshots(t *testing.T) {
+	home, cwd := t.TempDir(), t.TempDir()
+	dir := filepath.Join(home, "sessions")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stamp := "2026-11-09T10:11:12.123456789+08:00"
+	for _, id := range []string{"session_b", "session_a"} {
+		raw := fmt.Sprintf(`{"Commands":{"terminal":{"Output":%q}},"Version":1,"Meta":{"ID":%q,"Cwd":%q,"Project":%q,"Updated":%q},"State":{}}`,
+			strings.Repeat("x", 70<<10), id, cwd, cwd, stamp)
+		if err := os.WriteFile(filepath.Join(dir, id+".json"), []byte(raw), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, err := ListPage(t.Context(), home, cwd, nil)
+	if err != nil || len(page) != 2 || page[0].ID != "session_a" || page[1].ID != "session_b" ||
+		page[0].Updated.Format(time.RFC3339Nano) != stamp {
+		t.Fatalf("unexpected page %+v, %v", page, err)
+	}
+	page, err = ListPage(t.Context(), home, cwd, &page[0])
+	if err != nil || len(page) != 1 || page[0].ID != "session_b" {
+		t.Fatalf("unexpected cursor result %+v, %v", page, err)
+	}
+}
 
 func TestNewRunAfterIncompleteFinalCheckpoint(t *testing.T) {
 	store := New(t.TempDir(), Meta{Project: "/project"})

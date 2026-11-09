@@ -2,11 +2,16 @@ package coding
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"clara-code/pkg/core"
 	"clara-code/pkg/core/prompt"
@@ -21,54 +26,157 @@ func (h Host) ServeACP(ctx context.Context, input io.Reader, output io.Writer, v
 	server, err := core.NewACPServer(core.ACPServerConfig{
 		Name: "clara-code", Version: version, LoadSession: true, Images: true, MCPHTTP: true,
 		Open: func(ctx context.Context, id, cwd string, servers []acpsdk.McpServer) (core.ACPBinding, error) {
-			if !filepath.IsAbs(cwd) {
-				return core.ACPBinding{}, errors.New("ACP cwd must be absolute")
-			}
-			workspace, err := ResolveWorkspace(cwd)
-			if err != nil {
-				return core.ACPBinding{}, err
-			}
-			extra, err := acpServers(servers, workspace.Cwd)
-			if err != nil {
-				return core.ACPBinding{}, err
-			}
-			effective, err := h.Config.Reload(ctx, workspace.Cwd, workspace.Root)
-			if err != nil {
-				return core.ACPBinding{}, err
-			}
-			localHost := h
-			localHost.Config = effective
-			var store *session.Store
-			if id == "" {
-				name := effective.DefaultModel
-				store = session.New(h.Config.Home, session.Meta{Project: workspace.Root, Cwd: workspace.Cwd,
-					Model: name, Effort: string(effective.Models[name].Effort)})
-			} else {
-				store, err = session.Open(h.Config.Home, id, workspace.Root)
-				if err != nil {
-					return core.ACPBinding{}, err
-				}
-				workspace, err = ResolveWorkspace(store.Meta().Cwd)
-				if err != nil || workspace.Root != store.Meta().Project {
-					return core.ACPBinding{}, errors.Join(err, errors.New("the session's project directory changed"), store.Close())
-				}
-			}
-			conversation, err := localHost.Open(ctx, workspace, store, nil, extra)
-			if err != nil {
-				return core.ACPBinding{}, err
-			}
-			return core.ACPBinding{
-				Session: conversation.Session, PrepareInput: conversation.PrepareImages, Close: func(context.Context) error { return conversation.Close() },
-				Configure: func(context.Context) core.AgentStreamCall {
-					return conversation.Call(prompt.Execute, false)
-				},
-			}, nil
+			return h.openACP(ctx, id, cwd, servers, false)
+		},
+		List: h.listACP,
+		Resume: func(ctx context.Context, req acpsdk.ResumeSessionRequest) (core.ACPBinding, acpsdk.ResumeSessionResponse, error) {
+			binding, err := h.openACP(ctx, string(req.SessionId), req.Cwd, req.McpServers, true)
+			return binding, acpsdk.ResumeSessionResponse{}, err
 		},
 	})
 	if err != nil {
 		return err
 	}
 	return server.Serve(ctx, input, output)
+}
+
+func (h Host) openACP(ctx context.Context, id, cwd string, servers []acpsdk.McpServer, resume bool) (core.ACPBinding, error) {
+	if !filepath.IsAbs(cwd) {
+		return core.ACPBinding{}, acpsdk.NewInvalidParams("ACP cwd must be absolute")
+	}
+	workspace, err := ResolveWorkspace(cwd)
+	if err != nil {
+		if resume && errors.Is(err, os.ErrNotExist) {
+			return core.ACPBinding{}, acpSessionNotFound()
+		}
+		return core.ACPBinding{}, err
+	}
+	var store *session.Store
+	if id == "" {
+		store = session.New(h.Config.Home, session.Meta{Project: workspace.Root, Cwd: workspace.Cwd})
+	} else {
+		store, err = session.Open(h.Config.Home, id, workspace.Root)
+		if err != nil {
+			if resume && (errors.Is(err, os.ErrNotExist) || errors.Is(err, session.ErrProjectMismatch) ||
+				errors.Is(err, session.ErrInvalidID)) {
+				return core.ACPBinding{}, acpSessionNotFound()
+			}
+			return core.ACPBinding{}, err
+		}
+		meta := store.Meta()
+		saved, err := ResolveWorkspace(meta.Cwd)
+		if err != nil || saved.Root != meta.Project || (resume && saved.Cwd != workspace.Cwd) {
+			closeErr := store.Close()
+			if resume {
+				if closeErr != nil {
+					return core.ACPBinding{}, closeErr
+				}
+				return core.ACPBinding{}, acpSessionNotFound()
+			}
+			return core.ACPBinding{}, errors.Join(err, errors.New("the session's project directory changed"), closeErr)
+		}
+		workspace = saved
+	}
+	extra, err := acpServers(servers, workspace.Cwd)
+	if err != nil {
+		return core.ACPBinding{}, errors.Join(err, store.Close())
+	}
+	conversation, err := h.Open(ctx, workspace, store, nil, extra)
+	if err != nil {
+		return core.ACPBinding{}, err
+	}
+	return core.ACPBinding{
+		Session: conversation.Session, PrepareInput: conversation.PrepareImages,
+		Close: func(context.Context) error { return conversation.Close() },
+		Configure: func(context.Context) core.AgentStreamCall {
+			return conversation.Call(prompt.Execute, false)
+		},
+		MatchCwd: func(path string) bool {
+			if !filepath.IsAbs(path) {
+				return false
+			}
+			current, err := ResolveWorkspace(path)
+			return err == nil && current.Cwd == workspace.Cwd && current.Root == workspace.Root
+		},
+	}, nil
+}
+
+func acpSessionNotFound() error {
+	return &acpsdk.RequestError{Code: -32002, Message: "session not found"}
+}
+
+type acpListCursor struct {
+	Scope   string
+	ID      string
+	Updated string
+}
+
+func (h Host) listACP(ctx context.Context, req acpsdk.ListSessionsRequest) (acpsdk.ListSessionsResponse, error) {
+	response := acpsdk.ListSessionsResponse{Sessions: []acpsdk.SessionInfo{}}
+	var cwd string
+	if req.Cwd != nil {
+		if !filepath.IsAbs(*req.Cwd) {
+			return response, acpsdk.NewInvalidParams("ACP cwd must be absolute")
+		}
+		cwd = filepath.Clean(*req.Cwd)
+		if resolved, err := filepath.EvalSymlinks(cwd); err == nil {
+			cwd = resolved
+		}
+	}
+	scope := sha256.Sum256([]byte(h.Config.Home + "\x00" + cwd))
+	token := acpListCursor{Scope: base64.RawURLEncoding.EncodeToString(scope[:])}
+	var after *session.Meta
+	if req.Cursor != nil {
+		var cursor acpListCursor
+		if len(*req.Cursor) > 512 {
+			return response, acpsdk.NewInvalidParams("invalid session list cursor")
+		}
+		raw, err := base64.RawURLEncoding.DecodeString(*req.Cursor)
+		if err != nil || json.Unmarshal(raw, &cursor) != nil || cursor.Scope != token.Scope || !session.ValidID(cursor.ID) {
+			return response, acpsdk.NewInvalidParams("invalid session list cursor")
+		}
+		updated, err := time.Parse(time.RFC3339Nano, cursor.Updated)
+		if err != nil {
+			return response, acpsdk.NewInvalidParams("invalid session list cursor")
+		}
+		after = &session.Meta{ID: cursor.ID, Updated: updated}
+	}
+	items, err := session.ListPage(ctx, h.Config.Home, cwd, after)
+	if err != nil {
+		return response, err
+	}
+	const maxPageBytes = 512 << 10
+	pageBytes := 0
+	for _, item := range items {
+		info := acpsdk.SessionInfo{SessionId: acpsdk.SessionId(item.ID), Cwd: item.Cwd}
+		if strings.TrimSpace(item.FirstPrompt) != "" {
+			info.Title = &item.FirstPrompt
+		}
+		if !item.Updated.IsZero() {
+			updated := item.Updated.Format(time.RFC3339Nano)
+			info.UpdatedAt = &updated
+		}
+		raw, err := json.Marshal(info)
+		if err != nil {
+			return response, err
+		}
+		if len(response.Sessions) == session.SessionPageSize || pageBytes+len(raw)+1 > maxPageBytes {
+			if len(response.Sessions) == 0 {
+				return response, errors.New("session metadata exceeds the ACP page size limit")
+			}
+			raw, err := json.Marshal(token)
+			if err != nil {
+				return response, err
+			}
+			next := base64.RawURLEncoding.EncodeToString(raw)
+			response.NextCursor = &next
+			break
+		}
+		response.Sessions = append(response.Sessions, info)
+		pageBytes += len(raw) + 1
+		token.ID, token.Updated = item.ID, item.Updated.Format(time.RFC3339Nano)
+	}
+	return response, nil
 }
 
 func acpServers(servers []acpsdk.McpServer, cwd string) ([]mcp.ServerConfig, error) {

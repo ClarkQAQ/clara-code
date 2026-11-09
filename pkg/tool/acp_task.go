@@ -2,6 +2,7 @@ package tool
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -41,6 +42,36 @@ type externalTask struct {
 	closed  bool
 }
 
+// ListACPSessions discovers persisted sessions for a configured external role in its working directory.
+func ListACPSessions(backend *ACPTaskBackend) Tool {
+	type input struct {
+		Role   string  `json:"role"`
+		Cursor *string `json:"cursor,omitempty"`
+	}
+	return Func(Definition{
+		Name:        "list_acp_sessions",
+		Description: "List one page of existing ACP sessions for a configured external role in this working directory. Pass nextCursor as cursor for the next page. To continue a session, use its sessionId as resume_session_id with the same role.",
+		InputSchema: json.RawMessage(`{
+			"type":"object",
+			"properties":{"role":{"type":"string","minLength":1,"maxLength":4096},"cursor":{"type":"string","minLength":1,"maxLength":4096}},
+			"required":["role"],
+			"additionalProperties":false
+		}`),
+		Effects: []Effect{EffectState},
+		Timeout: 30 * time.Second,
+	}, func(ctx context.Context, args input) (Result, error) {
+		page, err := backend.listSessions(ctx, args.Role, args.Cursor)
+		if err != nil {
+			return Result{}, err
+		}
+		result, err := taskResult(page, nil)
+		if len(result.Content) > 128<<10 {
+			return Result{}, errs.New(errs.CodeLimit, "external ACP session page exceeds 128 KiB")
+		}
+		return result, err
+	})
+}
+
 // NewACPTaskBackend creates an ACP task backend for one trusted host scope.
 func NewACPTaskBackend(agents map[string]core.ACPExternalConfig, maxConcurrent int) *ACPTaskBackend {
 	if maxConcurrent <= 0 {
@@ -59,6 +90,9 @@ func (b *ACPTaskBackend) Spawn(ctx context.Context, request TaskSpec) (TaskInfo,
 	}
 	if len(request.Message) > 256<<10 {
 		return TaskInfo{}, errs.New(errs.CodeLimit, "external task brief is too large")
+	}
+	if err := validateTaskSpec(request); err != nil {
+		return TaskInfo{}, err
 	}
 	config, ok := b.Agents[request.Role]
 	if !ok {
@@ -79,14 +113,18 @@ func (b *ACPTaskBackend) Spawn(ctx context.Context, request TaskSpec) (TaskInfo,
 	if err != nil {
 		return TaskInfo{}, err
 	}
-	cwd := config.Cwd
-	if cwd == "" {
-		cwd, err = os.Getwd()
-		if err != nil {
-			return TaskInfo{}, errors.Join(err, agent.Close(context.WithoutCancel(ctx), ""))
-		}
+	cwd, err := externalACPCwd(config)
+	if err != nil {
+		return TaskInfo{}, errors.Join(err, agent.Close(context.WithoutCancel(ctx), ""))
 	}
-	sessionID, err := agent.NewSession(ctx, cwd)
+	sessionID := acpsdk.SessionId(request.ResumeSessionID)
+	if sessionID == "" {
+		sessionID, err = agent.NewSession(ctx, cwd)
+	} else {
+		_, err = agent.ResumeSession(ctx, acpsdk.ResumeSessionRequest{
+			SessionId: sessionID, Cwd: cwd, McpServers: []acpsdk.McpServer{},
+		})
+	}
 	if err != nil {
 		return TaskInfo{}, errors.Join(err, agent.Close(context.WithoutCancel(ctx), ""))
 	}
@@ -113,8 +151,45 @@ func (b *ACPTaskBackend) Spawn(ctx context.Context, request TaskSpec) (TaskInfo,
 	return info, nil
 }
 
+func (b *ACPTaskBackend) listSessions(ctx context.Context, role string, cursor *string) (acpsdk.ListSessionsResponse, error) {
+	config, ok := b.Agents[role]
+	if !ok {
+		return acpsdk.ListSessionsResponse{}, fmt.Errorf("acp: no external Agent configured for role %q", role)
+	}
+	cwd, err := externalACPCwd(config)
+	if err != nil {
+		return acpsdk.ListSessionsResponse{}, err
+	}
+	select {
+	case b.sem <- struct{}{}:
+		defer func() { <-b.sem }()
+	default:
+		return acpsdk.ListSessionsResponse{}, errs.ErrBusy
+	}
+	agent, err := core.ConnectACPExternal(ctx, config)
+	if err != nil {
+		return acpsdk.ListSessionsResponse{}, err
+	}
+	page, err := agent.ListSessions(ctx, acpsdk.ListSessionsRequest{Cwd: &cwd, Cursor: cursor})
+	if err := errors.Join(err, agent.Close(context.WithoutCancel(ctx), "")); err != nil {
+		return acpsdk.ListSessionsResponse{}, err
+	}
+	page.Meta = nil
+	for i := range page.Sessions {
+		page.Sessions[i].Meta = nil
+		page.Sessions[i].AdditionalDirectories = nil
+	}
+	return page, nil
+}
+
+func externalACPCwd(config core.ACPExternalConfig) (string, error) {
+	if config.Cwd != "" {
+		return config.Cwd, nil
+	}
+	return os.Getwd()
+}
+
 func (b *ACPTaskBackend) execute(entry *externalTask, prompt string) {
-	defer func() { <-b.sem }()
 	for {
 		ctx, cancel := context.WithTimeout(entry.ctx, 10*time.Minute)
 		text, stop, err := entry.agent.Prompt(ctx, entry.session, prompt)
@@ -141,6 +216,7 @@ func (b *ACPTaskBackend) execute(entry *externalTask, prompt string) {
 		}
 		entry.run = false
 		entry.pending = nil
+		<-b.sem
 		close(entry.done)
 		b.mu.Unlock()
 		return

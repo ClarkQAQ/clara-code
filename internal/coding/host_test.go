@@ -17,10 +17,39 @@ import (
 	"clara-code/pkg/core/prompt"
 	modelapi "clara-code/pkg/model"
 	toolapi "clara-code/pkg/tool"
+	"clara-code/pkg/util/errs"
 
 	"clara-code/internal/session"
 	"clara-code/internal/setting"
 )
+
+func TestACPDiscoveryToolScope(t *testing.T) {
+	c, host := testHost(t, t.TempDir(), DemoModel{})
+	hasDiscovery := func(items []modelapi.AgentTool) bool {
+		return slices.ContainsFunc(items, func(item modelapi.AgentTool) bool {
+			return item.Info().Name == "list_acp_sessions"
+		})
+	}
+	if hasDiscovery(c.items) {
+		t.Fatal("ACP discovery requires an external role")
+	}
+	host.Config.ACP = map[string]setting.ACP{"helper": {Command: "unused-fixture"}}
+	store := session.New(host.Config.Home, session.Meta{Project: c.Workspace.Root, Cwd: c.Workspace.Cwd})
+	withACP, err := host.Open(t.Context(), c.Workspace, store, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer withACP.Close()
+	if !hasDiscovery(withACP.items) || hasDiscovery(toolapi.PlanTools(withACP.items)) {
+		t.Fatal("ACP discovery should be available only in execution")
+	}
+	_, err = withACP.backend.Spawn(t.Context(), toolapi.TaskSpec{
+		Role: "general", Name: "local", Message: "continue", ResumeSessionID: "remote-id",
+	})
+	if !errs.IsCode(err, errs.CodeInvalidArgument) {
+		t.Fatalf("local role accepted a remote session ID: %v", err)
+	}
+}
 
 func testHost(t *testing.T, cwd string, model modelapi.LanguageModel) (*Conversation, Host) {
 	t.Helper()

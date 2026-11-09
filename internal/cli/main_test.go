@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"clara-code/pkg/model"
 	toolapi "clara-code/pkg/tool"
 	"clara-code/pkg/tool/mcp"
+	sdk "github.com/coder/acp-go-sdk"
 	"github.com/creack/pty"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -77,24 +79,70 @@ func TestMCPStdioProcess(t *testing.T) {
 }
 
 func TestACPDelegateProcess(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
 	backend := toolapi.NewACPTaskBackend(map[string]core.ACPExternalConfig{
 		"helper": {Command: os.Args[0], Args: []string{"__acp_exec", os.Args[0], "acp", "--demo"},
 			Cwd: t.TempDir(), Env: map[string]string{childEnv: "1", "CLARA_CODE_HOME": t.TempDir()}},
 	}, 1)
-	task, err := backend.Spawn(ctx, toolapi.TaskSpec{Role: "helper", Name: "probe", Message: "delegated work"})
-	if err != nil {
+	spawn := toolapi.SpawnAgent(backend)
+	runTool := func(item toolapi.Tool, args any) string {
+		t.Helper()
+		raw, err := json.Marshal(args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := item.Run(ctx, model.ToolCall{Input: string(raw)})
+		if err != nil || result.IsError {
+			t.Fatalf("%s: %+v, %v", item.Info().Name, result, err)
+		}
+		return result.Content
+	}
+	var task toolapi.TaskInfo
+	if err := json.Unmarshal([]byte(runTool(spawn, toolapi.TaskSpec{Role: "helper", Name: "probe", Message: "delegated work"})), &task); err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
-		if err := backend.CloseTask(ctx, task.ID); err != nil {
-			t.Error(err)
-		}
-	}()
 	result, err := backend.Wait(ctx, task.ID, 7*time.Second)
 	if err != nil || result.Result != "Demo response: delegated work" {
 		t.Fatalf("delegated result %+v, %v", result, err)
+	}
+	if err := backend.CloseTask(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	list := toolapi.ListACPSessions(backend)
+	var page sdk.ListSessionsResponse
+	if err := json.Unmarshal([]byte(runTool(list, map[string]string{"role": "helper"})), &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Sessions) != 1 {
+		t.Fatalf("expected one persisted delegated session, got %+v", page)
+	}
+	persisted := string(page.Sessions[0].SessionId)
+	_, err = spawn.Run(ctx, model.ToolCall{Input: `{"role":"helper","task_name":"missing","message":"resume","resume_session_id":"session_missing"}`})
+	requireACPCode(t, err, -32002)
+	var resumed toolapi.TaskInfo
+	spec := toolapi.TaskSpec{Role: "helper", Name: "continued", Message: "continued work", ResumeSessionID: persisted}
+	if err := json.Unmarshal([]byte(runTool(toolapi.RunTask(backend), spec)), &resumed); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := backend.CloseTask(ctx, resumed.ID); err != nil {
+			t.Error(err)
+		}
+	}()
+	if resumed.ID == task.ID || resumed.Result != "Demo response: continued work" {
+		t.Fatalf("resumed task %+v", resumed)
+	}
+	runTool(toolapi.FollowupTask(backend), map[string]string{"target": resumed.ID, "message": "follow-up"})
+	result, err = backend.Wait(ctx, resumed.ID, 7*time.Second)
+	if err != nil || result.Result != "Demo response: follow-up" {
+		t.Fatalf("follow-up result %+v, %v", result, err)
+	}
+	if err := json.Unmarshal([]byte(runTool(list, map[string]string{"role": "helper"})), &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Sessions) != 1 || string(page.Sessions[0].SessionId) != persisted {
+		t.Fatalf("resuming created another session: %+v", page)
 	}
 }
 
