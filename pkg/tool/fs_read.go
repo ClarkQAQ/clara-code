@@ -81,7 +81,8 @@ func (s *Files) Read() Tool {
 		var builder strings.Builder
 		fmt.Fprintf(&builder, "[%s#%s]%s", target, snapshot.Tag, body.String())
 		if rules != "" {
-			builder.WriteString("\n\nApplicable project instructions:\n" + rules)
+			builder.WriteString("\n\nApplicable project instructions:\n")
+			builder.WriteString(rules)
 		}
 		return TextResult(builder.String()), nil
 	})

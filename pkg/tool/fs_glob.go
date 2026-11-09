@@ -32,7 +32,8 @@ func (s *Files) Glob() Tool {
 		}
 		var builder strings.Builder
 		for _, entry := range result.Entries {
-			builder.WriteString(entry.Path.String() + "\n")
+			builder.WriteString(entry.Path.String())
+			builder.WriteString("\n")
 		}
 		return TextResult(searchText(builder.String(), "No matching files.", result.SearchDiagnostics)), nil
 	})
