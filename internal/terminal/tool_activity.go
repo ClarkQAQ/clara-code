@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -35,6 +36,80 @@ func indicator(now time.Time) string {
 	return frames[(now.UnixMilli()/100)%int64(len(frames))]
 }
 
+var toolPresentations = map[string]struct {
+	title    string
+	argument string
+}{
+	"stat":              {title: "Stat", argument: "path"},
+	"fs_instructions":   {title: "Instructions", argument: "path"},
+	"review_changes":    {title: "ReviewChanges", argument: "kind"},
+	"get_plan":          {title: "Plan"},
+	"update_plan":       {title: "UpdatePlan"},
+	"get_goal":          {title: "Goal"},
+	"update_goal":       {title: "UpdateGoal", argument: "status"},
+	"spawn_agent":       {title: "SpawnAgent", argument: "task_name"},
+	"subagent_task":     {title: "SubagentTask", argument: "task_name"},
+	"list_agents":       {title: "ListAgents"},
+	"send_message":      {title: "SendMessage", argument: "target"},
+	"followup_task":     {title: "FollowupTask", argument: "target"},
+	"wait_agent":        {title: "WaitAgent", argument: "target"},
+	"interrupt_agent":   {title: "InterruptAgent", argument: "target"},
+	"close_agent":       {title: "CloseAgent", argument: "target"},
+	"list_acp_sessions": {title: "ListACPSessions", argument: "role"},
+}
+
+func toolTitle(activity session.ToolActivity) string {
+	if presentation, ok := toolPresentations[activity.Name]; ok {
+		return presentation.title
+	}
+	switch activity.Name {
+	case "read_skill", "read_skill_resource":
+		return "Skill"
+	default:
+		return activity.Title
+	}
+}
+
+func toolArgument(arguments, key string) string {
+	if key == "" {
+		return ""
+	}
+	var args map[string]json.RawMessage
+	if json.Unmarshal([]byte(arguments), &args) != nil {
+		return ""
+	}
+	var value string
+	if json.Unmarshal(args[key], &value) != nil {
+		return ""
+	}
+	return singleLine(value)
+}
+
+func toolDetail(activity session.ToolActivity) string {
+	if presentation, ok := toolPresentations[activity.Name]; ok {
+		return toolArgument(activity.Arguments, presentation.argument)
+	}
+	switch activity.Name {
+	case "read_skill", "read_skill_resource":
+		var args struct {
+			Name string `json:"name"`
+			Path string `json:"path"`
+		}
+		if json.Unmarshal([]byte(activity.Arguments), &args) != nil {
+			return ""
+		}
+		name := singleLine(args.Name)
+		if name != "" && activity.Name == "read_skill_resource" {
+			if path := singleLine(args.Path); path != "" {
+				return name + "/" + path
+			}
+		}
+		return name
+	default:
+		return activity.Detail
+	}
+}
+
 func (p *painter) toolRows(activity session.ToolActivity, now time.Time) []string {
 	marker, color := "●", "\x1b[32m"
 	switch activity.Status {
@@ -48,13 +123,8 @@ func (p *painter) toolRows(activity session.ToolActivity, now time.Time) []strin
 		marker, color = "○", dim
 	}
 	width := max(1, p.width-2)
-	title := activity.Title
-	if title == "" {
-		title = activity.Name
-	}
-	title = singleLine(title)
 	if activity.Interaction != "" {
-		title = singleLine(activity.Title)
+		title := singleLine(activity.Title)
 		header := "• " + title
 		if activity.Active() {
 			header = p.indicator(now) + " " + title
@@ -74,14 +144,19 @@ func (p *painter) toolRows(activity session.ToolActivity, now time.Time) []strin
 		}
 		return append(lines, "")
 	}
+	title := toolTitle(activity)
+	if title == "" {
+		title = activity.Name
+	}
 	var heading []span
-	heading = append(heading, span{text: title, style: bold})
-	if activity.Detail != "" {
+	heading = append(heading, span{text: singleLine(title), style: bold})
+	_, showEmptyParens := toolPresentations[activity.Name]
+	if detail := toolDetail(activity); detail != "" || showEmptyParens {
 		heading = append(heading, span{text: "(", style: dim})
 		if activity.Name == "exec_command" {
-			heading = append(heading, shellSpans(clean(activity.Detail))...)
+			heading = append(heading, shellSpans(clean(detail))...)
 		} else {
-			heading = append(heading, span{text: clean(activity.Detail)})
+			heading = append(heading, span{text: clean(detail)})
 		}
 		heading = append(heading, span{text: ")", style: dim})
 	}

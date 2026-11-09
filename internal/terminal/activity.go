@@ -86,7 +86,7 @@ func (a *app) activityRows(now time.Time) []string {
 	} else {
 		for _, tool := range a.toolGroup {
 			if tool.Active() {
-				header = "Running " + tool.Title
+				header = "Running " + toolTitle(tool)
 				if tool.Interaction != "" {
 					header = tool.Title
 				}
@@ -95,7 +95,7 @@ func (a *app) activityRows(now time.Time) []string {
 		}
 		for _, cell := range a.view.history {
 			if cell.Tool != nil && cell.Tool.Active() {
-				header = "Running " + cell.Tool.Title
+				header = "Running " + toolTitle(*cell.Tool)
 			}
 		}
 	}
