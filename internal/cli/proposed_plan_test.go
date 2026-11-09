@@ -1,3 +1,5 @@
+//go:build unix
+
 package cli
 
 import (
@@ -89,8 +91,16 @@ func TestPlanImplementationPTY(t *testing.T) {
 			p.send(t, "\x1b[Z")
 			p.await(t, 0, "Plan mode (Shift+Tab to cycle)")
 			p.send(t, "Original planning context\r")
-			if request := nextRequest(); strings.Contains(request, `"name":"write"`) {
-				t.Fatal("Plan mode exposed a write tool")
+			planRequest := nextRequest()
+			for _, name := range []string{"exec_command", "write_stdin"} {
+				if !strings.Contains(planRequest, `"name":"`+name+`"`) {
+					t.Errorf("Plan mode omitted %s", name)
+				}
+			}
+			for _, name := range []string{"write", "update_plan"} {
+				if strings.Contains(planRequest, `"name":"`+name+`"`) {
+					t.Errorf("Plan mode exposed %s", name)
+				}
 			}
 			p.await(t, 0, "# Example plan")
 			if output := p.output(); strings.Contains(output, "Implement this plan?") || strings.Contains(output, "<proposed_") {

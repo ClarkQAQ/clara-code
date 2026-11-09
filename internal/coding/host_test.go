@@ -168,7 +168,7 @@ func TestCodingLoopUsesRealHashlineAndShell(t *testing.T) {
 	}
 }
 
-func TestPlanOnlyAndProjectInstructions(t *testing.T) {
+func TestPlanToolsAndProjectInstructions(t *testing.T) {
 	root := t.TempDir()
 	initTestGit(t, root)
 	writeTestFile(t, root, "AGENTS.md", "project instructions")
@@ -191,10 +191,16 @@ func TestPlanOnlyAndProjectInstructions(t *testing.T) {
 				return nil, fmt.Errorf("unexpected context %s", hidden)
 			}
 		}
-		if slices.ContainsFunc(call.Tools, func(tool modelapi.Tool) bool {
-			return tool.GetName() == "exec_command" || tool.GetName() == "edit"
-		}) {
-			return nil, fmt.Errorf("write tools are visible in Plan mode")
+		for _, tool := range call.Tools {
+			switch tool.GetName() {
+			case "write", "edit", "update_plan", "update_goal", "spawn_agent", "subagent_task":
+				return nil, fmt.Errorf("%s is visible in Plan mode", tool.GetName())
+			}
+		}
+		for _, expected := range []string{"# Command workflow", "without an additional read-only sandbox"} {
+			if !strings.Contains(dynamic, expected) {
+				return nil, fmt.Errorf("missing Plan Mode guidance: %s", expected)
+			}
 		}
 		for _, message := range call.Prompt {
 			if message.Role == modelapi.MessageRoleTool {
@@ -204,7 +210,7 @@ func TestPlanOnlyAndProjectInstructions(t *testing.T) {
 						return nil, fmt.Errorf("skill tool returned %s", body)
 					}
 				}
-				return demoText("Read-only plan."), nil
+				return demoText("Plan ready."), nil
 			}
 		}
 		return toolReply("read_skill", map[string]any{"name": "example"}, 1), nil
@@ -212,9 +218,27 @@ func TestPlanOnlyAndProjectInstructions(t *testing.T) {
 	c, host := testHost(t, filepath.Join(root, "sub"), model)
 	writeTestFile(t, host.Config.Home, "AGENTS.md", "global instructions")
 	writeTestFile(t, host.Config.Home, "skills/example/SKILL.md", "---\nname: example\ndescription: global skill\n---\nglobal secret")
-	call := c.Call(prompt.Plan, false)
-	if err := call.AuthorizeTool(t.Context(), modelapi.ToolInfo{Effect: "write"}, modelapi.ToolCall{}); err == nil {
-		t.Fatal("plan authorized a write")
+	plan := c.Call(prompt.Plan, false)
+	review := c.Call(prompt.Plan, true)
+	for _, item := range c.items {
+		info := item.Info()
+		switch info.Name {
+		case "write", "edit", "update_plan", "update_goal", "spawn_agent", "subagent_task":
+			if err := plan.AuthorizeTool(t.Context(), info, modelapi.ToolCall{}); !errs.IsCode(err, errs.CodeForbidden) {
+				t.Errorf("Plan Mode authorization for %s: %v", info.Name, err)
+			}
+		case "exec_command", "write_stdin":
+			if err := plan.AuthorizeTool(t.Context(), info, modelapi.ToolCall{}); err != nil {
+				t.Errorf("Plan Mode authorization for %s: %v", info.Name, err)
+			}
+			if err := review.AuthorizeTool(t.Context(), info, modelapi.ToolCall{}); !errs.IsCode(err, errs.CodeForbidden) {
+				t.Errorf("Review authorization for %s: %v", info.Name, err)
+			}
+		}
+	}
+	otherExec := modelapi.ToolInfo{Name: "other_exec", Effect: toolapi.EffectExecute}
+	if err := plan.AuthorizeTool(t.Context(), otherExec, modelapi.ToolCall{}); !errs.IsCode(err, errs.CodeForbidden) {
+		t.Errorf("Plan Mode authorization for an unrelated execution tool: %v", err)
 	}
 	finish(t, c, prompt.Plan, "Plan this.")
 }

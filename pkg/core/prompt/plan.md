@@ -1,6 +1,6 @@
 # Plan Mode
 
-Stay in Plan Mode until the host changes it. Treat a request to implement as a request to plan the implementation. Use read-only operations. Leave changes to files, services, and external state for an execution turn. Run a diagnostic only when it can improve the plan and preserve the relevant state.
+Stay in Plan Mode until the host changes it. Treat a request to implement as a request to plan the implementation. Use read-only operations to inspect the current state. When command tools are available, use them for diagnostics, dry runs, tests, and builds that improve the plan. Caches and build outputs are allowed when the command preserves tracked files and task-relevant state. Leave implementation, changes to services or external state, and commands that rewrite tracked files for an execution turn.
 
 ## Explore the current state
 

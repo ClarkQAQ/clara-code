@@ -320,7 +320,7 @@ func (c *Conversation) Call(mode prompt.Mode, review bool) core.AgentStreamCall 
 		return c.Session.Emit(context.Background(), "context.compacted", nil)
 	}
 	if mode == prompt.Plan {
-		call.AuthorizeTool = toolapi.PlanOnly
+		call.AuthorizeTool = planToolAuthorizer(planShellEnabled(role, true))
 	} else {
 		call.FollowUp = c.Goal.NextTurn
 		call.OnStreamFinish = func(usage modelapi.Usage, _ modelapi.FinishReason, _ modelapi.ProviderMetadata) error {
@@ -377,7 +377,24 @@ type preparation struct {
 	assignment *prompt.Fragment
 }
 
+func planShellEnabled(role string, foreground bool) bool {
+	return foreground && role == ""
+}
+
+func planToolAuthorizer(allowShell bool) core.ToolAuthorizer {
+	if !allowShell {
+		return toolapi.PlanOnly
+	}
+	return func(ctx context.Context, info modelapi.ToolInfo, call modelapi.ToolCall) error {
+		if info.Effect == toolapi.EffectExecute && (info.Name == "exec_command" || info.Name == "write_stdin") {
+			return ctx.Err()
+		}
+		return toolapi.PlanOnly(ctx, info, call)
+	}
+}
+
 func (c *Conversation) prepare(mode prompt.Mode, role string, model modelapi.LanguageModel, registered []modelapi.AgentTool, plan *toolapi.MemoryPlan, foreground bool, options ...preparation) core.PrepareStepFunction {
+	allowPlanShell := mode == prompt.Plan && planShellEnabled(role, foreground)
 	var previousEstimate int64
 	return func(ctx context.Context, step core.PrepareStepFunctionOptions) (context.Context, core.PrepareStepResult, error) {
 		rules, err := c.Workspace.instructionFragments(ctx, c.Host.Config.Home)
@@ -409,13 +426,16 @@ func (c *Conversation) prepare(mode prompt.Mode, role string, model modelapi.Lan
 				"Read untracked text with the read tool. Report actionable findings with file and line locations, or state that none were found."
 		}
 		if mode == prompt.Plan {
-			items = toolapi.PlanTools(items)
+			authorize := planToolAuthorizer(allowPlanShell)
+			items = slices.DeleteFunc(items, func(item modelapi.AgentTool) bool {
+				return authorize(context.Background(), item.Info(), modelapi.ToolCall{}) != nil
+			})
 		}
 		config := prompt.Config{Mode: mode, Role: role, Tools: items, Overrides: overrides, Parameters: c.promptParameters()}
 		system, _ := prompt.Instructions(config)
-		fragments := append(c.hostPolicies(mode, role, foreground), prompt.Policy(config)...)
+		fragments := append(c.hostPolicies(mode, role, foreground, allowPlanShell), prompt.Policy(config)...)
 		fragments = append(fragments, rules...)
-		fragments = append(fragments, c.environmentFragments(mode)...)
+		fragments = append(fragments, c.environmentFragments(mode == prompt.Plan && !allowPlanShell)...)
 		state := prompt.Context{}
 		if plan != nil {
 			list, err := plan.GetPlan(ctx)

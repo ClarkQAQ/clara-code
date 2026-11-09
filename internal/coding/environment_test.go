@@ -53,7 +53,7 @@ func TestEnvironmentDoesNotUpdateForPassingSeconds(t *testing.T) {
 func TestLegacyEnvironmentMigrationPreservesMixedChangesAndAnchors(t *testing.T) {
 	c, _ := testHost(t, t.TempDir(), DemoModel{})
 	history := []model.Message{model.NewUserMessage("first"), {Role: model.MessageRoleAssistant}, model.NewUserMessage("second")}
-	fields := c.environmentFragments(prompt.Execute)
+	fields := c.environmentFragments(false)
 	legacy := func(name string) prompt.Fragment {
 		return prompt.Fragment{Kind: "environment", Source: name, Role: model.MessageRoleUser, Text: "obsolete-" + name}
 	}

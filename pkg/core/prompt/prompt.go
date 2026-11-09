@@ -108,9 +108,11 @@ func sections(config Config) []string {
 		if has["read"] && has["edit"] {
 			sections = append(sections, "hashline")
 		}
-		if has["exec_command"] && has["write_stdin"] {
-			sections = append(sections, "commands")
-		}
+	}
+	if has["exec_command"] && has["write_stdin"] {
+		sections = append(sections, "commands")
+	}
+	if config.Mode != Plan {
 		if has["update_plan"] {
 			sections = append(sections, "checklist")
 		}

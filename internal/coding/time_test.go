@@ -85,7 +85,7 @@ func TestClockSharedByModesAndTasks(t *testing.T) {
 		}
 		body := contextText(result.Messages)
 		access := "read_only"
-		if index == 0 {
+		if index < 2 {
 			access = "unrestricted"
 		}
 		if !strings.Contains(body, "<current_date>"+now.Local().Format(time.DateOnly)+"</current_date>") || !strings.Contains(body, "<access>"+access+"</access>") || !strings.Contains(body, "<timezone>"+localtime.Zone(now)+"</timezone>") {

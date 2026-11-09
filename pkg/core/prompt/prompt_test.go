@@ -23,18 +23,18 @@ func TestSystemSelectsOnlyAvailableCapabilities(t *testing.T) {
 		namedTool("read"), namedTool("edit"),
 	}
 	minimal := prompt.System(prompt.Config{Mode: prompt.Plan})
-	for _, name := range []string{ask, instructions, skill, stdin, checklist, goal} {
+	for _, name := range []string{ask, instructions, skill, "exec_command", stdin, checklist, goal} {
 		if strings.Contains(minimal, name) {
 			t.Errorf("minimal prompt references %q", name)
 		}
 	}
 	plan := prompt.System(prompt.Config{Mode: prompt.Plan, Tools: items})
-	for _, name := range []string{ask, instructions, skill} {
+	for _, name := range []string{ask, instructions, skill, "exec_command", stdin, "# Command workflow"} {
 		if !strings.Contains(plan, name) {
 			t.Errorf("Plan Mode omitted %q", name)
 		}
 	}
-	for _, text := range []string{stdin, checklist, goal, "# Anchored file edits", "# Delegation"} {
+	for _, text := range []string{checklist, goal, "# Anchored file edits", "# Delegation"} {
 		if strings.Contains(plan, text) {
 			t.Errorf("Plan Mode enables %q", text)
 		}

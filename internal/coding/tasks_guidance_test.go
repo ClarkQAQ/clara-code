@@ -21,6 +21,12 @@ func TestDelegationContractReachesModelAndInvalidNameCanBeCorrected(t *testing.T
 			if !strings.Contains(body, "Current role: explorer") || !strings.Contains(body, "<access>read_only</access>") {
 				return nil, fmt.Errorf("child lost role or read-only boundary")
 			}
+			for _, tool := range call.Tools {
+				switch tool.GetName() {
+				case "exec_command", "write_stdin":
+					return nil, fmt.Errorf("read-only child exposed %s", tool.GetName())
+				}
+			}
 			return demoText("Inspection complete."), nil
 		}
 		for _, expected := range []string{"^[a-z0-9_]{1,100}$", "repo_survey", "fork_history defaults to false", "timeout_ms", "explorer and reviewer are read-only", "Inspect list_agents"} {

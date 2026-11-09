@@ -74,8 +74,9 @@ func TestReviewChangesAreReadOnlyAndCoverWorktree(t *testing.T) {
 	expect := []string{"+staged change", "+unstaged change", "untracked.txt"}
 	model := fixtureModel{reply: func(call modelapi.Call) (*modelapi.Response, error) {
 		for _, tool := range call.Tools {
-			if tool.GetName() == "exec_command" || tool.GetName() == "edit" {
-				return nil, fmt.Errorf("review tool can mutate the workspace")
+			switch tool.GetName() {
+			case "exec_command", "write_stdin", "edit":
+				return nil, fmt.Errorf("review exposed %s", tool.GetName())
 			}
 		}
 		var results []modelapi.Message

@@ -57,7 +57,7 @@ func TestOnDemandBackgroundUpdatesWithoutSnapshotSupport(t *testing.T) {
 	}
 }
 
-func TestBackgroundPollingUpdatesTheOriginalRecordAcrossTurns(t *testing.T) {
+func TestPlanShellBackgroundPollingUpdatesTheOriginalRecordAcrossTurns(t *testing.T) {
 	step := 0
 	model := fixtureModel{reply: func(call modelapi.Call) (*modelapi.Response, error) {
 		step++
@@ -93,8 +93,8 @@ func TestBackgroundPollingUpdatesTheOriginalRecordAcrossTurns(t *testing.T) {
 		return demoText("Completed."), nil
 	}}
 	c, _ := testHost(t, t.TempDir(), model)
-	finish(t, c, prompt.Execute, "Start a background command.")
-	finish(t, c, prompt.Execute, "Wait for it.")
+	finish(t, c, prompt.Plan, "Start a background diagnostic.")
+	finish(t, c, prompt.Plan, "Wait for it.")
 	turns, err := c.Store.Turns()
 	if err != nil || len(turns) != 2 {
 		t.Fatalf("turns %d %v", len(turns), err)
