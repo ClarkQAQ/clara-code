@@ -45,7 +45,9 @@ type Upstream struct {
 type Config struct {
 	Upstreams map[string]Upstream
 	Default   string
-	Authorize func(*http.Request) error
+	// StrictModels rejects explicit aliases missing from Upstreams.
+	StrictModels bool
+	Authorize    func(*http.Request) error
 }
 
 // Handler routes Responses and Chat Completions requests.
@@ -113,7 +115,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) model(modelName string) (models.Model, Upstream, error) {
 	upstream, ok := h.config.Upstreams[modelName]
-	if !ok {
+	if !ok && (!h.config.StrictModels || modelName == "") {
 		upstream, ok = h.config.Upstreams[h.config.Default]
 	}
 	if !ok {
