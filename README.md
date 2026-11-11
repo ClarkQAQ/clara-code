@@ -1,6 +1,12 @@
 # Clara Code
 
+<img src="docs/images/clara-code-logo.png" alt="Clara Code logo with the pink-haired Clara mascot" width="560">
+
 Clara Code is a terminal coding assistant built on Clara Core. It uses the terminal's main screen and preserves completed conversations in native scrollback. Resizing rebuilds the terminal buffer from logical messages and reflows the conversation, including the current question, menu, and input draft. The interactive CLI supports macOS, Linux, and Windows 11 (x64 and ARM64).
+
+![Clara Code terminal showing an English conversation and tool output](docs/images/demo.png)
+
+[Mascot icon](docs/images/clara-code-icon.png) · [Wordmark](docs/images/clara-code-wordmark.png)
 
 ## Getting Started
 
