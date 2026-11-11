@@ -4,7 +4,8 @@ Clara Code is a terminal coding assistant built on Clara Core. It uses the termi
 
 ## Getting Started
 
-For prebuilt packages, see [installation on Linux, macOS, and Windows](.forgejo/README.md#installation).
+On GitHub, open **Releases** and download the archive for Windows x64, Linux x64 or arm64, or macOS on Apple Silicon. Download `SHA256SUMS` from the same release and compare the entry for your archive with `sha256sum <archive>` on Linux, `shasum -a 256 <archive>` on macOS, or `Get-FileHash <archive> -Algorithm SHA256` in PowerShell. Extract the archive and run `./clara-code --version` or `./clara-code.exe --version` on Windows. For Forgejo packages, see [installation on Linux, macOS, and Windows](.forgejo/README.md#installation).
+
 Building from source requires Go 1.27. The CLI and reusable agent, model, and tool packages all live in this repository.
 
 ```sh
@@ -58,6 +59,8 @@ Migrate old imports using the following mapping. Types and behavior remain uncha
 | `clara-core/tools/...` | `clara-code/pkg/tool/...` |
 
 An adjacent Clara Core checkout is no longer needed. Protocol formats remain compatible. The application uses the new configuration format. The original examples continue to use their `CLARA_CORE_*` settings. `make check` runs formatting checks, tests, race tests, vet, lint, and CLI and example builds. `make build` produces `clara-code` at the repository root. Inject a version with `go build -ldflags '-X main.version=VERSION' .`. The [Development Guide](AGENTS.md) defines placement rules and verification requirements for new features. The original framework's license, attribution, and prompt provenance are preserved.
+
+On GitHub, keep the full history on the default branch, `master`. Each push to that branch runs **Publish GitHub Release**. To publish the current tip manually, open **Actions → Publish GitHub Release → Run workflow** and select `master`. Use **Re-run jobs** on the original run to retry the same commit. The tag and binary version use the Forgejo format `r<commit count>.g<12-character commit hash>`.
 
 Session SQL lives in `internal/session`. After adding a numbered Goose migration or changing a query, run `go generate ./...` and include the generated sqlc code with the SQL changes. The module pins sqlc and golangci-lint for use through `go tool`.
 
