@@ -37,7 +37,7 @@ Clara's terminal title shows the project name, with a spinner during requests an
 
 Root `main.go` provides the CLI entry point. Startup, terminal UI, configuration, session storage, and other application features live in `internal`. Reusable mechanisms live in `pkg/core`, `pkg/model`, `pkg/tool`, and `pkg/util`. Public packages do not depend on Clara's application layer. Examples live in `examples`; see [Public Go Packages](CORE.md) for assembly details.
 
-Other local projects can use:
+Other local projects can depend on it:
 
 ```sh
 go mod edit -require=clara-code@v0.0.0
