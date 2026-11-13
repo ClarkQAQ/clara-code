@@ -24,6 +24,7 @@ import (
 )
 
 const maxCheckpoint = core.MaxStateBytes + 12<<20
+const maxCompactionMarkers = 1024
 
 var safeID = regexp.MustCompile(`^(session|run)_[a-zA-Z0-9_.-]{1,96}$`)
 
@@ -37,8 +38,9 @@ type Meta struct {
 	LegacyPathContext                     bool `json:",omitempty"`
 	ID, Project, Cwd, Parent, FirstPrompt string
 	Model, Effort                         string
-	Provider                              string `json:",omitempty"`
-	PlanEffort                            string `json:",omitempty"`
+	Provider                              string     `json:",omitempty"`
+	PlanEffort                            string     `json:",omitempty"`
+	ForkPoint                             *ForkPoint `json:",omitempty"`
 	Updated                               time.Time
 	LastUsage                             *modelapi.Usage `json:",omitempty"`
 	TotalUsage                            modelapi.Usage
@@ -49,16 +51,29 @@ type Meta struct {
 	CacheRunID                            string     `json:",omitempty"`
 }
 
+type ForkPoint struct {
+	AfterTurn int
+	Title     string
+}
+
+type CompactionMarker struct {
+	AfterTurn  int
+	AfterFork  bool `json:",omitempty"`
+	Compaction Compaction
+}
+
 type Cell struct {
 	Kind, Text  string
 	Attachments []Attachment  `json:",omitempty"`
 	Tool        *ToolActivity `json:",omitempty"`
+	Compaction  *Compaction   `json:",omitempty"`
 }
 
 type Turn struct {
 	StartedAt     time.Time `json:",omitzero"`
 	FinishedAt    time.Time `json:",omitzero"`
 	Status        string    `json:",omitempty"`
+	DurationMS    *int64    `json:",omitempty"`
 	ID, Prompt    string
 	Attachments   []Attachment `json:",omitempty"`
 	Cells         []Cell
@@ -70,12 +85,14 @@ type Turn struct {
 	StreamedText  string   `json:",omitempty"`
 	StreamedCells []int    `json:",omitempty"`
 	Failure       *Failure `json:",omitempty"`
+	started       time.Time
 }
 
 type checkpoint struct {
-	State    core.State
-	Active   *Turn
-	Commands map[string]ToolActivity `json:",omitempty"`
+	State       core.State
+	Active      *Turn
+	Commands    map[string]ToolActivity `json:",omitempty"`
+	Compactions []CompactionMarker      `json:",omitempty"`
 }
 
 type sessionData struct {
@@ -85,12 +102,13 @@ type sessionData struct {
 }
 
 type Store struct {
-	home  string
-	mu    sync.Mutex
-	lock  *os.File
-	db    *sql.DB
-	draft bool
-	data  sessionData
+	home            string
+	mu              sync.Mutex
+	lock            *os.File
+	db              *sql.DB
+	draft           bool
+	data            sessionData
+	compactionCount uint64
 }
 
 func New(home string, meta Meta) *Store {
@@ -218,7 +236,11 @@ func (s *Store) closeLocked() error {
 func (s *Store) Meta() Meta {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.data.Meta
+	meta := s.data.Meta
+	if meta.ForkPoint != nil {
+		meta.ForkPoint = new(*meta.ForkPoint)
+	}
+	return meta
 }
 
 func (s *Store) Load(ctx context.Context, sessionID string) (core.State, error) {
@@ -239,6 +261,7 @@ func (s *Store) Save(ctx context.Context, state core.State) (err error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	started := time.Now()
 	next := s.data
 	first := s.db == nil
 	if first && next.Meta.ID == "" {
@@ -275,6 +298,10 @@ func (s *Store) Save(ctx context.Context, state core.State) (err error) {
 		previous := *next.Active
 		previous.Cells = slices.Clone(previous.Cells)
 		previous.collect(state.Events)
+		if previous.Status == "completed" {
+			previous.Status = "cancelled"
+		}
+		previous.DurationMS = nil
 		previous.append("notice", "Previous run interrupted before its final checkpoint was saved.")
 		changes.completed = &previous
 		next.Turns = append(slices.Clone(next.Turns), previous.ID)
@@ -303,7 +330,7 @@ func (s *Store) Save(ctx context.Context, state core.State) (err error) {
 			return err
 		}
 		changes.started = &sessiondb.InsertTurnParams{ID: state.ActiveRun, BeforeMessages: body}
-		next.Active = &Turn{ID: state.ActiveRun}
+		next.Active = &Turn{ID: state.ActiveRun, started: started}
 		next.Active.Planning, _ = ctx.Value(planningKey{}).(bool)
 		if at := len(before); at < len(state.Messages) {
 			next.Active.Prompt = excerpt(Text(state.Messages[at]), 256<<10)
@@ -351,6 +378,9 @@ func (s *Store) Save(ctx context.Context, state core.State) (err error) {
 		}
 		next.Active = &turn
 		if state.ActiveRun == "" {
+			if turn.Status == "completed" && !turn.started.IsZero() {
+				turn.DurationMS = new(time.Since(turn.started).Milliseconds())
+			}
 			changes.completed = &turn
 			next.Turns = append(slices.Clone(next.Turns), turn.ID)
 			next.Active = nil
@@ -543,9 +573,9 @@ func (s *Store) InvalidateContext() error {
 	return s.commit(next)
 }
 
-// ReplaceHistory is called with the Core session idle. Reopen the Core
-// session after it succeeds so its in-memory revision matches the store.
-func (s *Store) ReplaceHistory(ctx context.Context, messages []modelapi.Message, contextState ...json.RawMessage) error {
+// ReplaceHistory saves compacted history and its visible marker together. Reopen
+// the idle Core session after it succeeds so its revision matches the store.
+func (s *Store) ReplaceHistory(ctx context.Context, messages []modelapi.Message, contextState json.RawMessage, compaction Compaction) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -557,14 +587,39 @@ func (s *Store) ReplaceHistory(ctx context.Context, messages []modelapi.Message,
 		return errs.ErrBusy
 	}
 	state.Messages = messages
-	state.ContextState = nil
-	if len(contextState) > 0 {
-		state.ContextState = slices.Clone(contextState[0])
-	}
+	state.ContextState = slices.Clone(contextState)
 	state.Revision++
 	next.State = state
 	next.Meta.LastUsage = nil
-	return s.saveCheckpoint(ctx, next, false, turnChanges{})
+	after := len(next.Turns)
+	markers := next.Compactions[max(0, len(next.Compactions)-maxCompactionMarkers+1):]
+	next.Compactions = append(slices.Clone(markers), CompactionMarker{
+		AfterTurn: after, Compaction: compaction.clone(),
+		AfterFork: next.Meta.ForkPoint != nil && next.Meta.ForkPoint.AfterTurn == after,
+	})
+	if err := s.saveCheckpoint(ctx, next, false, turnChanges{}); err != nil {
+		return err
+	}
+	s.compactionCount++
+	return nil
+}
+
+// Compactions returns the saved markers outside completed or active turns.
+func (s *Store) Compactions() []CompactionMarker {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	markers := slices.Clone(s.data.Compactions)
+	for i := range markers {
+		markers[i].Compaction = markers[i].Compaction.clone()
+	}
+	return markers
+}
+
+// CompactionCount tracks successful history replacements on this open store.
+func (s *Store) CompactionCount() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.compactionCount
 }
 
 func (s *Store) Turns() ([]Turn, error) {
@@ -640,6 +695,7 @@ func (s *Store) Fork(ctx context.Context, index int) (*Store, error) {
 	queries := sessiondb.New(s.db)
 	meta := s.data.Meta
 	meta.Parent, meta.ID = meta.ID, ""
+	meta.ForkPoint = nil
 	if s.draft {
 		meta.Parent = ""
 	}
@@ -663,11 +719,20 @@ func (s *Store) Fork(ctx context.Context, index int) (*Store, error) {
 			meta.FirstPrompt = ""
 		}
 	}
+	if meta.Parent != "" {
+		meta.ForkPoint = &ForkPoint{AfterTurn: len(turns), Title: s.data.Meta.FirstPrompt}
+	}
 	child := New(s.home, meta)
 	if len(turns) == 0 && len(messages) == 0 {
 		child.draft = true
 	}
 	child.data.Turns = slices.Clone(turns)
+	for _, marker := range s.data.Compactions {
+		if marker.AfterTurn <= len(turns) {
+			marker.AfterFork = false
+			child.data.Compactions = append(child.data.Compactions, marker)
+		}
+	}
 	child.data.Commands = map[string]ToolActivity{}
 	allowed := map[string]bool{}
 	for _, turnID := range turns {

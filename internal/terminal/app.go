@@ -99,6 +99,7 @@ type runEvent struct {
 type operationResult struct {
 	picker      *picker
 	conv        *coding.Conversation
+	compaction  *session.Compaction
 	draft       string
 	label       string
 	err         error
@@ -241,6 +242,9 @@ func Run(ctx context.Context, options Options) (err error) {
 			a.stopOp()
 			a.stopOp = nil
 			a.opLabel = ""
+			if result.compaction != nil {
+				a.view.cell(compactionCell(result.compaction))
+			}
 			if result.err != nil {
 				if a.conv == nil && !a.options.PickSession {
 					if errors.Is(result.err, context.Canceled) {
@@ -268,8 +272,10 @@ func Run(ctx context.Context, options Options) (err error) {
 				if result.plan != "" {
 					a.implementPlan(planHandoff + "\n\n" + result.plan)
 				}
-			} else if result.label != "" {
-				a.view.message("notice", result.label)
+			} else if result.label != "" || result.compaction != nil {
+				if result.label != "" {
+					a.view.message("notice", result.label)
+				}
 				a.editor.insert(a.operationDraft.text)
 				a.operationDraft.replace("")
 			}
@@ -392,16 +398,25 @@ func (a *app) install(result operationResult) error {
 	if result.plan == "" {
 		a.setDraft(result.draft, result.attachments)
 	}
-	a.view.welcome(a.options.Version, modelLabel(a.conv.Store.Meta()), a.space.Cwd)
+	meta := a.conv.Store.Meta()
+	a.view.welcome(a.options.Version, modelLabel(meta), a.space.Cwd)
 	a.loadInputHistory()
 	seedHistory := len(a.inputHistory) == 0
 	a.prompts = nil
-	if a.conv.Store.Meta().LegacyPathContext {
+	if meta.LegacyPathContext {
 		a.view.message("notice", "Paths now refer to the real filesystem. Older /foo paths referred to the project root; read the intended target again before editing.")
 	}
-	for i := 0; i < a.conv.Store.TurnCount(); i++ {
+	boundary := transcriptBoundaries(meta, a.conv.Store.Compactions())
+	count := a.conv.Store.TurnCount()
+	for i := 0; i <= count; i++ {
 		if err := a.ctx.Err(); err != nil {
 			return err
+		}
+		for _, cell := range boundary(i) {
+			a.view.cell(cell)
+		}
+		if i == count {
+			break
 		}
 		turn, err := a.conv.Store.ReadTurn(i)
 		if err != nil {
@@ -409,7 +424,7 @@ func (a *app) install(result operationResult) error {
 			a.prompts = append(a.prompts, "[unavailable turn]")
 		} else {
 			a.prompts = append(a.prompts, turn.Prompt)
-			if seedHistory && i >= a.conv.Store.TurnCount()-1000 {
+			if seedHistory && i >= count-1000 {
 				a.inputHistory = append(a.inputHistory, session.InputHistoryEntry{SessionID: a.conv.Session.ID(), Text: turn.Prompt, Attachments: turn.Attachments})
 			}
 			a.view.message("user", turn.Prompt)
@@ -419,6 +434,7 @@ func (a *app) install(result operationResult) error {
 					a.reflow = true
 				}
 			}
+			a.view.message(turnCompletedKind, turnCompletion(turn))
 		}
 		if a.view.buf.Len() >= 64<<10 {
 			if _, err := a.view.buf.WriteTo(a.view.output); err != nil {
@@ -426,10 +442,10 @@ func (a *app) install(result operationResult) error {
 			}
 		}
 	}
-	if result.label == "Rewound conversation" || result.label == "Forked conversation" {
-		a.view.message("notice", "You're continuing from this point in a new conversation")
-	} else if result.label != "" && result.label != "Cleared conversation" {
-		a.view.message("notice", result.label+" · "+a.conv.Store.Meta().ID)
+	switch result.label {
+	case "", "Cleared conversation", "Rewound conversation", "Forked conversation":
+	default:
+		a.view.message("notice", result.label+" · "+meta.ID)
 	}
 	a.warnMCPStartup()
 	a.syncBackground()
@@ -497,7 +513,11 @@ func (a *app) start(text string, review bool) {
 	if planning {
 		ctx = session.WithPlanning(ctx)
 	}
+	compactions := a.conv.Store.CompactionCount()
 	run, err := a.conv.StartWithFiles(ctx, a.mode, text, review, files)
+	if compaction := compactionSince(a.conv.Store, compactions); compaction != nil {
+		a.view.cell(compactionCell(compaction))
+	}
 	if err != nil {
 		cancel()
 		a.notice(err)
@@ -562,7 +582,7 @@ func watch(ctx context.Context, conversation *core.Session, store *session.Store
 			}
 			send(update)
 			return
-		case "text_start", "text_delta", "text_end", "reasoning_delta", "reasoning_end", "tool.activity", "tool.result", "step.completed", "plan.updated", "goal.updated", "task.updated", "model.started", "model.responding", "model.retry", "model.error", "context.compacted":
+		case "text_start", "text_delta", "text_end", "reasoning_delta", "reasoning_end", "tool.activity", "tool.result", "step.completed", "plan.updated", "goal.updated", "task.updated", "model.started", "model.responding", "model.retry", "model.error", session.ContextCompactedKind:
 			if !send(runEvent{event: event}) {
 				return
 			}
@@ -581,6 +601,7 @@ func (a *app) onRunEvent(update runEvent) {
 		return
 	}
 	if update.done {
+		runID := a.run.ID
 		deadline := errors.Is(update.err, context.DeadlineExceeded) || (a.activity.failure != nil && a.activity.failure.Kind == "timeout")
 		cancelled := !deadline && (update.event.Kind == "run.cancelled" || errors.Is(update.err, context.Canceled))
 		a.finishTools(cancelled)
@@ -615,6 +636,9 @@ func (a *app) onRunEvent(update runEvent) {
 				a.prompts = append(a.prompts, "[unavailable turn]")
 			} else {
 				a.prompts = append(a.prompts, turn.Prompt)
+				if update.event.Kind == "run.completed" && update.err == nil && turn.ID == runID {
+					a.view.message(turnCompletedKind, turnCompletion(turn))
+				}
 			}
 		}
 		a.branch = a.space.Branch(a.ctx)
@@ -712,8 +736,13 @@ func (a *app) onRunEvent(update runEvent) {
 		if json.Unmarshal(event.Data, &activity) == nil {
 			a.onToolActivity(activity)
 		}
-	case "context.compacted":
-		a.view.message("notice", "Compacted conversation context")
+	case session.ContextCompactedKind:
+		a.flushStream()
+		var compaction session.Compaction
+		if json.Unmarshal(event.Data, &compaction) != nil {
+			compaction = session.Compaction{}
+		}
+		a.view.cell(compactionCell(&compaction))
 	case "step.completed":
 		a.activity.retry = nil
 		var response model.Response

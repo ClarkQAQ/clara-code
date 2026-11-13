@@ -39,7 +39,11 @@ func (s *activityState) resume(now time.Time) {
 }
 
 func elapsedCompact(duration time.Duration) string {
-	seconds := max(0, int64(duration/time.Second))
+	return elapsedSeconds(int64(duration / time.Second))
+}
+
+func elapsedSeconds(seconds int64) string {
+	seconds = max(0, seconds)
 	if seconds < 60 {
 		return fmt.Sprintf("%ds", seconds)
 	}

@@ -256,6 +256,12 @@ func (p *painter) messageRows(kind, text string) []string {
 	switch kind {
 	case session.ProposedPlanKind:
 		return p.proposedPlanRows(text)
+	case session.ContextCompactedKind:
+		return p.transcriptNoteRows("· ", text)
+	case turnCompletedKind:
+		return p.transcriptNoteRows("  ", text)
+	case threadForkedKind:
+		return p.forkRows(text)
 	case "assistant":
 		if p.markdown != nil && !*p.markdown {
 			for _, row := range wrap(text, width) {
@@ -614,7 +620,7 @@ func (p *painter) cellRows(cell session.Cell) []string {
 	if cell.Tool != nil {
 		return p.toolRows(*cell.Tool, time.Now())
 	}
-	return p.messageRows(cell.Kind, cell.Text)
+	return p.messageRows(cell.Kind, transcriptCellText(cell))
 }
 
 func (p *painter) paintCell(cell session.Cell) { p.commit(p.cellRows(cell)...) }
@@ -627,7 +633,7 @@ func (p *painter) cell(cell session.Cell) bool {
 		return false
 	}
 	if cell.Tool == nil {
-		p.message(cell.Kind, cell.Text)
+		p.message(cell.Kind, transcriptCellText(cell))
 		return false
 	}
 	activity := *cell.Tool

@@ -10,6 +10,19 @@ import (
 	"clara-code/pkg/model"
 )
 
+const ContextCompactedKind = "context.compacted"
+
+type Compaction struct {
+	DurationMS *int64 `json:",omitempty"`
+}
+
+func (c Compaction) clone() Compaction {
+	if c.DurationMS != nil {
+		c.DurationMS = new(*c.DurationMS)
+	}
+	return c
+}
+
 func Text(message model.Message) string {
 	var out strings.Builder
 	for _, part := range message.Content {
@@ -33,6 +46,14 @@ func (t *Turn) collect(events []core.Event) {
 			t.StartedAt = event.At
 		case "run.completed":
 			t.FinishedAt, t.Status = event.At, "completed"
+		case ContextCompactedKind:
+			var compaction Compaction
+			if json.Unmarshal(event.Data, &compaction) != nil {
+				compaction = Compaction{}
+			}
+			if cell := t.append(ContextCompactedKind, "Context compacted"); cell != nil {
+				cell.Compaction = &compaction
+			}
 		case "text_delta":
 			var part model.StreamPart
 			if !t.Staged && partial.Len() < 256<<10 && json.Unmarshal(event.Data, &part) == nil {
@@ -179,16 +200,16 @@ func (t *Turn) appendAssistant(text string) {
 	}
 }
 
-func (t *Turn) append(kind, text string) {
+func (t *Turn) append(kind, text string) *Cell {
 	room := (1 << 20) - t.Bytes
 	if text == "" {
-		return
+		return nil
 	}
 	if len(t.Cells) >= 4096 || room <= 0 {
 		if len(t.Cells) == 0 || t.Cells[len(t.Cells)-1].Text != "[Display history truncated. Full messages remain in session context.]" {
 			t.Cells = append(t.Cells, Cell{Kind: "notice", Text: "[Display history truncated. Full messages remain in session context.]"})
 		}
-		return
+		return nil
 	}
 	limit := 16 << 10
 	if kind == "assistant" || kind == "user" || kind == ProposedPlanKind {
@@ -205,6 +226,7 @@ func (t *Turn) append(kind, text string) {
 	}
 	t.Cells = append(t.Cells, Cell{Kind: kind, Text: text})
 	t.Bytes += len(text)
+	return &t.Cells[len(t.Cells)-1]
 }
 
 func excerpt(text string, limit int) string {

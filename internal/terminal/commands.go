@@ -241,9 +241,10 @@ func (a *app) submit(line string) bool {
 		a.chooseModel(arg)
 	case "/compact":
 		mode := a.mode
-		a.operation("Compacting", func(ctx context.Context) operationResult {
+		count := a.conv.Store.CompactionCount()
+		a.operation("Compacting context", func(ctx context.Context) operationResult {
 			err := a.conv.Compact(ctx, mode)
-			return operationResult{err: err, label: "Compacted conversation context"}
+			return operationResult{err: err, compaction: compactionSince(a.conv.Store, count)}
 		})
 	case "/new":
 		a.switchSession("", false, -1, "", "New conversation")

@@ -246,6 +246,12 @@ func TestPlanToolsAndProjectInstructions(t *testing.T) {
 func TestResumeLockAndForkAfterCompaction(t *testing.T) {
 	c, host := testHost(t, t.TempDir(), DemoModel{})
 	finish(t, c, prompt.Execute, "first prompt")
+	if err := c.Compact(t.Context()); err == nil {
+		t.Fatal("compacted without a complete old turn")
+	}
+	if markers := c.Store.Compactions(); len(markers) != 0 {
+		t.Fatalf("failed compaction left markers: %+v", markers)
+	}
 	finish(t, c, prompt.Execute, "second prompt")
 	parent := c.Store.Meta()
 	if _, err := session.Open(host.Config.Home, parent.ID, parent.Project); err == nil {
@@ -256,6 +262,9 @@ func TestResumeLockAndForkAfterCompaction(t *testing.T) {
 	}
 	if err := c.Compact(t.Context()); err != nil {
 		t.Fatal(err)
+	}
+	if markers := c.Store.Compactions(); len(markers) != 1 || markers[0].AfterTurn != 2 || markers[0].Compaction.DurationMS == nil {
+		t.Fatalf("manual compaction timing: %+v", markers)
 	}
 	if history := c.Session.Messages(); len(history) != 3 || !strings.Contains(session.Text(history[0]), "summarized") || session.Text(history[1]) != "second prompt" {
 		t.Fatalf("unexpected compacted history: %v", history)
@@ -390,6 +399,22 @@ func TestAutomaticCompactionKeepsVisibleTurns(t *testing.T) {
 	turns, err := c.Store.Turns()
 	if err != nil || len(turns) != 2 || turns[0].Prompt != first || turns[1].Prompt != second {
 		t.Fatalf("original prompts were not archived: %d turns, %v", len(turns), err)
+	}
+	for i, turn := range turns {
+		var compactions []session.Cell
+		for _, cell := range turn.Cells {
+			if cell.Kind == session.ContextCompactedKind {
+				compactions = append(compactions, cell)
+			}
+		}
+		if len(compactions) != i || i == 1 && (compactions[0].Compaction == nil || compactions[0].Compaction.DurationMS == nil) {
+			t.Fatalf("turn %d compaction timing: %+v", i, compactions)
+		}
+		for _, cell := range turnView(turn, nil).Cells {
+			if cell.Kind == session.ContextCompactedKind {
+				t.Fatal("terminal compaction marker leaked into ACP history")
+			}
+		}
 	}
 	fork, err := c.Store.Fork(t.Context(), 1)
 	if err != nil {

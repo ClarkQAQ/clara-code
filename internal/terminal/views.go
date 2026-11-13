@@ -58,7 +58,17 @@ func (a *app) rewindRows() []string {
 	p, v := a.picker, &a.view
 	var lines []string
 	selectedStart, selectedEnd := 0, 0
-	for i := 0; i < a.conv.Store.TurnCount(); i++ {
+	count := a.conv.Store.TurnCount()
+	boundary := transcriptBoundaries(a.conv.Store.Meta(), a.conv.Store.Compactions())
+	for i := 0; i <= count; i++ {
+		if p.detail {
+			for _, cell := range boundary(i) {
+				lines = append(lines, v.cellRows(cell)...)
+			}
+		}
+		if i == count {
+			break
+		}
 		turn, err := a.conv.Store.ReadTurn(i)
 		if err != nil {
 			lines = append(lines, v.style(dim, truncate("[Unavailable turn]", v.width)))
@@ -77,6 +87,9 @@ func (a *app) rewindRows() []string {
 			if p.detail || cell.Kind == "assistant" || cell.Kind == "user" {
 				lines = append(lines, v.cellRows(cell)...)
 			}
+		}
+		if p.detail {
+			lines = append(lines, v.messageRows(turnCompletedKind, turnCompletion(turn))...)
 		}
 		if i == p.selected {
 			selectedEnd = len(lines)

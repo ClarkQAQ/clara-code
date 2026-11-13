@@ -42,6 +42,9 @@ func turnView(t session.Turn, redact func(string) string) wire.Turn {
 		out.DurationMS = new(max(0, t.FinishedAt.Sub(t.StartedAt).Milliseconds()))
 	}
 	for _, c := range t.Cells {
+		if c.Kind == session.ContextCompactedKind {
+			continue
+		}
 		cell := wire.Cell{Kind: c.Kind, Text: c.Text, Attachments: attachmentsView(c.Attachments)}
 		if c.Tool != nil {
 			cell.Tool = activityView(*c.Tool)

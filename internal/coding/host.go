@@ -255,7 +255,8 @@ func (c *Conversation) Call(mode prompt.Mode, review bool) core.AgentStreamCall 
 	if review {
 		mode, role = prompt.Plan, "reviewer"
 	}
-	call := core.AgentStreamCall{PrepareStep: c.prepare(mode, role, c.model, c.items, c.plan, true)}
+	var compaction session.Compaction
+	call := core.AgentStreamCall{PrepareStep: c.prepare(mode, role, c.model, c.items, c.plan, true, preparation{compaction: &compaction})}
 	retries := 3
 	if n := c.CurrentConfig().Connection().RequestMaxRetries; n != nil {
 		retries = *n
@@ -317,7 +318,7 @@ func (c *Conversation) Call(mode prompt.Mode, review bool) core.AgentStreamCall 
 		if err := c.Store.InvalidateContext(); err != nil {
 			return err
 		}
-		return c.Session.Emit(context.Background(), "context.compacted", nil)
+		return c.Session.Emit(context.Background(), session.ContextCompactedKind, compaction)
 	}
 	if mode == prompt.Plan {
 		call.AuthorizeTool = planToolAuthorizer(planShellEnabled(role, true))
@@ -374,6 +375,7 @@ func (c *Conversation) StartWithFiles(ctx context.Context, mode prompt.Mode, tex
 
 type preparation struct {
 	compact    bool
+	compaction *session.Compaction
 	assignment *prompt.Fragment
 }
 
@@ -393,10 +395,13 @@ func planToolAuthorizer(allowShell bool) core.ToolAuthorizer {
 	}
 }
 
-func (c *Conversation) prepare(mode prompt.Mode, role string, model modelapi.LanguageModel, registered []modelapi.AgentTool, plan *toolapi.MemoryPlan, foreground bool, options ...preparation) core.PrepareStepFunction {
+func (c *Conversation) prepare(mode prompt.Mode, role string, model modelapi.LanguageModel, registered []modelapi.AgentTool, plan *toolapi.MemoryPlan, foreground bool, options preparation) core.PrepareStepFunction {
 	allowPlanShell := mode == prompt.Plan && planShellEnabled(role, foreground)
 	var previousEstimate int64
 	return func(ctx context.Context, step core.PrepareStepFunctionOptions) (context.Context, core.PrepareStepResult, error) {
+		if options.compaction != nil {
+			*options.compaction = session.Compaction{}
+		}
 		rules, err := c.Workspace.instructionFragments(ctx, c.Host.Config.Home)
 		if err != nil {
 			return ctx, core.PrepareStepResult{}, err
@@ -482,11 +487,11 @@ func (c *Conversation) prepare(mode prompt.Mode, role string, model modelapi.Lan
 			fragments = append(fragments, prompt.Fragment{Kind: "external_agents", Source: "host configuration", Lifecycle: "step", Role: modelapi.MessageRoleUser, Text: jsonText(names)})
 		}
 		history := step.Messages
-		if len(options) > 0 && options[0].assignment != nil {
-			fragments = append(fragments, *options[0].assignment)
+		if options.assignment != nil {
+			fragments = append(fragments, *options.assignment)
 		}
 		compactor := c.compactor(profile)
-		compactor.Force = len(options) > 0 && options[0].compact
+		compactor.Force = options.compact
 		window, err := prompt.LoadWindow(step.ContextState)
 		if err != nil {
 			return ctx, core.PrepareStepResult{}, err
@@ -522,7 +527,9 @@ func (c *Conversation) prepare(mode prompt.Mode, role string, model modelapi.Lan
 			}
 			compactor.UsageTokens, compactor.UsageEstimate = usage.TotalTokens, baseline.Tokens
 		}
+		started := time.Now()
 		compacted, err := compactor.Fit(ctx, model, system, history, items)
+		elapsed := time.Since(started)
 		if err != nil {
 			return ctx, core.PrepareStepResult{}, err
 		}
@@ -541,6 +548,9 @@ func (c *Conversation) prepare(mode prompt.Mode, role string, model modelapi.Lan
 		checkpoint, err := nextWindow.Marshal()
 		if err != nil {
 			return ctx, core.PrepareStepResult{}, err
+		}
+		if compacted != nil && options.compaction != nil {
+			options.compaction.DurationMS = new(elapsed.Milliseconds())
 		}
 		return ctx, core.PrepareStepResult{Model: model, System: &system, Tools: items, Messages: request, History: compacted, ContextState: checkpoint}, nil
 	}
@@ -576,14 +586,16 @@ func (c *Conversation) Compact(ctx context.Context, modes ...prompt.Mode) error 
 	if len(modes) > 0 {
 		mode = modes[0]
 	}
-	_, result, err := c.prepare(mode, "", c.model, c.items, c.plan, true, preparation{compact: true})(ctx, core.PrepareStepFunctionOptions{Messages: history, ContextState: old.ContextState()})
+	var compaction session.Compaction
+	prepare := c.prepare(mode, "", c.model, c.items, c.plan, true, preparation{compact: true, compaction: &compaction})
+	_, result, err := prepare(ctx, core.PrepareStepFunctionOptions{Messages: history, ContextState: old.ContextState()})
 	if err != nil {
 		return err
 	}
 	if result.History == nil {
 		return errors.New("there are no complete old turns to compact")
 	}
-	if err := c.Store.ReplaceHistory(ctx, result.History, result.ContextState); err != nil {
+	if err := c.Store.ReplaceHistory(ctx, result.History, result.ContextState, compaction); err != nil {
 		return err
 	}
 	next, err := core.OpenSession(context.WithoutCancel(ctx), core.NewAgent(c.model), c.Store, old.ID())

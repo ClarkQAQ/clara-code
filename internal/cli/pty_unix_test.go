@@ -173,7 +173,7 @@ func TestInlineRewindAndResumeAfterCrash(t *testing.T) {
 	p.send(t, "\x1b\x1b")
 	p.await(t, mark, "Edit a previous message")
 	p.send(t, "\r")
-	p.await(t, mark, "You're continuing from this point in a new conversation")
+	p.await(t, mark, "Forked from 你好")
 	p.await(t, mark, "❯ 你好")
 	if err := pty.Setsize(p.file, &pty.Winsize{Rows: 12, Cols: 47}); err != nil {
 		t.Fatal(err)
@@ -202,6 +202,7 @@ func TestInlineRewindAndResumeAfterCrash(t *testing.T) {
 		t.Fatalf("sessions %+v, %v", items, err)
 	}
 	resumed := startPTY(t, home, cwd, "resume", items[0].ID)
+	resumed.await(t, 0, "Forked from 你好")
 	resumed.await(t, 0, "Demo response: 你好 changed")
 	resumed.await(t, 0, replayedInterruption)
 	resumed.await(t, 0, "Ready")
