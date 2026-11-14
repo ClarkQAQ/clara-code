@@ -1,7 +1,5 @@
 # Using Clara Code
 
-![Clara Code terminal showing an English conversation and tool output](images/demo.png)
-
 ## Commands and shortcuts
 
 Type `/` to open the two-column command menu. Use Up/Down to select, Tab to complete, Enter to confirm, or Esc to close the menu and keep the draft.

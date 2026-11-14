@@ -2,6 +2,8 @@
 
 <img src="docs/images/clara-code-logo.png" alt="Clara Code logo with the pink-haired Clara mascot" width="300">
 
+![Clara Code terminal showing an English conversation and tool output](docs/images/demo.png)
+
 Clara Code is a terminal coding assistant. Use it to explore a codebase, plan changes, and implement them while keeping the conversation in your terminal's native scrollback.
 
 ## Installation
