@@ -49,7 +49,7 @@ engine := core.NewAgent(model, core.WithTools(files.Read(), files.Grep(), files.
 result, err := engine.Generate(ctx, core.AgentCall{Prompt: "Find and fix the failing test."})
 ```
 
-The Go baseline is 1.27. Other Go modules can use a local `replace` directive. When migrating an existing project, update its imports to the new module paths.
+The Go baseline is 1.27. Other Go modules can use a local `replace` directive.
 
 ```sh
 go mod edit -require=clara-code@v0.0.0
@@ -88,6 +88,21 @@ ACP entry points live in `clara-code/pkg/core`; the task adapter is `tool.NewACP
 `mcp.ConnectWithProgress(ctx, configs, report)` reports each server synchronously before attempting its connection. `mcp.StartupProgress` includes the next server name, the number of prior attempts, and the total number of servers. Use `Manager.Statuses()` for connection results and tool counts after startup.
 
 Set `mcp.ServerConfig.ProtocolVersion` to a version supported by the Go MCP SDK to request that version during the handshake. For example, `ProtocolVersion: "2025-03-26"` starts with `initialize`. The server can negotiate a different supported version. An empty value uses the SDK's default negotiation.
+
+## Migrating from Clara Core
+
+The `clara-code` module includes the former Clara Core packages. Update imports using the following mapping. Types and behavior remain compatible, including protocol formats. The new packages replace the old import paths directly.
+
+| Old path | New path |
+| --- | --- |
+| `clara-core/agent` (package `agent`) | `clara-code/pkg/core` (package `core`) |
+| `clara-core/agent/prompt` | `clara-code/pkg/core/prompt` |
+| `clara-core/agent/errs` | `clara-code/pkg/util/errs` |
+| `clara-core/agent/id` | `clara-code/pkg/util/id` |
+| `clara-core/models/...` | `clara-code/pkg/model/...` |
+| `clara-core/tools/...` | `clara-code/pkg/tool/...` |
+
+For the standalone CLI, see the [application configuration](docs/configuration.md).
 
 ## Background Commands
 
