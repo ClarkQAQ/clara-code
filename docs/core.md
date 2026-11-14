@@ -75,7 +75,7 @@ For layered prompts, use `prompt.Instructions` for stable base text and `prompt.
 
 A task factory can declare `TaskSetup.DynamicToolNames` for tools added later by `PrepareStep`, such as discovered skills. Names are intersected with the parent scope's allowlist and execution authorization still applies. Undeclared or parent-forbidden tools remain unavailable; declaring a name does not itself add a tool definition.
 
-`prompt.Compactor` supports `BudgetTokens`, `BudgetBytes`, optional early `TriggerTokens`, request-only `Context`, modality `Project`, and explicit `Force`. Token limits exclude the caller's output reservation. `TriggerTokens` optionally starts automatic compaction earlier; zero retains the `BudgetTokens` trigger. The replacement must fit `BudgetTokens` even when it remains above the early trigger. Generic hosts can still use `BudgetBytes`; Clara application configuration uses token-window percentages only. `prompt.Measure` returns conservative byte/token estimates, separately from actual usage. Compaction preserves the latest turn and media, rejects incomplete summaries and unpaired tools, and returns a replacement only after validation. See [Prompt and Context Architecture](PROMPTS.md) for composition, compatibility and the local Codex comparison.
+`prompt.Compactor` supports `BudgetTokens`, `BudgetBytes`, optional early `TriggerTokens`, request-only `Context`, modality `Project`, and explicit `Force`. Token limits exclude the caller's output reservation. `TriggerTokens` optionally starts automatic compaction earlier; zero retains the `BudgetTokens` trigger. The replacement must fit `BudgetTokens` even when it remains above the early trigger. Generic hosts can still use `BudgetBytes`; Clara application configuration uses token-window percentages only. `prompt.Measure` returns conservative byte/token estimates, separately from actual usage. Compaction preserves the latest turn and media, rejects incomplete summaries and unpaired tools, and returns a replacement only after validation. See [Prompt and Context Architecture](prompts.md) for composition, compatibility and the local Codex comparison.
 
 Window-based hosts use `Compactor.Assemble` to budget the complete rendered request and `Compactor.Transcript` with `Window.Prefix` to restore historical context for summarization. The latter excludes updates belonging to the retained recent turn. Internal message metadata is removed from the serialized summary transcript. After successful compaction, install a fresh window for the replacement history; ordinary recovery can reuse a window whose transcript fingerprint still matches.
 
@@ -102,7 +102,7 @@ The `clara-code` module includes the former Clara Core packages. Update imports 
 | `clara-core/models/...` | `clara-code/pkg/model/...` |
 | `clara-core/tools/...` | `clara-code/pkg/tool/...` |
 
-For the standalone CLI, see the [application configuration](docs/configuration.md).
+For the standalone CLI, see the [application configuration](configuration.md).
 
 ## Background Commands
 

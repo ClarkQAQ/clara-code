@@ -11,6 +11,7 @@ type choice struct {
 
 type picker struct {
 	skillState             *skillManager
+	history                *historySearch
 	kind, title, model     string
 	provider               string
 	effortMode             prompt.Mode
@@ -51,6 +52,10 @@ func listRows(view *painter, title string, items []choice, selected int, help st
 
 func (a *app) handlePicker(input key) bool {
 	p := a.picker
+	if p.history != nil {
+		a.handleHistorySearch(input)
+		return false
+	}
 	if p.kind == "skills" || p.kind == "skill-toggle" {
 		return a.handleSkillPicker(input)
 	}

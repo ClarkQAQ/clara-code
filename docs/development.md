@@ -2,7 +2,7 @@
 
 ## Repository layout
 
-Root `main.go` provides the CLI entry point. Startup, terminal UI, configuration, session storage, and other application features live in `internal`. Reusable mechanisms live in `pkg/core`, `pkg/model`, `pkg/tool`, and `pkg/util`. Public packages are independent of Clara's application layer. See [Public Go Packages](../CORE.md) for assembly details and [examples](../examples) for runnable programs.
+Root `main.go` provides the CLI entry point. Startup, terminal UI, configuration, session storage, and other application features live in `internal`. Reusable mechanisms live in `pkg/core`, `pkg/model`, `pkg/tool`, and `pkg/util`. Public packages are independent of Clara's application layer. See [Public Go Packages](core.md) for assembly details and [examples](../examples) for runnable programs.
 
 The CLI and public packages share the `clara-code` Go module. Build from the repository root with Go 1.27. Framework examples continue to use their `CLARA_CORE_*` settings. The [development guide](../AGENTS.md) defines package placement and verification requirements. See [LICENSE](../LICENSE) and [NOTICE](../NOTICE) for the framework's license, attribution, and prompt provenance.
 

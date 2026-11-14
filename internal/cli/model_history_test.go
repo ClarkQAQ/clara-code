@@ -13,6 +13,7 @@ import (
 )
 
 func TestInputHistoryJSONLSurvivesRestart(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
 	home, cwd := t.TempDir(), t.TempDir()
 	p := startPTY(t, home, cwd)
 	p.await(t, 0, "Ready")
@@ -38,6 +39,23 @@ func TestInputHistoryJSONLSurvivesRestart(t *testing.T) {
 	mark = len(q.output())
 	q.send(t, "\x1b[B")
 	q.await(t, mark, "/exit")
+
+	mark = len(q.output())
+	q.send(t, "\x12")
+	q.await(t, mark, "❯ Search input history")
+	mark = len(q.output())
+	q.send(t, "STTS")
+	q.await(t, mark, "❯ STTS\x1b[K\r\n\x1b[7m  /status\x1b[0m\x1b[K")
+
+	mark = len(q.output())
+	q.send(t, "\r")
+	q.await(t, mark, "❯ /status\x1b[K\r\n─")
+	if output := q.output()[mark:]; strings.Contains(output, "Session  ") {
+		t.Fatal("selecting history executed the command", output)
+	}
+	mark = len(q.output())
+	q.send(t, "\r")
+	q.await(t, mark, "Session  ")
 }
 
 func TestAgentAndPlanEffortsInTmux(t *testing.T) {

@@ -66,6 +66,10 @@ func (a *app) handle(input key) bool {
 	if a.picker != nil {
 		return a.handlePicker(input)
 	}
+	if input.code == "ctrl-r" {
+		a.openHistorySearch()
+		return false
+	}
 	if a.historyAt >= 0 && (input.code == "up" || input.code == "down") {
 		a.recall(input.code)
 		return false
@@ -120,7 +124,7 @@ func (a *app) handle(input key) bool {
 		}
 		return false
 	case "enter":
-		if a.attachmentResults != nil {
+		if a.attachmentResults != nil && slices.ContainsFunc(a.editor.images, func(span imageSpan) bool { return span.pending }) {
 			a.hint = "Wait for the image to finish loading"
 			return false
 		}
@@ -177,7 +181,13 @@ func (a *app) submit(line string) bool {
 				lines = append(lines, fmt.Sprintf("%-12s %s", spec.name, spec.description))
 			}
 		}
-		a.view.message("notice", strings.Join(lines, "\n")+"\n"+a.hints("Shift+Tab switches Agent/Plan. Esc interrupts. Esc Esc previews previous prompts. Alt+Enter adds a line.")+"\n"+a.host.Config.TUI.Hint("composer", "paste_image")+" pastes an image; "+a.host.Config.TUI.Hint("composer", "attachments")+" manages attachments.")
+		keys := a.host.Config.TUI
+		lines = append(lines, a.hints("Shift+Tab switches Agent/Plan. Esc interrupts. Esc Esc previews previous prompts. Alt+Enter adds a line."),
+			keys.Hint("composer", "paste_image")+" pastes an image; "+keys.Hint("composer", "attachments")+" manages attachments.")
+		if search := keys.Hint("composer", "history_search"); search != "" {
+			lines = append(lines, search+" searches input history.")
+		}
+		a.view.message("notice", strings.Join(lines, "\n"))
 		return false
 	}
 	if command == "/pause" {

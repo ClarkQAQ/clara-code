@@ -66,6 +66,22 @@ func TestInlineNativeCursorInTmux(t *testing.T) {
 	await("completed turn", func(text string, cursor tmuxCursor) bool {
 		return strings.Contains(text, "Demo response: cursor history probe") && strings.Contains(text, "Ready") && onInput(text, cursor, "Run /review", 2)
 	})
+	call("send-keys", "-t", "cursor", "-l", "original draft")
+	call("send-keys", "-t", "cursor", "Left", "Left")
+	await("original draft cursor", func(text string, cursor tmuxCursor) bool { return onInput(text, cursor, "original draft", 14) })
+	call("send-keys", "-t", "cursor", "C-r")
+	await("history search cursor", func(text string, cursor tmuxCursor) bool { return onInput(text, cursor, "Search input history", 2) })
+	const query = "你好世界你好世界你好"
+	call("send-keys", "-t", "cursor", "-l", query)
+	call("send-keys", "-t", "cursor", "Left")
+	await("Unicode query cursor", func(text string, cursor tmuxCursor) bool { return onInput(text, cursor, query, 20) })
+	call("resize-window", "-t", "cursor", "-x", "18", "-y", "10")
+	await("wrapped query cursor", func(text string, cursor tmuxCursor) bool { return onInput(text, cursor, "你好", 4) })
+	call("resize-window", "-t", "cursor", "-x", "64", "-y", "24")
+	await("resized query cursor", func(text string, cursor tmuxCursor) bool { return onInput(text, cursor, query, 20) })
+	call("send-keys", "-t", "cursor", "Escape")
+	await("restored draft cursor", func(text string, cursor tmuxCursor) bool { return onInput(text, cursor, "original draft", 14) })
+	call("send-keys", "-t", "cursor", "C-u", "C-k")
 	call("send-keys", "-t", "cursor", "-l", "CANCEL_SLOW_TURN")
 	call("send-keys", "-t", "cursor", "Enter")
 	await("working input", func(text string, cursor tmuxCursor) bool {

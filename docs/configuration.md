@@ -119,7 +119,7 @@ See [MCP connections](usage.md#mcp-connections) for startup behavior and connect
 
 Clara caps the trigger at the effective window minus the output reservation and checks that the resulting summary fits the same input budget. Recent usage and conservative estimates calibrate triggering. A model without a declared `context_window` uses a bounded 256K-token heuristic for compaction while the UI labels its actual context limit unknown. Set `context_window` to use a declared limit. Replace the removed `context_bytes` setting and `CLARA_CODE_CONTEXT_BYTES` environment variable with token-window settings.
 
-Compaction preserves the latest turn and its images. `/compact` requires an older complete turn. Failed or truncated summaries preserve the original working history. See [Prompt and Context Architecture](../PROMPTS.md) for details and the Codex comparison.
+Compaction preserves the latest turn and its images. `/compact` requires an older complete turn. Failed or truncated summaries preserve the original working history. See [Prompt and Context Architecture](prompts.md) for details and the Codex comparison.
 
 ## Rules and skills
 

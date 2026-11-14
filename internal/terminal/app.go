@@ -847,6 +847,9 @@ func (a *app) pane() layout {
 		return a.setup.layout(p, a.hints)
 	}
 	if a.picker != nil {
+		if a.picker.history != nil {
+			return a.historySearchLayout()
+		}
 		if a.picker.kind == planPicker {
 			return layout{rows: a.planPickerRows()}
 		}

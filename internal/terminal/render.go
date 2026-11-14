@@ -87,12 +87,13 @@ func (p *painter) trimHistory() {
 }
 
 const (
-	reset  = "\x1b[0m"
-	dim    = "\x1b[2m"
-	bold   = "\x1b[1m"
-	accent = "\x1b[36m"
-	purple = "\x1b[95m"
-	red    = "\x1b[31m"
+	reset        = "\x1b[0m"
+	dim          = "\x1b[2m"
+	bold         = "\x1b[1m"
+	accent       = "\x1b[36m"
+	purple       = "\x1b[95m"
+	red          = "\x1b[31m"
+	reverseVideo = "\x1b[7m"
 )
 
 func (p *painter) style(code, text string) string {

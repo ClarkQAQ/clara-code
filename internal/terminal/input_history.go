@@ -84,11 +84,21 @@ func (a *app) recall(direction string) {
 		a.historyAt = -1
 		a.editor = a.historyDraft
 		a.syncDraftImages()
-	} else {
-		entry := a.inputHistory[a.historyAt]
-		a.setDraft(entry.Text, slices.Clone(entry.Attachments))
+		a.dismissRecalledMenus()
+		return
 	}
-	// A recalled command is editable history, not a newly opened command popup.
+	a.restoreHistoryEntry(a.inputHistory[a.historyAt])
+}
+
+func (a *app) restoreHistoryEntry(entry session.InputHistoryEntry) {
+	a.setDraft(entry.Text, entry.Attachments)
+	a.dismissRecalledMenus()
+}
+
+func (a *app) dismissRecalledMenus() {
 	a.commandMenu = commandMenu{text: a.editor.text, hidden: true}
 	a.skillMenu = skillMenu{}
+	if a.skillMatches() {
+		a.skillMenu.hidden = true
+	}
 }

@@ -14,4 +14,4 @@ Configure an external ACP role using the [configuration example](../config.examp
 
 ## Integrate from Go
 
-Go hosts can opt into session discovery and resuming through the `core.ACPServerConfig.List` and `Resume` callbacks. `core.ACPExternal.ListSessions` and `ResumeSession` check the negotiated capabilities before sending requests. See [Public Go Packages](../CORE.md) for general host assembly.
+Go hosts can opt into session discovery and resuming through the `core.ACPServerConfig.List` and `Resume` callbacks. `core.ACPExternal.ListSessions` and `ResumeSession` check the negotiated capabilities before sending requests. See [Public Go Packages](core.md) for general host assembly.

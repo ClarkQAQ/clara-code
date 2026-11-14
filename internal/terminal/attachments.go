@@ -199,7 +199,7 @@ func (a *app) keyContext() string {
 	if a.question != nil {
 		return "question"
 	}
-	if a.picker != nil {
+	if a.picker != nil && a.picker.history == nil {
 		if a.picker.kind == "rewind" {
 			return "rewind"
 		}
@@ -249,7 +249,10 @@ func (a *app) hints(text string) string {
 			pairs = append(pairs, old, replacement)
 		}
 	}
-	if context == "picker" {
+	switch context {
+	case "composer":
+		pairs = append(pairs, "↑/↓", a.host.Config.TUI.Hint(context, "history_previous")+"/"+a.host.Config.TUI.Hint(context, "history_next"))
+	case "picker":
 		pairs = append(pairs, "↑/↓", a.host.Config.TUI.Hint(context, "previous")+"/"+a.host.Config.TUI.Hint(context, "next"))
 	}
 	if context == "rewind" {

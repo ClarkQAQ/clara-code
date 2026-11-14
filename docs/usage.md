@@ -19,6 +19,7 @@ Type `/` to open the two-column command menu. Use Up/Down to select, Tab to comp
 | View usage, configuration, or the working directory | `/status` or `/pwd` |
 | View changes | `/diff`. Use Tab to switch staged, unstaged, and untracked views, and n/p to change pages. |
 | Attach or manage images | Ctrl+V, `/attach <path>`, or Ctrl+G. Delete removes a selected attachment. |
+| Search prompts and slash commands | Ctrl+R, then Up/Down to select and Enter to recall |
 | Select a model and reasoning effort | `/model [name [effort]]` |
 | Review current Git changes without writing | `/review` |
 | Compact model context manually | `/compact` |
@@ -86,7 +87,9 @@ Clara stores sessions and turns in `sessions.sqlite3` in the data directory. A b
 
 Submitted prompts and slash commands are saved in `history.jsonl` in the data directory and loaded on startup for Up/Down recall across conversations. Menu commands record their canonical form, such as `/status` for `/sta`. Clara collapses consecutive identical inputs and omits `/clear`. Each JSONL record contains `session_id`, an RFC3339 `ts`, `text`, kind, and optional attachment references. The file uses private permissions, process locking, and atomic replacement. It retains up to 1000 entries and 4 MiB. Clara reports malformed records and still loads valid ones. Command dispatch and drafts survive history write failures.
 
-Input recall works independently of terminal scrollback, saved model turns, and the Esc-Esc conversation preview. Slash command history stays separate from model messages and rewind checkpoints. Recalled images and available skill mentions return to the composer. Recalling a slash command stays in Up/Down history navigation until you edit it to bring up the command menu.
+Press Ctrl+R to search the same history. Type part of a prompt or command to filter the list. Consecutive matches appear first, and entries with the same match quality appear newest first. Use Up/Down to select a result and Enter to bring it into the composer. Press Enter again when ready to submit, or Esc or Ctrl+C while searching to return to your draft. Remap the shortcut with `history_search` under `[tui.keymap.composer]`.
+
+Input recall works independently of terminal scrollback, saved model turns, and the Esc-Esc conversation preview. Slash command history stays separate from model messages and rewind checkpoints. Recalled images and available skill mentions return to the composer. A recalled slash command stays editable and the command menu reopens when you change its text.
 
 ## Background commands
 

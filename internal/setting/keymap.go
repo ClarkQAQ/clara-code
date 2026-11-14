@@ -7,7 +7,7 @@ import (
 )
 
 var KeyDefaults = map[string]map[string]string{
-	"composer": {"submit": "enter", "newline": "alt-enter", "cancel": "esc", "interrupt": "ctrl-c", "exit": "ctrl-d", "cycle_mode": "shift-tab", "paste_image": "ctrl-v", "attachments": "ctrl-g", "history_previous": "up", "history_next": "down", "clear_screen": "ctrl-l", "complete_command": "tab", "cursor_left": "left", "cursor_right": "right", "word_left": "ctrl-left", "word_right": "ctrl-right", "line_start": "home", "line_end": "end", "emacs_line_start": "ctrl-a", "emacs_line_end": "ctrl-e", "backspace": "backspace", "delete_forward": "delete", "delete_word": "ctrl-w", "kill_to_start": "ctrl-u", "kill_to_end": "ctrl-k"},
+	"composer": {"submit": "enter", "newline": "alt-enter", "cancel": "esc", "interrupt": "ctrl-c", "exit": "ctrl-d", "cycle_mode": "shift-tab", "paste_image": "ctrl-v", "attachments": "ctrl-g", "history_previous": "up", "history_next": "down", "history_search": "ctrl-r", "clear_screen": "ctrl-l", "complete_command": "tab", "cursor_left": "left", "cursor_right": "right", "word_left": "ctrl-left", "word_right": "ctrl-right", "line_start": "home", "line_end": "end", "emacs_line_start": "ctrl-a", "emacs_line_end": "ctrl-e", "backspace": "backspace", "delete_forward": "delete", "delete_word": "ctrl-w", "kill_to_start": "ctrl-u", "kill_to_end": "ctrl-k"},
 	"picker":   {"confirm": "enter", "cancel": "esc", "interrupt": "ctrl-c", "previous": "up", "next": "down", "first": "home", "last": "end", "page_up": "page-up", "page_down": "page-down", "delete_attachment": "delete"},
 	"question": {"submit": "enter", "cancel": "esc", "interrupt": "ctrl-c", "notes": "tab", "previous_question": "left", "next_question": "right", "previous": "up", "next": "down"},
 	"rewind":   {"confirm": "enter", "cancel": "esc", "interrupt": "ctrl-c", "details": "ctrl-t", "previous": "left", "next": "right", "scroll_up": "up", "scroll_down": "down"},
@@ -42,8 +42,14 @@ func keyValid(key string) bool {
 }
 func (t TUI) Bindings(context string) map[string]string {
 	out := maps.Clone(KeyDefaults[context])
-	for action, key := range t.Keymap[context] {
+	configured := t.Keymap[context]
+	_, searchConfigured := configured["history_search"]
+	for action, key := range configured {
 		out[action] = key
+		// Preserve existing bindings that already use Ctrl+R.
+		if context == "composer" && !searchConfigured && KeyCode(key) == KeyDefaults[context]["history_search"] {
+			delete(out, "history_search")
+		}
 	}
 	return out
 }
@@ -77,13 +83,14 @@ func (t TUI) ValidateKeys() error {
 
 // Dispatch maps configured keys to the canonical events used by each UI surface.
 func (t TUI) Dispatch(context, code string) string {
-	for action, key := range t.Bindings(context) {
+	bindings := t.Bindings(context)
+	for action, key := range bindings {
 		if KeyCode(key) == code {
 			return KeyCode(KeyDefaults[context][action])
 		}
 	}
 	for action, key := range KeyDefaults[context] {
-		if KeyCode(key) == code && KeyCode(t.Bindings(context)[action]) != code {
+		if KeyCode(key) == code && KeyCode(bindings[action]) != code {
 			return "unbound"
 		}
 	}

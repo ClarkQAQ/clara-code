@@ -21,4 +21,4 @@ In Windows PowerShell, use `.\clara-code.exe` and a Windows project path, such a
 
 On a fresh install, the setup guide asks for your provider's API base URL, protocol, model ID, and an API key if required. Once the composer opens, type a request and press Enter. Use `/help` to see the available commands.
 
-[Usage guide](docs/usage.md) · [Configuration](docs/configuration.md) · [ACP integration](docs/acp.md) · [Go packages](CORE.md) · [Development](docs/development.md)
+[Usage guide](docs/usage.md) · [Configuration](docs/configuration.md) · [ACP integration](docs/acp.md) · [Go packages](docs/core.md) · [Development](docs/development.md)
