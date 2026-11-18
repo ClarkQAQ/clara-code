@@ -6,6 +6,8 @@ Clara Code combines a terminal coding agent and reusable Go agent packages in on
 Go 1.27 module, `clara-code`. Build and run from the repository root. The adjacent
 historical `clara-core` checkout is not a dependency.
 
+Keep `clara-code` as the Go module path across all Git hosting services and mirrors.
+
 ## Architecture
 
 - Root `main.go` owns signals, build-version injection, and process exit.
