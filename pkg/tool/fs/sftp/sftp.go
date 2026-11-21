@@ -16,10 +16,14 @@ import (
 	"time"
 
 	clarafs "clara-code/pkg/tool/fs"
+	"clara-code/pkg/tool/internal/sshclient"
 	"clara-code/pkg/util/errs"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
+
+// ErrSSHHandshake identifies a failure before the SFTP subsystem starts.
+var ErrSSHHandshake = sshclient.ErrHandshake
 
 // Config describes one SSH/SFTP connection.
 type Config struct {
@@ -31,6 +35,9 @@ type Config struct {
 	AllowInsecureHostKey bool
 	Root                 string
 	Timeout              time.Duration
+	// DialContext opens the transport for the configured address. Nil dials TCP directly.
+	// The filesystem closes the returned connection.
+	DialContext func(context.Context, string, string) (net.Conn, error)
 }
 
 // FS maps logical paths below a remote SFTP root.
@@ -64,34 +71,27 @@ func Dial(ctx context.Context, config Config) (*FS, error) {
 	if timeout <= 0 {
 		timeout = 15 * time.Second
 	}
-	dialer := net.Dialer{Timeout: timeout}
-	connection, err := dialer.DialContext(ctx, "tcp", config.Address)
-	if err != nil {
-		return nil, err
-	}
-	_ = connection.SetDeadline(time.Now().Add(timeout))
-	sshConnection, channels, requests, err := ssh.NewClientConn(connection, config.Address, &ssh.ClientConfig{
+	sshConfig := &ssh.ClientConfig{
 		User: config.User, Auth: auth, HostKeyCallback: config.HostKeyCallback, Timeout: timeout,
-	})
-	if err != nil {
-		connection.Close()
-		return nil, err
 	}
-	_ = connection.SetDeadline(time.Time{})
-	sshClient := ssh.NewClient(sshConnection, channels, requests)
+	return sshclient.Open(ctx, config.Address, config.DialContext, sshConfig, func(client *ssh.Client) (*FS, error) {
+		return openFS(client, config.Root)
+	})
+}
+
+func openFS(sshClient *ssh.Client, root string) (*FS, error) {
 	client, err := sftp.NewClient(sshClient)
 	if err != nil {
-		sshClient.Close()
 		return nil, err
 	}
-	root := strings.TrimSpace(config.Root)
+	root = strings.TrimSpace(root)
 	if root == "" {
 		root = "."
 	}
 	resolved, err := client.RealPath(root)
 	if err != nil {
-		client.Close()
-		sshClient.Close()
+		_ = sshClient.Close()
+		_ = client.Close()
 		return nil, err
 	}
 	return &FS{ssh: sshClient, client: client, root: path.Clean(resolved)}, nil
@@ -117,7 +117,14 @@ func authMethods(config Config) ([]ssh.AuthMethod, error) {
 
 // Close closes the SFTP and SSH clients.
 func (s *FS) Close() error {
-	s.closeOnce.Do(func() { s.closeErr = errors.Join(s.client.Close(), s.ssh.Close()) })
+	s.closeOnce.Do(func() {
+		sshErr := s.ssh.Close()
+		clientErr := s.client.Close()
+		if errors.Is(clientErr, io.EOF) || errors.Is(clientErr, net.ErrClosed) {
+			clientErr = nil
+		}
+		s.closeErr = errors.Join(sshErr, clientErr)
+	})
 	return s.closeErr
 }
 

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"clara-code/pkg/tool/internal/sshclient"
 	"clara-code/pkg/util/errs"
 	"golang.org/x/crypto/ssh"
 )
@@ -26,6 +27,9 @@ type SSHConfig struct {
 	HostKeyCallback ssh.HostKeyCallback
 	AllowInsecure   bool
 	Timeout         time.Duration
+	// DialContext opens the transport for the configured address. Nil dials TCP directly.
+	// The runner closes the returned connection.
+	DialContext func(context.Context, string, string) (net.Conn, error)
 }
 
 // SSH starts commands on a remote host.
@@ -64,68 +68,23 @@ func (s *SSH) Start(ctx context.Context, spec Spec) (Process, error) {
 	if timeoutConfig <= 0 {
 		timeoutConfig = 20 * time.Second
 	}
-	dialCtx, cancel := context.WithTimeout(ctx, timeoutConfig)
-	defer cancel()
-	dialer := net.Dialer{Timeout: timeoutConfig}
-	connection, err := dialer.DialContext(dialCtx, "tcp", s.config.Address)
-	if err != nil {
-		return nil, err
-	}
-	if err := connection.SetDeadline(time.Now().Add(timeoutConfig)); err != nil {
-		return nil, errors.Join(err, connection.Close())
-	}
-	stopHandshake := context.AfterFunc(dialCtx, func() { _ = connection.Close() })
-	defer stopHandshake()
-	clientConn, channels, requests, err := ssh.NewClientConn(connection, s.config.Address, &ssh.ClientConfig{
+	config := &ssh.ClientConfig{
 		User: s.config.User, Auth: auth, HostKeyCallback: s.config.HostKeyCallback,
 		Timeout: timeoutConfig,
+	}
+	process, err := sshclient.Open(ctx, s.config.Address, s.config.DialContext, config, func(client *ssh.Client) (*sshProcess, error) {
+		return startSSHProcess(client, spec, command)
 	})
 	if err != nil {
-		connection.Close()
 		return nil, err
-	}
-	client := ssh.NewClient(clientConn, channels, requests)
-	session, err := client.NewSession()
-	if err != nil {
-		client.Close()
-		return nil, err
-	}
-	if spec.TTY {
-		if err := session.RequestPty("xterm", 24, 80, ssh.TerminalModes{}); err != nil {
-			return nil, errors.Join(err, session.Close(), client.Close())
-		}
-	}
-	stdin, err := session.StdinPipe()
-	if err != nil {
-		session.Close()
-		client.Close()
-		return nil, err
-	}
-	output := newCapture(spec.MaxOutput)
-	session.Stdout = output
-	session.Stderr = output
-	started := time.Now()
-	if err := session.Start(command); err != nil {
-		session.Close()
-		client.Close()
-		return nil, err
-	}
-	if !stopHandshake() {
-		return nil, errors.Join(dialCtx.Err(), client.Close())
-	}
-	if err := connection.SetDeadline(time.Time{}); err != nil {
-		return nil, errors.Join(err, client.Close())
 	}
 	runCtx, cancelRun := context.WithCancel(ctx)
 	if !spec.NoTimeout {
 		cancelRun()
 		runCtx, cancelRun = context.WithTimeout(ctx, timeout)
 	}
-	process := &sshProcess{
-		session: session, client: client, stdin: stdin, output: output,
-		done: make(chan struct{}), started: started, cancel: cancelRun,
-	}
-	go func() { process.finish(session.Wait()); close(process.done); cancelRun() }()
+	process.cancel = cancelRun
+	go func() { process.finish(process.session.Wait()); close(process.done); cancelRun() }()
 	go func() {
 		select {
 		case <-process.done:
@@ -138,10 +97,37 @@ func (s *SSH) Start(ctx context.Context, spec Spec) (Process, error) {
 			if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 				process.markTimedOut()
 			}
-			_ = client.Close()
+			_ = process.client.Close()
 		}
 	}()
 	return process, nil
+}
+
+func startSSHProcess(client *ssh.Client, spec Spec, command string) (*sshProcess, error) {
+	session, err := client.NewSession()
+	if err != nil {
+		return nil, err
+	}
+	if spec.TTY {
+		if err := session.RequestPty("xterm", 24, 80, ssh.TerminalModes{}); err != nil {
+			return nil, err
+		}
+	}
+	stdin, err := session.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	output := newCapture(spec.MaxOutput)
+	session.Stdout = output
+	session.Stderr = output
+	started := time.Now()
+	if err := session.Start(command); err != nil {
+		return nil, err
+	}
+	return &sshProcess{
+		session: session, client: client, stdin: stdin, output: output,
+		done: make(chan struct{}), started: started,
+	}, nil
 }
 
 func sshAuth(config SSHConfig) ([]ssh.AuthMethod, error) {

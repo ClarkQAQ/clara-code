@@ -1,19 +1,24 @@
 package tool_test
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"clara-code/pkg/tool"
+	"clara-code/pkg/tool/fs/sftp"
 	"clara-code/pkg/util/errs"
+	sftpproto "github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -103,7 +108,189 @@ func TestSSHRejectsInvalidMetadataBeforeDial(t *testing.T) {
 	}
 }
 
+func TestSSHCustomTransport(t *testing.T) {
+	root := t.TempDir()
+	config := sshTestConfig(t, func(channel ssh.Channel, requests <-chan *ssh.Request) {
+		serveSSHTestCommand(t, root, channel, requests)
+	})
+	closed := make(chan struct{})
+	config.DialContext = withoutDeadlines(t, config.Address, closed)
+	runner, err := tool.NewSSH(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	process, err := runner.Start(t.Context(), tool.Spec{Command: "printf connected"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = process.Close() })
+	result, err := process.Poll(t.Context(), time.Second)
+	if err != nil || result.Running || result.Output != "connected" {
+		t.Fatalf("SSH process did not finish through custom transport: %+v, %v", result, err)
+	}
+	if err := process.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertTransportClosed(t, closed)
+}
+
+func TestSFTPCustomTransport(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "file"), []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config := sshTestConfig(t, func(channel ssh.Channel, requests <-chan *ssh.Request) {
+		serveSFTPTestSubsystem(channel, requests, func() {
+			server, err := sftpproto.NewServer(channel, sftpproto.WithServerWorkingDirectory(root))
+			if err == nil {
+				defer server.Close()
+				_ = server.Serve()
+			}
+		})
+	})
+	closed := make(chan struct{})
+	files, err := sftp.Dial(t.Context(), sftp.Config{
+		Address: config.Address, User: config.User, Password: config.Password,
+		HostKeyCallback: config.HostKeyCallback, Timeout: config.Timeout,
+		DialContext: withoutDeadlines(t, config.Address, closed),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = files.Close() })
+	file, err := files.Stat(t.Context(), "/file")
+	if err != nil || file.Size != 7 {
+		t.Fatalf("SFTP Stat through custom transport: %+v, %v", file, err)
+	}
+	if err := files.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertTransportClosed(t, closed)
+}
+
+func TestSFTPCancellationClosesCustomTransportDuringSubsystemSetup(t *testing.T) {
+	started := make(chan struct{})
+	config := sshTestConfig(t, func(channel ssh.Channel, requests <-chan *ssh.Request) {
+		serveSFTPTestSubsystem(channel, requests, func() {
+			close(started)
+			_, _ = io.Copy(io.Discard, channel)
+		})
+	})
+	closed := make(chan struct{})
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := sftp.Dial(ctx, sftp.Config{
+			Address: config.Address, User: config.User, Password: config.Password,
+			HostKeyCallback: config.HostKeyCallback, Timeout: config.Timeout,
+			DialContext: withoutDeadlines(t, config.Address, closed),
+		})
+		done <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("SFTP subsystem did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) || errors.Is(err, sftp.ErrSSHHandshake) {
+			t.Fatalf("SFTP subsystem cancellation returned %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("SFTP did not stop after cancellation")
+	}
+	assertTransportClosed(t, closed)
+}
+
+func TestSFTPHandshakeTimeoutClosesCustomTransport(t *testing.T) {
+	connection, peer := net.Pipe()
+	t.Cleanup(func() { _ = peer.Close() })
+	closed := make(chan struct{})
+	_, err := sftp.Dial(t.Context(), sftp.Config{
+		Address: "fixture:22", User: "fixture", Password: "fixture",
+		AllowInsecureHostKey: true, Timeout: 30 * time.Millisecond,
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			return &transportWithoutDeadlines{Conn: connection, closed: closed}, nil
+		},
+	})
+	if !errors.Is(err, sftp.ErrSSHHandshake) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("SFTP handshake timeout returned %v", err)
+	}
+	assertTransportClosed(t, closed)
+}
+
+func serveSFTPTestSubsystem(channel ssh.Channel, requests <-chan *ssh.Request, serve func()) {
+	defer channel.Close()
+	for request := range requests {
+		var payload struct{ Name string }
+		if request.Type != "subsystem" || ssh.Unmarshal(request.Payload, &payload) != nil || payload.Name != "sftp" {
+			_ = request.Reply(false, nil)
+			continue
+		}
+		if request.Reply(true, nil) == nil {
+			serve()
+		}
+		return
+	}
+}
+
+type transportWithoutDeadlines struct {
+	net.Conn
+	closeOnce sync.Once
+	closed    chan struct{}
+}
+
+func (c *transportWithoutDeadlines) SetDeadline(time.Time) error {
+	return errors.ErrUnsupported
+}
+
+func (c *transportWithoutDeadlines) Close() error {
+	var err error
+	c.closeOnce.Do(func() {
+		err = c.Conn.Close()
+		close(c.closed)
+	})
+	return err
+}
+
+func withoutDeadlines(t *testing.T, address string, closed chan struct{}) func(context.Context, string, string) (net.Conn, error) {
+	t.Helper()
+	return func(ctx context.Context, network, target string) (net.Conn, error) {
+		if network != "tcp" || target != address {
+			t.Errorf("dialed %s %s, want tcp %s", network, target, address)
+		}
+		connection, err := (&net.Dialer{}).DialContext(ctx, network, target)
+		if err != nil {
+			return nil, err
+		}
+		return &transportWithoutDeadlines{Conn: connection, closed: closed}, nil
+	}
+}
+
+func assertTransportClosed(t *testing.T, closed <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("custom transport was not closed")
+	}
+}
+
 func sshTestRunner(t *testing.T, root string) *tool.SSH {
+	t.Helper()
+	runner, err := tool.NewSSH(sshTestConfig(t, func(channel ssh.Channel, requests <-chan *ssh.Request) {
+		serveSSHTestCommand(t, root, channel, requests)
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return runner
+}
+
+func sshTestConfig(t *testing.T, serve func(ssh.Channel, <-chan *ssh.Request)) tool.SSHConfig {
 	t.Helper()
 	listen := net.ListenConfig{}
 	listener, err := listen.Listen(t.Context(), "tcp", "127.0.0.1:0")
@@ -147,18 +334,14 @@ func sshTestRunner(t *testing.T, root string) *tool.SSH {
 			}
 			channel, requests, err := incoming.Accept()
 			if err == nil {
-				serveSSHTestCommand(t, root, channel, requests)
+				serve(channel, requests)
 			}
 		}
 	}()
-	runner, err := tool.NewSSH(tool.SSHConfig{
+	return tool.SSHConfig{
 		Address: listener.Addr().String(), User: "fixture", Password: "fixture",
 		HostKeyCallback: ssh.FixedHostKey(signer.PublicKey()), Timeout: 3 * time.Second,
-	})
-	if err != nil {
-		t.Fatal(err)
 	}
-	return runner
 }
 
 func serveSSHTestCommand(t *testing.T, root string, channel ssh.Channel, requests <-chan *ssh.Request) {
