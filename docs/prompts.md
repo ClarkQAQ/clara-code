@@ -30,19 +30,18 @@ Clara does not advertise unavailable memory, plugin, browser or deferred-tool sy
 
 ## Request composition
 
-1. Stable base instructions describe collaboration, persistence, progress and
-   final reporting, default emoji behavior, and how to treat external content.
-2. Developer policy describes the actual tools, execution mode, path semantics,
-   command defaults, permission boundary and delegation rules.
-   Sections retain independent snapshot identities internally but render as one
-   text block separated by blank lines. Subsequent diffs emit only changed sections.
-3. Initial contextual-user content contains complete applicable AGENTS rules,
+1. The first `developer` message combines the stable base instructions with the
+   initial host policy for tools, execution mode, path semantics, permissions and
+   delegation. The base is rendered from its template. Policy sections retain
+   independent snapshot identities and render as one text block separated by
+   blank lines. Subsequent diffs emit only changed sections.
+2. Initial contextual-user content contains complete applicable AGENTS rules,
    the initial environment and skill catalog. Child sessions identify their task.
-4. Durable conversation stays in its original order. Context changes are anchored
+3. Durable conversation stays in its original order. Context changes are anchored
    before new user input or after completed tool interactions. An unchanged AGENTS
    block remains once near the front of every complete request; it is never moved
    next to the latest user message. Empty plans, goals and terminal lists are omitted.
-5. Later updates replace or withdraw earlier versions explicitly. Environment
+4. Later updates replace or withdraw earlier versions explicitly. Environment
    diffs include only changed fields: a new local date, time zone, working directory
    or access boundary. Passing seconds and tool continuations do not produce a
    clock update. There is no per-message sending-time context.
@@ -67,19 +66,18 @@ not extra instruction authority. AGENTS rules remain contextual user instruction
 file contents, attachments and tool results do not become developer policy.
 The host enforces Plan/Review permissions independently of model compliance.
 
-Responses uses the top-level `instructions` field for the base prompt. The leading
-system message is removed from `input`, while developer policy remains in `input`.
-Clara enables this with `provider.WithSystemInstructions(true)`; the provider's
-default behavior for other hosts is unchanged. Explicit
-`ProviderOptions.Instructions` wins over mapped leading system text. Completions
-retains its system message and the same developer/context order. Unknown roles
-and non-text developer content fail before dispatch. Local metadata stays off wire.
+Responses sends the first `developer` message in `input`, where the base and
+initial policy can be reused by prefix caching. Completions uses the same order
+in `messages`. The provider exposes `ProviderOptions.Instructions` and the
+opt-in `provider.WithSystemInstructions(true)` mapping for callers that use the
+Responses `instructions` field. Unknown roles and non-text developer content
+fail before dispatch. Local metadata stays off wire.
 
 Templates receive structured path and command parameters; their text is not
 repaired with substring replacements. `prompt.System`, `prompt.Default` and
-`prompt.Context.Message` remain available for existing hosts. New hosts should use
-`Policy`, `Fragment`, `LoadWindow` and `Window.Prepare`, or the layered `Prepare`
-helper. `Assemble` remains a stateless compatibility helper.
+`prompt.Context.Message` remain available for existing hosts. New hosts can use
+`Policy`, `Fragment`, `LoadWindow` and `Window.PrepareWithBase`, or the layered
+`Prepare` helper. `Assemble` remains a stateless compatibility helper.
 
 ## Context checkpoints
 
@@ -93,8 +91,9 @@ retains the prior window. JSON is bounded by `core.MaxContextStateBytes` (8 MiB)
 A window records a version, transcript fingerprint, fragment snapshot and insertion
 anchors. Its journal is bounded to 8192 entries and the Core JSON limit. Invalid
 versions or anchors fail explicitly. Transcript replacement or branching starts a
-fresh prefix; valid restored sessions retain their old prefix and append current
-changes. When restoring older Clara windows, the host removes obsolete environment
+fresh prefix. Restored sessions retain the saved fragment anchors, and request
+rendering attaches the base to the first developer message. When restoring older
+Clara windows, the host removes obsolete environment
 fields (`project_root`, `model`, `image_input`, `effective_context_window`,
 `local_datetime`, `timestamp`) from a copied snapshot and journal. Empty entries
 are dropped; mixed entries retain their other changes and original anchors. No
@@ -136,10 +135,10 @@ must all have matching results before that prefix can be removed. An unresolved
 call or orphan result prevents unsafe replacement.
 
 `Compactor.Transcript` restores context anchored within the summarized prefix as
-historical task data. This lets the summary resolve older dates and scoped rules
-without injecting today's environment into earlier turns. Management metadata is
-removed from the serialized summary transcript; current policy is installed again
-after compaction and retains its own authority.
+historical task data. This lets the summary resolve older dates and scoped rules.
+The summary request starts with its own `developer` instructions and puts the
+serialized historical context and transcript in a `user` message. A successful
+compaction installs the current policy for the next request.
 
 Summaries are user-level handoffs, not policy. They retain objectives, constraints,
 verified progress, failures, partial effects and remaining work. Empty, interrupted,

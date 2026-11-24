@@ -50,6 +50,32 @@ func TestSystemSelectsOnlyAvailableCapabilities(t *testing.T) {
 	}
 }
 
+func TestPrepareUsesFirstDeveloperAndPreservesCallerMessages(t *testing.T) {
+	ctx := t.Context()
+	var request model.Call
+	m := summaryModel{input: &request, response: &model.Response{Content: model.ResponseContent{model.TextContent{Text: "done"}}, FinishReason: model.FinishReasonStop}}
+	const defaultSystem = "default system instructions"
+	engine := core.NewAgent(m, core.WithSystemPrompt(defaultSystem))
+	prepare := prompt.Prepare(prompt.Config{Mode: prompt.Plan, Overrides: map[string]string{"base": "SDK base"}}, func(context.Context) (prompt.Context, error) {
+		return prompt.Context{Workspace: "/work", Rules: "account rules"}, nil
+	})
+	history := []model.Message{model.NewSystemMessage("retained caller system"), submission("first task"), model.NewDeveloperMessage("retained caller developer"), submission("next task")}
+	_, err := engine.Generate(ctx, core.AgentCall{Messages: history, PrepareStep: prepare})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := request.Prompt[0]
+	if first.Role != model.MessageRoleDeveloper || len(first.Content) != 1 || !strings.HasPrefix(windowText(request.Prompt[:1]), "SDK base\n\n") || !strings.Contains(windowText(request.Prompt[:1]), "# Plan Mode") {
+		t.Fatal("SDK base and plan policy did not share the leading developer message")
+	}
+	if request.Prompt[1].Role != model.MessageRoleUser || !strings.Contains(windowText(request.Prompt[1:2]), "account rules") {
+		t.Fatal("account rules lost their user role")
+	}
+	if text := windowText(request.Prompt); strings.Count(text, defaultSystem) != 1 || !strings.HasSuffix(text, windowText(history)) || windowText(history) != "retained caller system\nfirst task\nretained caller developer\nnext task\n" {
+		t.Fatal("prepared request modified the configured system or caller history")
+	}
+}
+
 func namedTool(name string) core.AgentTool {
 	return model.NewAgentTool(name, "", func(context.Context, struct{}, model.ToolCall) (model.ToolResponse, error) {
 		return model.NewTextResponse(""), nil

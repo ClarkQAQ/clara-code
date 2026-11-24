@@ -105,7 +105,7 @@ func (c Compactor) Fit(ctx context.Context, model modelapi.LanguageModel, system
 	}
 	limit := int64(2048)
 	response, err := model.Generate(ctx, modelapi.Call{Prompt: []modelapi.Message{
-		modelapi.NewSystemMessage(instructions), modelapi.NewUserMessage(string(body)),
+		modelapi.NewDeveloperMessage(instructions), modelapi.NewUserMessage(string(body)),
 	}, MaxOutputTokens: &limit})
 	if err != nil {
 		return nil, err

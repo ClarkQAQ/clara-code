@@ -9,10 +9,6 @@ import (
 
 	"clara-code/pkg/model"
 	toolapi "clara-code/pkg/tool"
-	corefs "clara-code/pkg/tool/fs"
-
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/filemode"
 )
 
 func runSearchTool(t *testing.T, tool model.AgentTool, input string) model.ToolResponse {
@@ -24,31 +20,24 @@ func runSearchTool(t *testing.T, tool model.AgentTool, input string) model.ToolR
 	return result
 }
 
-func TestSearchRespectsGitAndDirectReadsRemainAvailable(t *testing.T) {
+func TestSearchUsesFilesystemWithUnsupportedGitMetadata(t *testing.T) {
 	root := t.TempDir()
-	repo := initTestGit(t, root)
 	for name, body := range map[string]string{
-		".gitignore": "ignored/\n*.log\n!keep.log\n",
-		"main.go":    "needle", "sub/a.go": "needle", "ignored/a.go": "needle", "ignored/new.go": "needle",
-		"tracked.log": "needle", "drop.log": "needle", "keep.log": "needle", "module/hidden.go": "needle",
-		"sub/.gitignore":    "*.skip\n",
-		"sub/drop.skip":     "needle",
-		".git/info/exclude": "local-only.go\n",
-		"local-only.go":     "needle",
-		"-[literal]/a.go":   "needle",
+		".git/HEAD":             "ref: refs/heads/main\n",
+		".git/config":           "[core]\n\trepositoryformatversion = 0\n[extensions]\n\tworktreeConfig = true\n",
+		".git/index":            "invalid index",
+		".git/fixture.txt":      "needle",
+		".gitignore":            "ignored/\n# needle\n",
+		"main.go":               "needle",
+		"sub/a.go":              "needle",
+		"ignored/a.go":          "needle",
+		"linked/.git":           "gitdir: ../.git/worktrees/needle\n",
+		"linked/worktree.go":    "needle",
+		"nested/.git/secret.go": "needle",
+		"nested/repo.go":        "needle",
+		"-[literal]/a.go":       "needle",
 	} {
 		writeTestFile(t, root, name, body)
-	}
-	stageTestFiles(t, repo, "tracked.log", "ignored/a.go")
-	idx, err := repo.Storer.Index()
-	if err != nil {
-		t.Fatal(err)
-	}
-	moduleEntry := idx.Add("module")
-	moduleEntry.Mode = filemode.Submodule
-	moduleEntry.Hash = plumbing.NewHash(strings.Repeat("1", 40))
-	if err := repo.Storer.SetIndex(idx); err != nil {
-		t.Fatal(err)
 	}
 	t.Setenv("PATH", t.TempDir())
 	space, err := ResolveWorkspace(root)
@@ -56,29 +45,37 @@ func TestSearchRespectsGitAndDirectReadsRemainAvailable(t *testing.T) {
 		t.Fatal(err)
 	}
 	files := space.files()
-	for _, input := range []string{`{"pattern":"**/*"}`, `{"query":"needle"}`} {
-		tool := files.Glob()
-		if strings.Contains(input, "query") {
-			tool = files.Grep()
-		}
-		result := runSearchTool(t, tool, input)
+	for _, search := range []struct {
+		tool  model.AgentTool
+		input string
+	}{
+		{files.Glob(), `{"pattern":"**/*"}`},
+		{files.Grep(), `{"query":"needle"}`},
+		{files.Glob(), `{"pattern":"**/*","include_ignored":true}`},
+		{files.Grep(), `{"query":"needle","include_ignored":true}`},
+	} {
+		result := runSearchTool(t, search.tool, search.input)
 		if result.IsError {
 			t.Fatal(result.Content)
 		}
-		for _, want := range []string{"main.go", "sub/a.go", "ignored/a.go", "tracked.log", "keep.log"} {
+		for _, want := range []string{"/.gitignore", "/main.go", "/sub/a.go", "/ignored/a.go", "/linked/worktree.go", "/nested/repo.go"} {
 			if !strings.Contains(result.Content, want) {
 				t.Fatalf("missing %s: %s", want, result.Content)
 			}
 		}
-		for _, excluded := range []string{"ignored/new.go", "drop.log", "drop.skip", "local-only.go", "module/hidden.go", "/.git/"} {
+		for _, excluded := range []string{"/.git/", "/linked/.git"} {
 			if strings.Contains(result.Content, excluded) {
 				t.Fatalf("unexpected %s: %s", excluded, result.Content)
 			}
 		}
 	}
-	included := runSearchTool(t, files.Grep(), `{"query":"needle","include_ignored":true}`)
-	if included.IsError || !strings.Contains(included.Content, "ignored/new.go") || !strings.Contains(included.Content, "drop.log") || strings.Contains(included.Content, "module/hidden.go") {
-		t.Fatal(included.Content)
+	metadata := runSearchTool(t, files.Grep(), `{"path":".git","query":"needle"}`)
+	if metadata.IsError || !strings.Contains(metadata.Content, "/.git/fixture.txt:1:needle") {
+		t.Fatal(metadata.Content)
+	}
+	gitFile := runSearchTool(t, files.Glob(), `{"path":"linked/.git","pattern":".git"}`)
+	if gitFile.IsError || !strings.HasSuffix(gitFile.Content, "/linked/.git") {
+		t.Fatal(gitFile.Content)
 	}
 	sub := runSearchTool(t, files.Glob(), `{"path":"sub","pattern":"*.go"}`)
 	if sub.IsError || !strings.Contains(sub.Content, "/sub/a.go") || strings.Contains(sub.Content, "main.go") {
@@ -88,23 +85,14 @@ func TestSearchRespectsGitAndDirectReadsRemainAvailable(t *testing.T) {
 	if literal.IsError || !strings.Contains(literal.Content, "/-[literal]/a.go") {
 		t.Fatal(literal.Content)
 	}
-	module := runSearchTool(t, files.Grep(), `{"path":"module","query":"needle","include_ignored":true}`)
-	if module.IsError || !strings.Contains(module.Content, "hidden.go") {
-		t.Fatal("explicit submodule search failed: " + module.Content)
-	}
-	direct := runSearchTool(t, files.Read(), `{"path":"ignored/new.go"}`)
-	if direct.IsError || direct.Content != "needle" {
-		t.Fatal(direct.Content)
-	}
-	// Policy snapshots must refresh between calls after filesystem or ignore changes.
-	writeTestFile(t, root, ".gitignore", "")
-	refreshed := runSearchTool(t, files.Grep(), `{"query":"needle"}`)
-	if refreshed.IsError || !strings.Contains(refreshed.Content, "ignored/new.go") {
-		t.Fatal(refreshed.Content)
+	writeTestFile(t, root, ".git/config", "[core]\n\trepositoryformatversion = 0\n")
+	badIndex := runSearchTool(t, files.Grep(), `{"query":"needle"}`)
+	if badIndex.IsError || !strings.Contains(badIndex.Content, "/main.go:1:needle") {
+		t.Fatal(badIndex.Content)
 	}
 }
 
-func TestSearchPolicyEmptyNonGitAndGitFailure(t *testing.T) {
+func TestSearchWorksWithoutRepository(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, root, "ignored/a.go", "needle")
 	space, err := ResolveWorkspace(root)
@@ -115,11 +103,6 @@ func TestSearchPolicyEmptyNonGitAndGitFailure(t *testing.T) {
 	if result.IsError || !strings.Contains(result.Content, "ignored/a.go") {
 		t.Fatal(result.Content)
 	}
-	initTestGit(t, root)
-	space, err = ResolveWorkspace(root)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := os.Mkdir(filepath.Join(root, "empty"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -127,62 +110,41 @@ func TestSearchPolicyEmptyNonGitAndGitFailure(t *testing.T) {
 	if result.IsError || result.Content != "No matching files." {
 		t.Fatal(result.Content)
 	}
-	writeTestFile(t, root, ".gitignore", "ignored/\n")
-	result = runSearchTool(t, space.files().Grep(), `{"path":"ignored","query":"needle"}`)
-	if !result.IsError || !strings.Contains(result.Content, "include_ignored") {
-		t.Fatal(result.Content)
-	}
-	result = runSearchTool(t, space.files().Grep(), `{"path":"ignored","query":"needle","include_ignored":true}`)
-	if result.IsError || !strings.Contains(result.Content, "needle") {
-		t.Fatal(result.Content)
-	}
-	t.Setenv("PATH", t.TempDir())
-	result = runSearchTool(t, space.files().Grep(), `{"query":"needle","include_ignored":true}`)
-	if result.IsError || !strings.Contains(result.Content, "needle") {
-		t.Fatal("search requires a Git executable: " + result.Content)
-	}
-	writeTestFile(t, root, ".git/index", "invalid index")
-	result = runSearchTool(t, space.files().Grep(), `{"query":"needle"}`)
-	if !result.IsError || !strings.Contains(result.Content, "git search enumeration failed") {
-		t.Fatal("silently expanded Git scope: " + result.Content)
-	}
 }
 
 func TestMainAndTaskSearchAssemblyUsesSamePolicy(t *testing.T) {
 	root := t.TempDir()
-	initTestGit(t, root)
 	writeTestFile(t, root, ".gitignore", "ignored/\n")
-	writeTestFile(t, root, "ignored/a.go", "secret")
+	writeTestFile(t, root, "ignored/a.go", "needle")
+	writeTestFile(t, root, ".git/fixture.go", "needle")
 	c, _ := testHost(t, root, DemoModel{})
 	task, err := c.buildTask(t.Context(), toolapi.TaskSpec{Role: "explorer"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	inputs := map[string]string{"glob": `{"pattern":"*.go"}`, "grep": `{"query":"needle"}`}
 	for _, items := range [][]model.AgentTool{c.items, task.Tools} {
-		found := false
+		found := make(map[string]bool)
 		for _, tool := range items {
-			if tool.Info().Name != "glob" {
+			name := tool.Info().Name
+			input, ok := inputs[name]
+			if !ok {
 				continue
 			}
-			found = true
+			found[name] = true
 			schema, _ := json.Marshal(tool.Info())
 			if !strings.Contains(string(schema), "include_ignored") {
-				t.Fatal("model-visible policy parameter absent")
+				t.Fatalf("%s schema is missing include_ignored", name)
 			}
-			result := runSearchTool(t, tool, `{"pattern":"*.go"}`)
-			if result.IsError || strings.Contains(result.Content, "ignored/a.go") {
-				t.Fatal(result.Content)
+			result := runSearchTool(t, tool, input)
+			if result.IsError || !strings.Contains(result.Content, "/ignored/a.go") || strings.Contains(result.Content, "/.git/") {
+				t.Fatalf("%s: %s", name, result.Content)
 			}
 		}
-		if !found {
-			t.Fatal("glob missing")
+		for name := range inputs {
+			if !found[name] {
+				t.Fatalf("missing tool %s", name)
+			}
 		}
-	}
-	storage, err := c.Workspace.searchSource(t.Context(), corefs.Path(c.Workspace.Cwd), false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := storage.Stat(t.Context(), corefs.Path(filepath.ToSlash(filepath.Join(c.Workspace.Cwd, "ignored")))); err == nil {
-		t.Fatal("ignored directory visible")
 	}
 }

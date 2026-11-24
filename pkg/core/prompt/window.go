@@ -98,6 +98,12 @@ func (w Window) Matches(history []model.Message) bool {
 // Prepare creates a stable initial prefix and appends changes at safe boundaries.
 // The returned window is a candidate; callers checkpoint it before model dispatch.
 func (w Window) Prepare(history []model.Message, current []Fragment) ([]model.Message, Window, error) {
+	return w.PrepareWithBase(history, current, "")
+}
+
+// PrepareWithBase places the base instructions in the leading developer message,
+// together with the initial host policy. The base is outside the window journal.
+func (w Window) PrepareWithBase(history []model.Message, current []Fragment, base string) ([]model.Message, Window, error) {
 	if w.MessageCount < 0 || len(w.Entries) > 8192 {
 		return nil, w, errors.New("invalid context window journal")
 	}
@@ -189,18 +195,28 @@ func (w Window) Prepare(history []model.Message, current []Fragment) ([]model.Me
 		return nil, w, err
 	}
 	var messages []model.Message
+	if len(w.Entries) == 0 || w.Entries[0].At != 0 {
+		messages = renderChanges(nil, base)
+		base = ""
+	}
 	position := 0
 	for _, entry := range w.Entries {
 		messages = append(messages, history[position:entry.At]...)
-		messages = append(messages, renderChanges(entry.Changes)...)
+		messages = append(messages, renderChanges(entry.Changes, base)...)
+		base = ""
 		position = entry.At
 	}
 	messages = append(messages, history[position:]...)
 	return messages, w, nil
 }
 
-func renderChanges(changes []Change) []model.Message {
+func renderChanges(changes []Change, base string) []model.Message {
 	var messages []model.Message
+	if strings.TrimSpace(base) != "" {
+		message := model.NewDeveloperMessage(base)
+		message.Metadata = &model.MessageMetadata{Kind: "context"}
+		messages = append(messages, message)
+	}
 	for i := 0; i < len(changes); {
 		change := changes[i]
 		text := renderChange(change)
@@ -271,7 +287,7 @@ func (w Window) Prefix(history []model.Message) ([]model.Message, error) {
 			return nil, errors.New("invalid context prefix anchor")
 		}
 		messages = append(messages, history[position:entry.At]...)
-		messages = append(messages, renderChanges(entry.Changes)...)
+		messages = append(messages, renderChanges(entry.Changes, "")...)
 		position = entry.At
 	}
 	return append(messages, history[position:]...), nil

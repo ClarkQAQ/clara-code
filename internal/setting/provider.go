@@ -56,7 +56,7 @@ func (c Config) Factory() (func(context.Context, string) (model.LanguageModel, e
 		reasoningModels = append(reasoningModels, name)
 	}
 	slices.Sort(reasoningModels)
-	client, err := provider.New(provider.WithBaseURL(p.BaseURL), provider.WithAPI(api), provider.WithAPIKey(key), provider.WithHeaders(resolveHeaders(p.HTTPHeaders, p.EnvHTTPHeaders)), provider.WithReasoningModels(reasoningModels...), provider.WithSystemInstructions(true), provider.WithHTTPClient(requestClient{timeout: time.Duration(p.RequestTimeoutMS) * time.Millisecond, idle: time.Duration(p.StreamIdleTimeoutMS) * time.Millisecond}))
+	client, err := provider.New(provider.WithBaseURL(p.BaseURL), provider.WithAPI(api), provider.WithAPIKey(key), provider.WithHeaders(resolveHeaders(p.HTTPHeaders, p.EnvHTTPHeaders)), provider.WithReasoningModels(reasoningModels...), provider.WithHTTPClient(requestClient{timeout: time.Duration(p.RequestTimeoutMS) * time.Millisecond, idle: time.Duration(p.StreamIdleTimeoutMS) * time.Millisecond}))
 	if err != nil {
 		return nil, errors.New("invalid provider connection settings")
 	}

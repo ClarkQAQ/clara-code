@@ -19,10 +19,10 @@ type Fragment struct {
 }
 
 func (f Fragment) Message() model.Message {
-	return renderChanges([]Change{{Fragment: f}})[0]
+	return renderChanges([]Change{{Fragment: f}}, "")[0]
 }
 
-// Instructions separates stable collaboration guidance from capability policy.
+// Instructions returns the base text and the capability policy separately.
 func Instructions(config Config) (string, model.Message) {
 	base := render("base", config)
 	policy := model.NewDeveloperMessage()

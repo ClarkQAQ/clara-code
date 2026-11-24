@@ -15,7 +15,7 @@ import (
 )
 
 type requestWindow struct {
-	Instructions string            `json:"instructions"`
+	Instructions json.RawMessage   `json:"instructions"`
 	Input        []json.RawMessage `json:"input"`
 	Messages     []json.RawMessage `json:"messages"`
 }
@@ -64,16 +64,15 @@ func TestRequestWindowPrefixSurvivesTurnsRuleChangesAndResume(t *testing.T) {
 				now = now.Add(time.Second)
 				finish(t, c, prompt.Execute, input)
 				frame := <-requests
+				if len(frame.Instructions) != 0 || len(frame.Input) == 0 {
+					t.Fatal("expected model input without top-level instructions")
+				}
 				if index == 0 {
-					policyIndex := 0
-					if protocol == "completions" {
-						policyIndex = 1
-					}
 					var policy struct {
 						Role    string
 						Content json.RawMessage
 					}
-					if err := json.Unmarshal(frame.Input[policyIndex], &policy); err != nil || policy.Role != "developer" {
+					if err := json.Unmarshal(frame.Input[0], &policy); err != nil || policy.Role != "developer" {
 						t.Fatal("developer policy missing", err)
 					}
 					var text string
@@ -85,6 +84,9 @@ func TestRequestWindowPrefixSurvivesTurnsRuleChangesAndResume(t *testing.T) {
 						text = blocks[0].Text
 					} else if err := json.Unmarshal(policy.Content, &text); err != nil {
 						t.Fatal("developer policy not a single text", err)
+					}
+					if !strings.HasPrefix(text, prompt.Default("base")) || strings.Contains(text, "RULE-FULL-CONTENT") || strings.Contains(text, "<environment_context>") {
+						t.Fatal("developer prefix has the wrong base or contains contextual user data")
 					}
 					for _, section := range []string{"<permissions_instructions>", "<collaboration_mode>", "# File search", "# Anchored file edits"} {
 						if !strings.Contains(text, section) {
@@ -109,18 +111,14 @@ func TestRequestWindowPrefixSurvivesTurnsRuleChangesAndResume(t *testing.T) {
 				if index == 3 && !strings.Contains(text, "no longer applies") {
 					t.Fatal("removed rule still appears active")
 				}
-				if protocol == "responses" {
-					if !strings.HasPrefix(frame.Instructions, "You are Clara Code") || strings.Contains(text, "You are Clara Code") {
-						t.Fatal("Responses base was duplicated or not moved to instructions")
-					}
-				} else if frame.Instructions != "" || !strings.Contains(text, "You are Clara Code") {
-					t.Fatal("Completions lost its system instructions")
+				if strings.Count(text, "You are Clara Code") != 1 {
+					t.Fatal("model input lost or duplicated the base instructions")
 				}
 				previous = frame
 			}
 			before := c.Session.ContextState()
-			if len(before) == 0 {
-				t.Fatal("model window not checkpointed")
+			if len(before) == 0 || strings.Contains(string(before), "You are Clara Code") {
+				t.Fatal("model window checkpoint is missing or contains the base instructions")
 			}
 			host, workspace, id := c.Host, c.Workspace, c.Session.ID()
 			if err := c.Close(); err != nil {
@@ -138,11 +136,11 @@ func TestRequestWindowPrefixSurvivesTurnsRuleChangesAndResume(t *testing.T) {
 			now = now.Add(time.Second)
 			finish(t, resumed, prompt.Execute, "after resume")
 			frame := <-requests
-			if len(frame.Input) < len(previous.Input) || !reflect.DeepEqual(frame.Input[:len(previous.Input)], previous.Input) {
+			if len(frame.Instructions) != 0 || len(frame.Input) < len(previous.Input) || !reflect.DeepEqual(frame.Input[:len(previous.Input)], previous.Input) {
 				t.Fatal("resume moved the existing prefix")
 			}
 			for _, message := range resumed.Session.Messages() {
-				if strings.Contains(session.Text(message), "<environment_context>") {
+				if text := session.Text(message); strings.Contains(text, "<environment_context>") || strings.Contains(text, "You are Clara Code") {
 					t.Fatal("context entered raw history")
 				}
 			}

@@ -146,6 +146,7 @@ func (h *Conversation) Close(ctx context.Context) error {
 }
 
 func (h *Conversation) prepare(mode prompt.Mode, role string, registered []core.AgentTool, plan *tool.MemoryPlan, goal *tool.Goal, scope *tool.TaskScope) core.PrepareStepFunction {
+	base := prompt.Default("base")
 	return func(ctx context.Context, step core.PrepareStepFunctionOptions) (context.Context, core.PrepareStepResult, error) {
 		items := append([]core.AgentTool{}, registered...)
 		if role == "" && h.config.DynamicTools != nil {
@@ -155,7 +156,6 @@ func (h *Conversation) prepare(mode prompt.Mode, role string, registered []core.
 			items = tool.PlanTools(items)
 		}
 		config := prompt.Config{Mode: mode, Tools: items, Role: role}
-		system, _ := prompt.Instructions(config)
 		state := prompt.Context{Workspace: h.config.Workspace}
 		rules, err := fs.Instructions(ctx, h.storage, "/")
 		if err != nil {
@@ -193,29 +193,29 @@ func (h *Conversation) prepare(mode prompt.Mode, role string, registered []core.
 		if err != nil {
 			return ctx, core.PrepareStepResult{}, err
 		}
-		request, next, err := window.Prepare(step.Messages, fragments)
+		request, next, err := window.PrepareWithBase(step.Messages, fragments, base)
 		if err != nil {
 			return ctx, core.PrepareStepResult{}, err
 		}
 		compactor := h.config.Compact
 		compactor.Transcript = next.Prefix
 		compactor.Assemble = func(history []modelapi.Message) ([]modelapi.Message, error) {
-			messages, _, err := window.Prepare(history, fragments)
+			messages, _, err := window.PrepareWithBase(history, fragments, base)
 			return messages, err
 		}
-		history, err := compactor.Fit(ctx, step.Model, system, step.Messages, items)
+		history, err := compactor.Fit(ctx, step.Model, "", step.Messages, items)
 		if err != nil {
 			return ctx, core.PrepareStepResult{}, err
 		}
 		replacement := history
 		if history != nil {
-			request, next, err = (prompt.Window{}).Prepare(history, fragments)
+			request, next, err = (prompt.Window{}).PrepareWithBase(history, fragments, base)
 			if err != nil {
 				return ctx, core.PrepareStepResult{}, err
 			}
 		}
 		checkpoint, err := next.Marshal()
-		return ctx, core.PrepareStepResult{System: &system, Tools: items, History: replacement, Messages: request, ContextState: checkpoint}, err
+		return ctx, core.PrepareStepResult{Tools: items, History: replacement, Messages: request, ContextState: checkpoint}, err
 	}
 }
 

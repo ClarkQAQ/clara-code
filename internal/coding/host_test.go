@@ -377,7 +377,7 @@ func TestAutomaticCompactionKeepsVisibleTurns(t *testing.T) {
 	for _, item := range prepared.Tools {
 		definitions = append(definitions, item.Info())
 	}
-	estimate, err := prompt.Measure(*prepared.System, prepared.Messages, definitions)
+	estimate, err := prompt.Measure("", prepared.Messages, definitions)
 	if err != nil {
 		t.Fatal(err)
 	}

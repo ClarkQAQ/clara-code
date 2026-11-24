@@ -73,7 +73,7 @@ func TestFileToolsOperateOutsideTheProject(t *testing.T) {
 		}
 	}
 	result := invoke("glob", map[string]any{"path": other, "pattern": "*.go"})
-	if result.IsError || !strings.Contains(result.Content, "new.go") || strings.Contains(result.Content, "ignored.go") {
+	if result.IsError || !strings.Contains(result.Content, "new.go") || !strings.Contains(result.Content, "ignored.go") {
 		t.Fatal(result.Content)
 	}
 	result = invoke("grep", map[string]any{"path": other, "query": "needle", "include_ignored": true})

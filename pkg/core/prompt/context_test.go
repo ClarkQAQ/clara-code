@@ -78,6 +78,9 @@ func TestCompactionKeepsActiveTurnAndMedia(t *testing.T) {
 	if len(out) != 3 || out[0].Metadata.Kind != "handoff" || prompt.ActiveTurn(out) != 1 {
 		t.Fatal("active turn lost", out)
 	}
+	if len(request.Prompt) != 2 || request.Prompt[0].Role != model.MessageRoleDeveloper || strings.TrimSpace(windowText(request.Prompt[:1])) != prompt.Default("compact") || request.Prompt[1].Role != model.MessageRoleUser {
+		t.Fatal("summarization instructions and transcript have incorrect roles")
+	}
 	image := out[1].Content[1].(model.FilePart)
 	if string(image.Data) != "keep-image" {
 		t.Fatal("active media changed")

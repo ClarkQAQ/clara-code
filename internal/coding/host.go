@@ -397,6 +397,7 @@ func planToolAuthorizer(allowShell bool) core.ToolAuthorizer {
 
 func (c *Conversation) prepare(mode prompt.Mode, role string, model modelapi.LanguageModel, registered []modelapi.AgentTool, plan *toolapi.MemoryPlan, foreground bool, options preparation) core.PrepareStepFunction {
 	allowPlanShell := mode == prompt.Plan && planShellEnabled(role, foreground)
+	base := prompt.Default("base")
 	var previousEstimate int64
 	return func(ctx context.Context, step core.PrepareStepFunctionOptions) (context.Context, core.PrepareStepResult, error) {
 		if options.compaction != nil {
@@ -437,7 +438,6 @@ func (c *Conversation) prepare(mode prompt.Mode, role string, model modelapi.Lan
 			})
 		}
 		config := prompt.Config{Mode: mode, Role: role, Tools: items, Overrides: overrides, Parameters: c.promptParameters()}
-		system, _ := prompt.Instructions(config)
 		fragments := append(c.hostPolicies(mode, role, foreground, allowPlanShell), prompt.Policy(config)...)
 		fragments = append(fragments, rules...)
 		fragments = append(fragments, c.environmentFragments(mode == prompt.Plan && !allowPlanShell)...)
@@ -501,7 +501,7 @@ func (c *Conversation) prepare(mode prompt.Mode, role string, model modelapi.Lan
 		if compactor.Force && window.Matches(history) {
 			current = window.Snapshot
 		}
-		request, nextWindow, err := window.Prepare(history, current)
+		request, nextWindow, err := window.PrepareWithBase(history, current, base)
 		if err != nil {
 			return ctx, core.PrepareStepResult{}, err
 		}
@@ -510,37 +510,37 @@ func (c *Conversation) prepare(mode prompt.Mode, role string, model modelapi.Lan
 			if slices.EqualFunc(messages, history, func(a, b modelapi.Message) bool { return jsonText(a) == jsonText(b) }) {
 				return request, nil
 			}
-			fresh, _, err := (prompt.Window{}).Prepare(messages, fragments)
+			fresh, _, err := (prompt.Window{}).PrepareWithBase(messages, fragments, base)
 			return fresh, err
 		}
 		if len(step.Steps) > 0 {
 			compactor.UsageTokens = step.Steps[len(step.Steps)-1].Usage.TotalTokens
 			compactor.UsageEstimate = previousEstimate
 		} else if usage := c.Store.Meta().LastUsage; foreground && !compactor.Force && usage != nil {
-			baselineRequest, _, err := window.Prepare(history[:prompt.ActiveTurn(history)], fragments)
+			baselineRequest, _, err := window.PrepareWithBase(history[:prompt.ActiveTurn(history)], fragments, base)
 			if err != nil {
 				return ctx, core.PrepareStepResult{}, err
 			}
-			baseline, err := prompt.Measure(system, baselineRequest, toolDefinitions(items))
+			baseline, err := prompt.Measure("", baselineRequest, toolDefinitions(items))
 			if err != nil {
 				return ctx, core.PrepareStepResult{}, err
 			}
 			compactor.UsageTokens, compactor.UsageEstimate = usage.TotalTokens, baseline.Tokens
 		}
 		started := time.Now()
-		compacted, err := compactor.Fit(ctx, model, system, history, items)
+		compacted, err := compactor.Fit(ctx, model, "", history, items)
 		elapsed := time.Since(started)
 		if err != nil {
 			return ctx, core.PrepareStepResult{}, err
 		}
 		if compacted != nil {
 			history = compacted
-			request, nextWindow, err = (prompt.Window{}).Prepare(history, fragments)
+			request, nextWindow, err = (prompt.Window{}).PrepareWithBase(history, fragments, base)
 			if err != nil {
 				return ctx, core.PrepareStepResult{}, err
 			}
 		}
-		estimate, err := prompt.Measure(system, request, toolDefinitions(items))
+		estimate, err := prompt.Measure("", request, toolDefinitions(items))
 		if err != nil {
 			return ctx, core.PrepareStepResult{}, err
 		}
@@ -552,7 +552,7 @@ func (c *Conversation) prepare(mode prompt.Mode, role string, model modelapi.Lan
 		if compacted != nil && options.compaction != nil {
 			options.compaction.DurationMS = new(elapsed.Milliseconds())
 		}
-		return ctx, core.PrepareStepResult{Model: model, System: &system, Tools: items, Messages: request, History: compacted, ContextState: checkpoint}, nil
+		return ctx, core.PrepareStepResult{Model: model, Tools: items, Messages: request, History: compacted, ContextState: checkpoint}, nil
 	}
 }
 

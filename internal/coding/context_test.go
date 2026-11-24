@@ -58,7 +58,7 @@ func TestContextRefreshAndSubmissionOrder(t *testing.T) {
 		if step > 0 && strings.Contains(body, "first scoped instruction") {
 			t.Fatal("removed rules retained")
 		}
-		if strings.Contains(*result.System, "scoped instruction") || result.History != nil || history[0].Metadata != nil {
+		if result.System != nil || strings.Contains(session.Text(result.Messages[0]), "scoped instruction") || result.History != nil || history[0].Metadata != nil {
 			t.Fatal("dynamic context modified durable history")
 		}
 	}
@@ -123,7 +123,7 @@ func TestChildReceivesAssignmentAndCanReadCataloguedSkill(t *testing.T) {
 		if !strings.Contains(contextText(call.Prompt), "task_assignment") || !strings.Contains(contextText(call.Prompt), "skill_child") {
 			t.Error("child assignment missing")
 		}
-		if call.Prompt[0].Role != model.MessageRoleSystem || !strings.Contains(session.Text(call.Prompt[1]), "Current role: explorer") {
+		if call.Prompt[0].Role != model.MessageRoleDeveloper || !strings.Contains(session.Text(call.Prompt[0]), "Current role: explorer") {
 			t.Error("child policy not installed")
 		}
 		for _, message := range call.Prompt {

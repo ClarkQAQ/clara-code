@@ -79,24 +79,56 @@ func TestWindowKeepsInitialPrefixAndOnlyAppendsChanges(t *testing.T) {
 }
 
 func TestWindowConsolidatesDeveloperTextWithoutLosingIndependentChanges(t *testing.T) {
+	const base = "Base collaboration guidance"
 	fragments := windowFragments("fixed")
 	fragments = append([]prompt.Fragment{{Kind: "permissions", Source: "host", Role: model.MessageRoleDeveloper, Text: "Permission policy"}}, fragments...)
-	history := []model.Message{submission("task")}
-	first, window, err := (prompt.Window{}).Prepare(history, fragments)
+	history := []model.Message{model.NewSystemMessage("durable system message"), submission("task")}
+	_, old, err := (prompt.Window{}).Prepare(history, fragments)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(first[0].Content) != 1 || !strings.Contains(windowText(first[:1]), "Permission policy\n\nAgent mode") {
+	raw, err := old.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err = prompt.LoadWindow(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, window, err := old.PrepareWithBase(history, fragments, base)
+	if err != nil || !reflect.DeepEqual(old, window) {
+		t.Fatal("base instructions rewrote the existing journal", err)
+	}
+	if first[0].Role != model.MessageRoleDeveloper || len(first[0].Content) != 1 || !strings.HasPrefix(windowText(first[:1]), base+"\n\nPermission policy\n\nAgent mode") {
 		t.Fatal("developer sections not combined")
+	}
+	if !reflect.DeepEqual(first[2], history[0]) {
+		t.Fatal("durable system message changed")
 	}
 	fragments[1].Text = "Plan mode"
 	history = append(history, model.Message{Role: model.MessageRoleAssistant}, submission("change mode"))
-	next, _, err := window.Prepare(history, fragments)
+	next, _, err := window.PrepareWithBase(history, fragments, base)
 	if err != nil || !reflect.DeepEqual(first, next[:len(first)]) {
 		t.Fatal("merge destabilized old prefix", err)
 	}
-	if strings.Count(windowText(next), "Permission policy") != 1 || strings.Count(windowText(next), "Plan mode") != 1 {
+	if strings.Count(windowText(next), base) != 1 || strings.Count(windowText(next), "Permission policy") != 1 || strings.Count(windowText(next), "Plan mode") != 1 {
 		t.Fatal("merge lost per-section diffing")
+	}
+}
+
+func TestWindowBasePrecedesHistoryWhenPolicyArrivesLater(t *testing.T) {
+	history := []model.Message{model.NewDeveloperMessage("durable developer message"), submission("initial task")}
+	_, window, err := (prompt.Window{}).Prepare(history, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	history = append(history, model.Message{Role: model.MessageRoleAssistant}, submission("next task"))
+	request, _, err := window.PrepareWithBase(history, windowFragments("fixed"), "stable base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request[0].Role != model.MessageRoleDeveloper || request[0].Metadata.Kind != "context" || windowText(request[:1]) != "stable base\n" || !reflect.DeepEqual(request[1], history[0]) {
+		t.Fatal("base prefix moved durable history or policy from a later anchor")
 	}
 }
 

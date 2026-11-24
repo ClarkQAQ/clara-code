@@ -30,14 +30,13 @@ func TestEnvironmentDateRefreshesBetweenModelStepsWithoutEnteringHistory(t *test
 		if step >= len(times) {
 			return nil, fmt.Errorf("unexpected request %d", step)
 		}
+		prefix := call.Prompt[0]
+		if text := session.Text(prefix); prefix.Role != modelapi.MessageRoleDeveloper || !strings.HasPrefix(text, prompt.Default("base")) || strings.Contains(text, "<environment_context>") {
+			return nil, fmt.Errorf("clock snapshot entered stable prompt or developer policy is missing")
+		}
 		var clock string
 		for _, message := range call.Prompt {
 			text := session.Text(message)
-			if message.Role == modelapi.MessageRoleSystem {
-				if strings.Contains(text, "## Current local time") || !strings.Contains(text, prompt.Default("base")) {
-					return nil, fmt.Errorf("clock snapshot entered stable prompt or time guidance missing")
-				}
-			}
 			if message.Metadata != nil && message.Metadata.Kind == "context" {
 				clock += text
 			}
@@ -59,7 +58,7 @@ func TestEnvironmentDateRefreshesBetweenModelStepsWithoutEnteringHistory(t *test
 		t.Fatalf("clock ticks %d, model requests %d", ticks.Load(), requests.Load())
 	}
 	for _, message := range c.Session.Messages() {
-		if strings.Contains(session.Text(message), "## Current local time") {
+		if strings.Contains(session.Text(message), "<environment_context>") {
 			t.Fatal("ephemeral clock entered saved model history")
 		}
 	}

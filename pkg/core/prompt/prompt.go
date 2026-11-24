@@ -157,9 +157,9 @@ func (state Context) Message() model.Message {
 
 // Prepare builds a hook that can be used with either Agent entry point.
 func Prepare(config Config, current func(context.Context) (Context, error)) core.PrepareStepFunction {
-	system, _ := Instructions(config)
+	base := render("base", config)
 	return func(ctx context.Context, step core.PrepareStepFunctionOptions) (context.Context, core.PrepareStepResult, error) {
-		result := core.PrepareStepResult{System: &system}
+		result := core.PrepareStepResult{System: new("")}
 		fragments := Policy(config)
 		if current != nil {
 			state, err := current(ctx)
@@ -177,7 +177,7 @@ func Prepare(config Config, current func(context.Context) (Context, error)) core
 		if err != nil {
 			return ctx, result, err
 		}
-		messages, next, err := window.Prepare(step.Messages, fragments)
+		messages, next, err := window.PrepareWithBase(step.Messages, fragments, base)
 		if err != nil {
 			return ctx, result, err
 		}
