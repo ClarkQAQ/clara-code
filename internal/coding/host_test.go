@@ -3,6 +3,7 @@ package coding
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -510,5 +511,59 @@ func TestUsageRestoresWithoutDoubleCounting(t *testing.T) {
 	}
 	if store.Meta().LastUsage != nil {
 		t.Fatal("context was not invalidated")
+	}
+}
+
+func TestActiveTurnCompactionContinuesWithoutReplayingTools(t *testing.T) {
+	const task = "Check the plan repeatedly and report."
+	steps := 0
+	var compacted bool
+	model := fixtureModel{reply: func(call modelapi.Call) (*modelapi.Response, error) {
+		steps++
+		var hasTask, hasHandoff, hasLatest bool
+		for _, message := range call.Prompt {
+			hasTask = hasTask || session.Text(message) == task
+			hasHandoff = hasHandoff || strings.Contains(session.Text(message), "Earlier conversation summarized.")
+			for _, part := range message.Content {
+				if result, ok := modelapi.AsMessagePart[modelapi.ToolResultPart](part); ok && result.ToolCallID == fmt.Sprintf("call_%d", steps-1) {
+					hasLatest = true
+				}
+			}
+		}
+		if !hasTask || steps > 1 && !hasLatest {
+			return nil, errors.New("original task or most recent tool result is missing")
+		}
+		compacted = compacted || hasHandoff
+		if steps == 5 {
+			return demoText("Verified."), nil
+		}
+		response := toolReply("get_plan", struct{}{}, steps)
+		response.Content = append(modelapi.ResponseContent{modelapi.TextContent{Text: strings.Repeat("x", 4000)}}, response.Content...)
+		return response, nil
+	}}
+	c, _ := testHost(t, t.TempDir(), model)
+	_, prepared, err := c.Call(prompt.Execute, false).PrepareStep(t.Context(), core.PrepareStepFunctionOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	estimate, err := prompt.Measure("", prepared.Messages, toolDefinitions(prepared.Tools))
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := c.Host.Config.Models["fixture"]
+	profile.ContextWindow = 2 * (estimate.Tokens + 3300)
+	profile.EffectiveContextWindowPercent = 100
+	profile.MaxOutputTokens = 1
+	profile.AutoCompactContextPercent = new(50)
+	c.Host.Config.Models["fixture"] = profile
+	if err := c.ChangeModel(t.Context(), "fixture", ""); err != nil {
+		t.Fatal(err)
+	}
+	if result := finish(t, c, prompt.Execute, task); result.Response.Content.Text() != "Verified." || !compacted || steps != 5 {
+		t.Fatalf("active turn did not finish normally after compaction: %v, steps %d", compacted, steps)
+	}
+	turns, err := c.Store.Turns()
+	if err != nil || len(turns) != 1 || turns[0].Prompt != task {
+		t.Fatalf("compaction changed the visible turn: %v", err)
 	}
 }

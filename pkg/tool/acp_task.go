@@ -191,9 +191,7 @@ func externalACPCwd(config core.ACPExternalConfig) (string, error) {
 
 func (b *ACPTaskBackend) execute(entry *externalTask, prompt string) {
 	for {
-		ctx, cancel := context.WithTimeout(entry.ctx, 10*time.Minute)
-		text, stop, err := entry.agent.Prompt(ctx, entry.session, prompt)
-		cancel()
+		text, stop, err := entry.agent.Prompt(entry.ctx, entry.session, prompt)
 		b.mu.Lock()
 		entry.info.Result = text
 		entry.info.Error = ""

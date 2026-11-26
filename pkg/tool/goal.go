@@ -42,7 +42,7 @@ func (g *Goal) State() GoalState {
 	return g.state
 }
 
-// Start records an explicitly requested objective.
+// Start records an explicitly requested objective. A zero token or turn budget is unlimited.
 func (g *Goal) Start(objective string, tokens int64, turns int) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()

@@ -257,6 +257,20 @@ func testApp(t *testing.T) *app {
 	return a
 }
 
+func TestGoalCommandStartsWithoutImplicitBudgets(t *testing.T) {
+	a := testApp(t)
+	a.submit("/goal Verify the workspace")
+	if a.run == nil {
+		t.Fatal("the goal did not start")
+	}
+	state := a.conv.Goal.State()
+	a.submit("/pause")
+	_, _ = a.run.Wait(t.Context())
+	if state.Objective != "Verify the workspace" || state.TokenBudget != 0 || state.TurnBudget != 0 {
+		t.Fatalf("unexpected command goal: %+v", state)
+	}
+}
+
 func TestCommandMenuAndClearKeepSavedSession(t *testing.T) {
 	a := testApp(t)
 	a.editor.replace("/")

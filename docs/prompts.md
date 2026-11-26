@@ -128,8 +128,10 @@ the previous completed transcript when a new run begins. UI token totals continu
 to represent measured usage, not these estimates.
 
 `Compactor` accepts token/byte ceilings, an exact request `Assemble` callback, optional modality
-projection, and an explicit force flag. Summarization replaces complete old turns
-and retains the latest user turn, steering, tool interactions and original media.
+projection, and an explicit force flag. Summarization first considers complete old turns. When more space is needed within
+the active run, it summarizes earlier completed tool exchanges, keeping the original
+submission, steering and follow-ups with their media. The newest complete tool
+exchange and any pending calls stay in the working history.
 Only the summarized prefix projects attachments to descriptions. Parallel calls
 must all have matching results before that prefix can be removed. An unresolved
 call or orphan result prevents unsafe replacement.
@@ -143,7 +145,7 @@ compaction installs the current policy for the next request.
 Summaries are user-level handoffs, not policy. They retain objectives, constraints,
 verified progress, failures, partial effects and remaining work. Empty, interrupted,
 truncated or over-budget summaries do not replace history. Explicit compaction
-requires an older complete turn; a single recent turn is preserved intact.
+requires an old turn or an earlier completed exchange that can be summarized safely.
 
 New optional `Message.Metadata` fields identify user submissions, steering,
 follow-ups and handoffs. Legacy user messages remain conservative submission

@@ -142,7 +142,7 @@ func run() (err error) {
 			case "/goal":
 				if mode == prompt.Plan || conversation.Session.Active() != nil {
 					commandErr = errors.New("start a goal in Agent mode when the session is idle")
-				} else if commandErr = conversation.Goal.Start(argument, 100000, 20); commandErr == nil {
+				} else if commandErr = conversation.Goal.Start(argument, 0, 0); commandErr == nil {
 					last, commandErr = conversation.Start(ctx, mode, "Begin the explicitly requested goal: "+argument)
 				}
 			case "/pause":

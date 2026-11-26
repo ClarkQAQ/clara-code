@@ -171,7 +171,7 @@ func (app *web) action(w http.ResponseWriter, r *http.Request) {
 			err = errors.New("start or resume a goal in Agent mode when the session is idle")
 		} else {
 			if input.Action == "goal" {
-				err = item.Goal.Start(input.Text, 100000, 20)
+				err = item.Goal.Start(input.Text, 0, 0)
 			} else {
 				err = item.Goal.Resume()
 			}

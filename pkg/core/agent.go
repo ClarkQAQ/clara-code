@@ -395,10 +395,7 @@ type agent struct {
 
 // NewAgent creates a new agent with the given language model and options.
 func NewAgent(model LanguageModel, opts ...AgentOption) Agent {
-	settings := agentSettings{
-		model:    model,
-		maxSteps: 100,
-	}
+	settings := agentSettings{model: model}
 	for _, o := range opts {
 		o(&settings)
 	}
@@ -726,7 +723,7 @@ func (a *agent) run(ctx context.Context, opts AgentStreamCall, generate bool) (f
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if stepNumber >= a.settings.maxSteps {
+		if a.settings.maxSteps > 0 && stepNumber >= a.settings.maxSteps {
 			return &AgentResult{Steps: steps, Response: finalResponse(steps), TotalUsage: totalUsage, Messages: append(initialPrompt, responseMessages...)}, fmt.Errorf("agent step limit reached")
 		}
 		if opts.Steer != nil {
@@ -1232,9 +1229,10 @@ func WithMaxRetries(maxRetries int) AgentOption {
 }
 
 // WithMaxSteps sets the maximum number of model requests in a run.
+// The default and zero allow a run to continue without a step limit.
 func WithMaxSteps(steps int) AgentOption {
 	return func(settings *agentSettings) {
-		if steps > 0 {
+		if steps >= 0 {
 			settings.maxSteps = steps
 		}
 	}

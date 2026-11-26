@@ -506,12 +506,10 @@ func (c *Conversation) prepare(mode prompt.Mode, role string, model modelapi.Lan
 			return ctx, core.PrepareStepResult{}, err
 		}
 		compactor.Transcript = nextWindow.Prefix
-		compactor.Assemble = func(messages []modelapi.Message) ([]modelapi.Message, error) {
-			if slices.EqualFunc(messages, history, func(a, b modelapi.Message) bool { return jsonText(a) == jsonText(b) }) {
-				return request, nil
-			}
-			fresh, _, err := (prompt.Window{}).PrepareWithBase(messages, fragments, base)
-			return fresh, err
+		compactor.Assemble = func([]modelapi.Message) ([]modelapi.Message, error) { return request, nil }
+		compactor.AssembleCompacted = func(messages []modelapi.Message, _ []int) ([]modelapi.Message, error) {
+			request, nextWindow, err = (prompt.Window{}).PrepareWithBase(messages, fragments, base)
+			return request, err
 		}
 		if len(step.Steps) > 0 {
 			compactor.UsageTokens = step.Steps[len(step.Steps)-1].Usage.TotalTokens
@@ -532,13 +530,6 @@ func (c *Conversation) prepare(mode prompt.Mode, role string, model modelapi.Lan
 		elapsed := time.Since(started)
 		if err != nil {
 			return ctx, core.PrepareStepResult{}, err
-		}
-		if compacted != nil {
-			history = compacted
-			request, nextWindow, err = (prompt.Window{}).PrepareWithBase(history, fragments, base)
-			if err != nil {
-				return ctx, core.PrepareStepResult{}, err
-			}
 		}
 		estimate, err := prompt.Measure("", request, toolDefinitions(items))
 		if err != nil {
@@ -593,7 +584,7 @@ func (c *Conversation) Compact(ctx context.Context, modes ...prompt.Mode) error 
 		return err
 	}
 	if result.History == nil {
-		return errors.New("there are no complete old turns to compact")
+		return errors.New("there is no completed history to compact")
 	}
 	if err := c.Store.ReplaceHistory(ctx, result.History, result.ContextState, compaction); err != nil {
 		return err

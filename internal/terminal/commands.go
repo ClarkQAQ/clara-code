@@ -281,7 +281,7 @@ func (a *app) submit(line string) bool {
 	case "/goal":
 		if a.mode == prompt.Plan {
 			a.notice(errors.New("switch to Agent mode before starting a goal"))
-		} else if err := a.conv.Goal.Start(arg, 100_000, 20); err != nil {
+		} else if err := a.conv.Goal.Start(arg, 0, 0); err != nil {
 			a.notice(fmt.Errorf("cannot start goal: %w", err))
 		} else {
 			a.start("Begin the explicitly requested goal: "+arg, false)

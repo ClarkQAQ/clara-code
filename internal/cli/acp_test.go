@@ -21,6 +21,7 @@ import (
 	"clara-code/internal/coding"
 	"clara-code/internal/session"
 	"clara-code/pkg/core"
+	toolapi "clara-code/pkg/tool"
 )
 
 func requireACPCode(t *testing.T, err error, code int) {
@@ -200,5 +201,70 @@ func TestACPResumeAcrossProcesses(t *testing.T) {
 	}
 	if reply, stop, err := client.Prompt(ctx, id, next); err != nil || reply != "Continuing with XYZ42." || stop != sdk.StopReasonEndTurn {
 		t.Fatalf("resumed prompt %q, %q, %v", reply, stop, err)
+	}
+}
+
+func TestExternalACPTaskStopsInFlightModelRequest(t *testing.T) {
+	for _, action := range []string{"interrupt", "close"} {
+		t.Run(action, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+			defer cancel()
+			started, stopped := make(chan struct{}), make(chan struct{})
+			endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.Copy(io.Discard, r.Body)
+				close(started)
+				select {
+				case <-r.Context().Done():
+					close(stopped)
+				case <-ctx.Done():
+				}
+			}))
+			defer endpoint.Close()
+			backend := toolapi.NewACPTaskBackend(map[string]core.ACPExternalConfig{
+				"helper": {Command: os.Args[0], Args: []string{"acp"}, Cwd: t.TempDir(), Env: map[string]string{
+					childEnv: "1", "CLARA_CODE_HOME": t.TempDir(), "CLARA_CODE_ENDPOINT": endpoint.URL + "/v1",
+					"CLARA_CODE_PROTOCOL": "completions", "CLARA_CODE_MODEL": "external-fixture", "CLARA_CODE_API_KEY": "fixture",
+				}},
+			}, 1)
+			task, err := backend.Spawn(ctx, toolapi.TaskSpec{Name: "external", Role: "helper", Message: "Continue until stopped."})
+			if err != nil {
+				t.Fatal(err)
+			}
+			closed := false
+			defer func() {
+				if !closed {
+					_ = backend.CloseTask(ctx, task.ID)
+				}
+			}()
+			select {
+			case <-started:
+			case <-ctx.Done():
+				t.Fatal("external model request did not start")
+			}
+			if running, err := backend.Wait(ctx, task.ID, time.Millisecond); err == nil || running.Status != "running" {
+				t.Fatalf("poll did not leave the task running: %+v, %v", running, err)
+			}
+			if action == "interrupt" {
+				if err := backend.Interrupt(ctx, task.ID); err != nil {
+					t.Fatal(err)
+				}
+				got, err := backend.Wait(ctx, task.ID, 10*time.Second)
+				if err != nil || got.Status != "cancelled" {
+					t.Fatalf("interrupt returned %+v, %v", got, err)
+				}
+			}
+			if err := backend.CloseTask(ctx, task.ID); err != nil {
+				t.Fatal(err)
+			}
+			closed = true
+			select {
+			case <-stopped:
+			case <-ctx.Done():
+				t.Fatal("external model request remained active")
+			}
+			if active, err := backend.List(ctx); err != nil || len(active) != 0 {
+				t.Fatalf("closed task is still registered: %+v, %v", active, err)
+			}
+		})
 	}
 }
