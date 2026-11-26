@@ -28,6 +28,17 @@ func (a *app) backgroundSummary() string {
 	return fmt.Sprintf("%d background terminal%s running · /ps to view · /stop to close", count, plural)
 }
 
+func (a *app) restoreCommands(resumed bool) {
+	commands := a.conv.Store.Commands()
+	a.savedCommandStarts = make(map[string]time.Time, len(commands))
+	for _, activity := range commands {
+		a.savedCommandStarts[activity.Key()] = activity.Started
+		if !resumed {
+			a.view.rememberCell(session.Cell{Kind: "tool", Tool: &activity})
+		}
+	}
+}
+
 func (a *app) syncBackground() {
 	if a.conv == nil {
 		return
@@ -36,6 +47,9 @@ func (a *app) syncBackground() {
 		a.notice(err)
 	}
 	for _, activity := range a.conv.Store.Commands() {
+		if started, ok := a.savedCommandStarts[activity.Key()]; ok && started.Equal(activity.Started) {
+			continue
+		}
 		found := false
 		for i, cell := range a.view.history {
 			if cell.Tool == nil || cell.Tool.Key() != activity.Key() {

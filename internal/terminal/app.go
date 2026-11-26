@@ -59,6 +59,7 @@ type app struct {
 	setup                *setupForm
 	question             *questionForm
 	backgroundEvents     <-chan struct{}
+	savedCommandStarts   map[string]time.Time
 	stopTerminalResults  chan error
 	stoppingTerminals    bool
 	attachments          []session.Attachment
@@ -110,7 +111,7 @@ type rewindPrompt struct {
 type operationResult struct {
 	picker      *picker
 	conv        *coding.Conversation
-	resumeGoal  bool
+	resumed     bool
 	compaction  *session.Compaction
 	draft       string
 	label       string
@@ -383,7 +384,7 @@ func (a *app) open(ctx context.Context, id string, fork bool, at int, draft, lab
 	if ctx.Err() != nil {
 		return operationResult{err: errors.Join(ctx.Err(), next.Close())}
 	}
-	return operationResult{conv: next, draft: draft, label: label, resumeGoal: id != ""}
+	return operationResult{conv: next, draft: draft, label: label, resumed: id != ""}
 }
 
 func (a *app) install(result operationResult) error {
@@ -412,12 +413,14 @@ func (a *app) install(result operationResult) error {
 	}
 	meta := a.conv.Store.Meta()
 	a.view.welcome(a.options.Version, modelLabel(meta), a.space.Cwd)
-	a.loadInputHistory()
+	if err := a.loadInputHistory(); err != nil {
+		a.view.rememberCell(session.Cell{Kind: "error", Text: a.host.Config.Redact(err.Error())})
+	}
 	seedHistory := len(a.inputHistory) == 0
 	a.prompts = nil
 	a.goalMarkerSequence = 0
 	if meta.LegacyPathContext {
-		a.view.message("notice", "Paths now refer to the real filesystem. Older /foo paths referred to the project root; read the intended target again before editing.")
+		a.view.remember("notice", "Paths now refer to the real filesystem. Older /foo paths referred to the project root; read the intended target again before editing.")
 	}
 	goalMarkers := a.conv.Store.GoalMarkers()
 	if len(goalMarkers) > 0 {
@@ -431,36 +434,35 @@ func (a *app) install(result operationResult) error {
 			return err
 		}
 		for _, cell := range boundary(i) {
-			a.view.cell(cell)
+			a.view.rememberCell(cell)
 		}
 		if i == count {
 			break
 		}
 		turn, err := a.conv.Store.ReadTurn(i)
 		if err != nil {
-			a.notice(err)
-		} else {
-			if !turn.Internal {
-				a.prompts = append(a.prompts, rewindPrompt{turn: i, text: turn.Prompt})
-				if seedHistory && i >= count-1000 {
-					a.inputHistory = append(a.inputHistory, session.InputHistoryEntry{SessionID: a.conv.Session.ID(), Text: turn.Prompt, Attachments: turn.Attachments})
-				}
-				a.view.message("user", turn.Prompt)
-			}
-			a.replayAttachments(turn.Attachments)
-			for _, cell := range turn.Cells {
-				if a.view.cell(cell) {
-					a.reflow = true
-				}
-			}
-			a.view.message(turnCompletedKind, turnCompletion(turn))
+			a.view.rememberCell(session.Cell{Kind: "error", Text: a.host.Config.Redact(err.Error())})
+			continue
 		}
-		if a.view.buf.Len() >= 64<<10 {
-			if _, err := a.view.buf.WriteTo(a.view.output); err != nil {
-				return err
+		if !turn.Internal {
+			a.prompts = append(a.prompts, rewindPrompt{turn: i, text: turn.Prompt})
+			if seedHistory && i >= count-1000 {
+				a.inputHistory = append(a.inputHistory, session.InputHistoryEntry{SessionID: a.conv.Session.ID(), Text: turn.Prompt, Attachments: turn.Attachments})
+			}
+			a.view.rememberCell(session.Cell{Kind: "user", Text: turn.Prompt})
+		}
+		if !result.resumed && len(turn.Attachments) > 0 {
+			a.view.rememberCell(session.Cell{Kind: "attachments", Attachments: slices.Clone(turn.Attachments)})
+		}
+		for _, cell := range turn.Cells {
+			if !result.resumed || resumeTranscriptCell(cell) {
+				a.view.rememberCell(cell)
 			}
 		}
+		a.view.remember(turnCompletedKind, turnCompletion(turn))
 	}
+	a.restoreCommands(result.resumed)
+	a.view.paintHistory()
 	switch result.label {
 	case "", "Cleared conversation", "Rewound conversation", "Forked conversation":
 	default:
@@ -470,7 +472,7 @@ func (a *app) install(result operationResult) error {
 	a.syncBackground()
 	a.editor.insert(a.operationDraft.text)
 	a.operationDraft.replace("")
-	a.resumeGoalOnAgent = result.resumeGoal
+	a.resumeGoalOnAgent = result.resumed
 	a.resumeSavedGoal()
 	return nil
 }

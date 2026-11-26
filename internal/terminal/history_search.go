@@ -8,7 +8,9 @@ type historySearch struct {
 }
 
 func (a *app) openHistorySearch() {
-	a.loadInputHistory()
+	if err := a.loadInputHistory(); err != nil {
+		a.notice(err)
+	}
 	a.primed, a.hint = false, ""
 	a.picker = &picker{history: &historySearch{matches: matchInputHistory(a.inputHistory, "")}}
 }

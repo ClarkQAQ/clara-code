@@ -27,7 +27,7 @@ Type `/` to open the two-column command menu. Use Up/Down to select, Tab to comp
 
 ## Terminal behavior
 
-Clara uses the terminal's main screen and keeps completed conversations in native scrollback. When the window resizes, Clara rebuilds the terminal buffer from logical messages so the conversation, current question, menu, and draft all reflow.
+Clara uses the terminal's main screen and keeps completed output in native scrollback. Resizing reflows the conversation, current question, menu, and draft. When Clara resumes a conversation or rebuilds scrollback, it writes up to the latest 1,000 history rows after wrapping them to the current terminal width.
 
 Clara requests the Kitty keyboard protocol in compatible terminals. In tmux, Shift+Enter requires `set -s extended-keys on` and a terminal that can report extended keys.
 
@@ -37,9 +37,9 @@ The terminal title shows the project name, with a spinner during requests and an
 
 ### Progress and tool output
 
-Clara stores progress updates and final answers separately. A tool call appears as an updating record such as `● Bash(command)`, with output beneath `└`. Green indicates success and red indicates failure. Cancellation and background execution have their own states. Shell results report the actual exit code, and later background output updates the original record. Long previews retain the beginning and end. Records follow session storage limits and replay when you resume or resize.
+Clara stores progress updates and final answers separately. A tool call appears as an updating record such as `● Bash(command)`, with output beneath `└`. Green indicates success and red indicates failure. Cancellation and background execution have their own states. Shell results report the actual exit code, and later background output updates the original record. Long previews retain the beginning and end. Records follow session storage limits.
 
-A successful turn that takes more than 60 whole seconds displays a line such as `Worked for 1m 01s` after the reply. Automatic and manual compaction display their own elapsed time, for example `Context compacted · 8s`. These lines remain visible when you resume the conversation.
+A successful turn that takes more than 60 whole seconds displays a line such as `Worked for 1m 01s` after the reply. Automatic and manual compaction display their own elapsed time, for example `Context compacted · 8s`. The restored transcript includes these status lines within the scrollback limit.
 
 The activity line above the composer shows waiting, execution, compaction, or reconnection, with elapsed time and the Esc interruption hint. Interactive questions temporarily hide it. The reasoning content shown in progress updates comes from public summaries, which can supply an activity title. If a model stream ends early, Clara shows the retry count, delay, and redacted reason. When the next request starts, Clara clears the interrupted step's partial reply and generates a replacement from the same input. Earlier steps and tool results stay in the conversation. If the last attempt fails, its partial text remains visible and an empty composer is refilled with the failed turn's prompt.
 
@@ -79,7 +79,9 @@ Clara stores normalized images by content hash under `attachments/` in the appli
 
 ## Sessions and input history
 
-Run `clara-code resume --cwd /path/to/project` to reopen a conversation from a terminal. Inside Clara, use `/resume [ID]`. `/fork` and editing an earlier message create a separate conversation and insert a `Forked from …` divider between inherited history and new messages. When editing an earlier prompt, Clara restores model context from before that prompt. Existing file changes and command effects remain in the workspace.
+Run `clara-code resume --cwd /path/to/project` to reopen a conversation from a terminal. Inside Clara, use `/resume [ID]`. The restored terminal transcript contains user and assistant messages, proposed plans, and conversation status markers. To view a saved turn's tool calls and output, press Esc twice with an empty composer, then Ctrl+T to show details.
+
+`/fork` and editing an earlier message create a separate conversation and insert a `Forked from …` divider between inherited history and new messages. When editing an earlier prompt, Clara restores model context from before that prompt. Existing file changes and command effects remain in the workspace.
 
 Clara stores sessions and turns in `sessions.sqlite3` in the data directory. A blank conversation stays in memory until you submit a message or start a goal. Clara applies bundled schema migrations when it opens the database. Legacy JSON files under `sessions/` and `turns/` stay on disk. Session discovery and resume use the SQLite database. Each session has its own lock, so separate processes can open different sessions in the same project. Closing a session ends its running subagents and Shell processes.
 
@@ -97,7 +99,7 @@ Background terminals belong to their Clara session, including commands that suba
 
 When a background command is running, the area above the composer shows a line such as `1 background terminal running · /ps to view · /stop to close`, which merges into the activity indicator when shown. Clara checks status every 500 ms without consuming output and refreshes the UI when status or output changes. `/ps` leaves unread output available to the model. A model poll with empty input produces a separate `Waiting for background terminal` record that becomes `Waited for background terminal`. Sending input produces `Interacted with background terminal`. The original Bash record still shows output and final status. Canceling an input write stops waiting. The process may already have received input.
 
-Asynchronous command states are saved separately from completed turns using atomic writes. Natural exits, failures, stops, and timeouts update the original command record. Unread output stays available through `write_stdin`. The completion cache retains up to 32 recent terminals and 1 MiB of output per terminal, with head-and-tail previews. Recovery and branching replay records without restarting processes. Old records without a final state appear as interrupted. Custom execution backends without Core's `SnapshotProcess` update only when the model polls explicitly, and `/ps` reports this limitation.
+Asynchronous command states are saved separately from completed turns using atomic writes. Natural exits, failures, stops, and timeouts update the original command record. Unread output stays available through `write_stdin`. The completion cache retains up to 32 recent terminals and 1 MiB of output per terminal, with head-and-tail previews. Session recovery and branching retain saved command records. Conversation details mark unfinished commands as interrupted. Custom execution backends without Core's `SnapshotProcess` update only when the model polls explicitly, and `/ps` reports this limitation.
 
 ### Windows shell selection
 

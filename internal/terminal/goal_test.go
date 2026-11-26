@@ -105,7 +105,7 @@ func reopenGoalView(t *testing.T, a *app, draft string) {
 	}
 	a.conv = nil
 	a.view.resetHistory()
-	if err := a.install(operationResult{conv: conversation, draft: draft, label: "Resumed conversation", resumeGoal: true}); err != nil {
+	if err := a.install(operationResult{conv: conversation, draft: draft, label: "Resumed conversation", resumed: true}); err != nil {
 		t.Fatal(err)
 	}
 }

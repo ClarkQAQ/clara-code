@@ -10,23 +10,23 @@ import (
 	"clara-code/internal/session"
 )
 
-func (a *app) loadInputHistory() {
+func (a *app) loadInputHistory() error {
 	if a.historyLoaded {
-		return
+		return nil
 	}
 	a.historyLoaded = true
 	entries, err := session.ReadInputHistory(a.host.Config.Home)
 	a.inputHistory = entries
-	if err != nil {
-		a.notice(err)
-	}
+	return err
 }
 
 func (a *app) recordInput(text string) {
 	if a.conv == nil || strings.TrimSpace(text) == "/clear" {
 		return
 	}
-	a.loadInputHistory()
+	if err := a.loadInputHistory(); err != nil {
+		a.notice(err)
+	}
 	entry := session.InputHistoryEntry{SessionID: a.conv.Session.ID(), Timestamp: time.Now().UTC(), Text: text, Attachments: slices.Clone(a.attachments), Kind: "prompt"}
 	command, _ := splitCommand(text)
 	if strings.HasPrefix(command, "/") && !strings.Contains(command[1:], "/") {
@@ -65,7 +65,9 @@ func (a *app) recordInput(text string) {
 }
 
 func (a *app) recall(direction string) {
-	a.loadInputHistory()
+	if err := a.loadInputHistory(); err != nil {
+		a.notice(err)
+	}
 	if len(a.inputHistory) == 0 {
 		return
 	}

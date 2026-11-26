@@ -12,6 +12,23 @@ const (
 	threadForkedKind  = "thread-forked"
 )
 
+func resumeTranscriptCell(cell session.Cell) bool {
+	if cell.Tool != nil || len(cell.Attachments) > 0 {
+		return false
+	}
+	switch cell.Kind {
+	case "user", "assistant", "error", session.ProposedPlanKind, session.ContextCompactedKind, session.GoalUpdatedKind:
+		return true
+	case "notice":
+		switch cell.Text {
+		case "Interrupted", "Previous run interrupted before its final checkpoint was saved.",
+			"[Display history truncated. Full messages remain in session context.]":
+			return true
+		}
+	}
+	return false
+}
+
 func turnCompletion(turn session.Turn) string {
 	if turn.Status != "completed" {
 		return ""

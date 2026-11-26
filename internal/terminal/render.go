@@ -47,11 +47,32 @@ func (p *painter) rebuild() {
 	if p.header != nil {
 		p.paintWelcome(p.header.version, p.header.model, p.header.directory)
 	}
-	if p.dropped {
-		p.paintMessage("notice", "Earlier display history omitted. Saved conversations remain available.")
+	p.paintHistory()
+}
+
+const maxHistoryRows = 1000
+
+func (p *painter) paintHistory() {
+	var rows [maxHistoryRows]string
+	start := len(rows)
+	truncated := p.dropped
+	for i := len(p.history) - 1; i >= 0; i-- {
+		rendered := p.cellRows(p.history[i])
+		keep := min(start, len(rendered))
+		start -= keep
+		copy(rows[start:], rendered[len(rendered)-keep:])
+		if keep < len(rendered) || (start == 0 && i > 0) {
+			truncated = true
+			break
+		}
 	}
-	for _, cell := range p.history {
-		p.paintCell(cell)
+	if truncated {
+		notice := p.messageRows("notice", "Earlier display history omitted. Saved conversations remain available.")
+		p.commit(notice...)
+		start = max(start, len(notice))
+	}
+	if start < len(rows) {
+		p.commit(rows[start:]...)
 	}
 }
 
@@ -624,17 +645,24 @@ func (p *painter) cellRows(cell session.Cell) []string {
 	return p.messageRows(cell.Kind, transcriptCellText(cell))
 }
 
-func (p *painter) paintCell(cell session.Cell) { p.commit(p.cellRows(cell)...) }
-
 func (p *painter) cell(cell session.Cell) bool {
+	if p.rememberCell(cell) {
+		return true
+	}
+	if rows := p.cellRows(cell); len(rows) > 0 {
+		p.commit(rows...)
+	}
+	return false
+}
+
+func (p *painter) rememberCell(cell session.Cell) bool {
 	if len(cell.Attachments) > 0 {
 		p.history = append(p.history, cell)
 		p.trimHistory()
-		p.commit(p.attachmentHistory(cell.Attachments)...)
 		return false
 	}
 	if cell.Tool == nil {
-		p.message(cell.Kind, transcriptCellText(cell))
+		p.remember(cell.Kind, strings.TrimRight(clean(transcriptCellText(cell)), "\n"))
 		return false
 	}
 	activity := *cell.Tool
@@ -649,6 +677,5 @@ func (p *painter) cell(cell session.Cell) bool {
 	p.history = append(p.history, session.Cell{Kind: "tool", Tool: &activity})
 	p.sourceBytes += activity.DisplayBytes()
 	p.trimHistory()
-	p.paintCell(cell)
 	return false
 }
