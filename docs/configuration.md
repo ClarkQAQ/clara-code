@@ -52,7 +52,7 @@ default_reasoning_level = "high"
 supported_reasoning_levels = ["low", "high", "max"]
 ```
 
-Providers authenticate with `api_key` in their configuration table. `CLARA_CODE_API_KEY` can override that value. Keep actual keys out of version control. Providers also support literal and environment-backed HTTP headers, request retries, total request deadlines, and stream idle deadlines. Core retries eligible failures up to the start of streaming. The activity line reports timeouts and connection failures, and diagnostics redact authentication.
+Providers authenticate with `api_key` in their configuration table. `CLARA_CODE_API_KEY` can override that value. Keep actual keys out of version control. Providers also support literal and environment-backed HTTP headers, total request deadlines, and stream idle deadlines. `request_max_retries` sets one budget per model step for eligible connection and stream failures, including an unexpected EOF. The default is 3. Set it to 0 to disable retries. The activity line reports timeouts and connection failures, and diagnostics redact authentication.
 
 Model catalogs drive request behavior and the `/model` selectors for provider, model, and reasoning effort. Each model can specify an API `id`, display name, description, priority, visibility, context and output budgets, modalities, reasoning levels, summary, verbosity, and parallel tool calls. Omitted modalities default to text and image. Omitted reasoning metadata retains permissive defaults. Setting an explicitly unsupported reasoning level fails.
 
@@ -99,7 +99,7 @@ status_line = ["state", "model", "context", "session_cache_efficiency", "round_c
 
 Cache efficiency divides cached input tokens by all input tokens. Session efficiency sums this conversation's model requests. Round efficiency sums every model step in the current agent run, including tool continuations and steering. It shows the most recent run while idle. Each ratio is weighted by input tokens. Counters survive recovery, model changes, and compaction. New and forked sessions start fresh. Missing cache reports, incomplete legacy accounting, or an empty input denominator display `unknown`. An explicitly reported zero displays `0.0%`. `/status` also shows both metrics.
 
-The context status field uses total tokens from the most recent valid request. The percentage calculation subtracts a fixed 12,000-token baseline, following the reference Codex implementation. Cumulative usage appears separately in `/status`, and unavailable usage appears as `unknown`.
+The context status field shows total tokens from the most recent valid request. Immediately after compaction it shows the estimated size of the replacement context with an `≈` prefix until the next provider measurement. The percentage calculation subtracts a 12,000-token baseline. Cumulative usage appears separately in `/status`, and unavailable usage appears as `unknown`.
 
 ## Tool deadlines
 
@@ -117,9 +117,9 @@ See [MCP connections](usage.md#mcp-connections) for startup behavior and connect
 
 `context_window` is the model's raw token limit. The effective window defaults to 95% of that limit and can be set with `effective_context_window_percent`. Automatic compaction defaults to 90% of the raw window, matching the local Codex reference. Set `auto_compact_context_percent` (1–100) at the root for the application default or under an individual model to override it. `CLARA_CODE_AUTO_COMPACT_CONTEXT_PERCENT` overrides the root setting. Clara caps resolved percentages at 90% of the raw window.
 
-Clara caps the trigger at the effective window minus the output reservation and checks that the resulting summary fits the same input budget. Recent usage and conservative estimates calibrate triggering. A model without a declared `context_window` uses a bounded 256K-token heuristic for compaction while the UI labels its actual context limit unknown. Set `context_window` to use a declared limit. Replace the removed `context_bytes` setting and `CLARA_CODE_CONTEXT_BYTES` environment variable with token-window settings.
+The effective window also caps the trigger. The model's `max_output_tokens` applies to the summary request just as it does to ordinary calls. Omit it to use the provider's default. Models without a declared `context_window` use a 256K-token estimate for compaction.
 
-Compaction preserves the active task, subsequent user input and its images. `/compact` can summarize complete old turns and earlier tool exchanges within a long task. Failed or truncated summaries preserve the original working history. See [Prompt and Context Architecture](prompts.md) for details and the Codex comparison.
+Clara uses the latest applicable upstream token count plus subsequent additions to decide when to compact. A successful `/compact` or automatic compaction keeps recent user text, current task attachments and one handoff. A failed or truncated summary leaves the previous history available. See [Prompt and Context Architecture](prompts.md) for the accounting and retention rules.
 
 ## Rules and skills
 

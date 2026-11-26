@@ -198,12 +198,15 @@ func (h *Conversation) prepare(mode prompt.Mode, role string, registered []core.
 			return ctx, core.PrepareStepResult{}, err
 		}
 		compactor := h.config.Compact
+		if !compactor.Force && step.StepNumber == 0 && len(step.Messages) > 0 {
+			compactor.PendingFrom = new(prompt.ActiveTurn(step.Messages))
+		}
 		compactor.Transcript = next.Prefix
 		compactor.Assemble = func(history []modelapi.Message) ([]modelapi.Message, error) {
-			messages, _, err := window.PrepareWithBase(history, fragments, base)
+			messages, _, err := window.Prepare(history, fragments)
 			return messages, err
 		}
-		history, err := compactor.Fit(ctx, step.Model, "", step.Messages, items)
+		history, err := compactor.Fit(ctx, step.Model, base, step.Messages, items)
 		if err != nil {
 			return ctx, core.PrepareStepResult{}, err
 		}

@@ -8,7 +8,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
+	"clara-code/pkg/core"
 	"clara-code/pkg/core/prompt"
 	"clara-code/pkg/model"
 )
@@ -73,26 +75,28 @@ func TestCompactionKeepsActiveTurnAndMedia(t *testing.T) {
 	steer := model.NewUserMessage("more context")
 	steer.Metadata = &model.MessageMetadata{Kind: "steering"}
 	history := []model.Message{old, current, steer}
-	out, err := (prompt.Compactor{Force: true}).Fit(t.Context(), m, "stable", history, nil)
+	out, err := (prompt.Compactor{Force: true}).Fit(t.Context(), m, "stable", history, []core.AgentTool{namedTool("read")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out) != 3 || out[0].Metadata.Kind != "handoff" || prompt.ActiveTurn(out) != 1 {
-		t.Fatal("active turn lost", out)
+	if len(out) != 4 || out[3].Metadata.Kind != "handoff" || prompt.ActiveTurn(out) != 1 || len(out[0].Content) != 1 {
+		t.Fatal("handoff, user history or active turn lost")
 	}
-	if len(request.Prompt) != 2 || request.Prompt[0].Role != model.MessageRoleDeveloper || strings.TrimSpace(windowText(request.Prompt[:1])) != prompt.Default("compact") || request.Prompt[1].Role != model.MessageRoleUser {
-		t.Fatal("summarization instructions and transcript have incorrect roles")
+	if !reflect.DeepEqual(out[1:3], history[1:]) {
+		t.Fatal("active media or steering changed")
 	}
-	image := out[1].Content[1].(model.FilePart)
-	if string(image.Data) != "keep-image" {
-		t.Fatal("active media changed")
+	if len(request.Prompt) != 5 || windowText(request.Prompt[:1]) != "stable\n" ||
+		request.Prompt[0].Role != model.MessageRoleDeveloper || request.Prompt[4].Role != model.MessageRoleUser ||
+		strings.TrimSpace(windowText(request.Prompt[4:])) != prompt.Default("compact") || len(request.Tools) != 0 || request.MaxOutputTokens != nil {
+		t.Fatal("incorrect compaction request")
 	}
-	encoded, _ := json.Marshal(request.Prompt)
-	if strings.Contains(string(encoded), "c2VjcmV0LWltYWdl") || !strings.Contains(string(encoded), "old.png") {
-		t.Fatal("summary did not describe media")
-	}
-	if old.Content[1].(model.FilePart).Data == nil {
-		t.Fatal("original media mutated")
+	for i, message := range history {
+		if got := request.Prompt[i+1]; got.Metadata != nil || got.Role != message.Role || !reflect.DeepEqual(got.Content, message.Content) {
+			t.Fatal("historical roles, content, or media were changed", i)
+		}
+		if message.Metadata == nil {
+			t.Fatal("original metadata mutated")
+		}
 	}
 }
 
@@ -140,7 +144,7 @@ func TestMediaBudgetDoesNotCountBase64(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, err := prompt.Measure("policy", []model.Message{large}, nil)
-	if err != nil || a != b || a.Tokens < 8192 {
+	if err != nil || a != b || a.Tokens < 1792 {
 		t.Fatal("base64 inflated token estimate", a, b, err)
 	}
 }
@@ -154,7 +158,7 @@ func TestCompactionBudgetAndCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, err := (prompt.Compactor{BudgetTokens: before.Tokens / 2}).Fit(t.Context(), m, "policy", history, nil)
-	if err != nil || len(out) != 2 {
+	if err != nil || len(out) < 2 || out[len(out)-1].Metadata.Kind != "handoff" {
 		t.Fatal("token window did not trigger compaction", err)
 	}
 	if _, err := (prompt.Compactor{Force: true, BudgetTokens: 1}).Fit(t.Context(), m, "policy", history, nil); err == nil {
@@ -175,15 +179,15 @@ func TestLegacyCompactionAndNoCompletedTurn(t *testing.T) {
 	m := summaryModel{response: &model.Response{Content: model.ResponseContent{model.TextContent{Text: "summary"}}, FinishReason: model.FinishReasonStop}}
 	legacy := []model.Message{model.NewUserMessage("Prior conversation handoff:\nold"), model.NewUserMessage("previous"), model.NewUserMessage("latest")}
 	out, err := (prompt.Compactor{Force: true}).Fit(t.Context(), m, "", legacy, nil)
-	if err != nil || len(out) != 2 {
+	if err != nil || len(out) != 3 || out[len(out)-1].Metadata.Kind != "handoff" {
 		t.Fatal("legacy transcript not supported", err)
 	}
 	folded := []model.Message{model.NewUserMessage("Prior conversation handoff:\nold"), submission("latest")}
 	out, err = (prompt.Compactor{Force: true}).Fit(t.Context(), m, "", folded, nil)
-	if err != nil || len(out) != 2 || out[0].Metadata.Kind != "handoff" || !reflect.DeepEqual(out[1], folded[1]) {
+	if err != nil || len(out) != 2 || out[1].Metadata.Kind != "handoff" || !reflect.DeepEqual(out[0], folded[1]) {
 		t.Fatalf("explicit compaction of folded history failed: %v", err)
 	}
-	if out, err := (prompt.Compactor{Force: true}).Fit(t.Context(), m, "", []model.Message{submission("only turn")}, nil); err == nil || out != nil {
+	if out, err := (prompt.Compactor{Force: true}).Fit(t.Context(), m, "", []model.Message{submission("only turn")}, nil); err != nil || len(out) != 2 || !reflect.DeepEqual(out[0], submission("only turn")) {
 		t.Fatal("latest turn was summarized away")
 	}
 }
@@ -196,7 +200,7 @@ func TestEarlyCompactionTriggerIsSeparateFromHardBudget(t *testing.T) {
 	}
 	m := summaryModel{response: &model.Response{Content: model.ResponseContent{model.TextContent{Text: "summary"}}, FinishReason: model.FinishReasonStop}}
 	out, err := (prompt.Compactor{BudgetTokens: before.Tokens + 100, TriggerTokens: 1}).Fit(t.Context(), m, "policy", history, nil)
-	if err != nil || len(out) != 2 {
+	if err != nil || len(out) != 3 {
 		t.Fatal("early trigger was incorrectly treated as the hard budget", err)
 	}
 	out, err = (prompt.Compactor{BudgetTokens: before.Tokens + 100, TriggerTokens: before.Tokens + 1}).Fit(t.Context(), m, "policy", history, nil)
@@ -227,60 +231,53 @@ func TestLongActiveTurnCompactionKeepsInstructionsAndToolBoundaries(t *testing.T
 	}
 	history := []model.Message{task, call("first", "second"), result("second", oldResult), result("first", "ok"), steer,
 		call("next"), result("next", oldResult), followup, call("latest"), result("latest", "current"), call("pending", "also-pending"), result("pending", "done")}
-	// A prior turn gives the compactor two candidates. Only the active-turn
-	// candidate frees enough space, and the summary model is called once.
-	historyWithOld := append([]model.Message{submission("short old turn")}, history...)
-	measured := 0
-	mixed := prompt.Compactor{BudgetBytes: 2000, AssembleCompacted: func(candidate []model.Message, at []int) ([]model.Message, error) {
-		measured++
-		if len(at) != len(historyWithOld)+1 || !slices.IsSorted(at) || at[len(historyWithOld)] != len(candidate) {
-			t.Fatalf("invalid candidate boundaries: %v", at)
-		}
-		return candidate, nil
-	}}
-	mixedModel := summaryModel{response: &model.Response{FinishReason: model.FinishReasonStop, Content: model.ResponseContent{model.TextContent{Text: "summary"}}}}
-	mixedOut, err := mixed.Fit(t.Context(), mixedModel, "", historyWithOld, nil)
-	if err != nil || len(mixedOut) != 8 || measured != 2 || !reflect.DeepEqual(mixedOut[1], task) || !reflect.DeepEqual(mixedOut[4:], history[8:]) {
-		t.Fatalf("combined old and active prefix compaction: measured %d replacements, error %v", measured, err)
-	}
-	before, err := prompt.Measure("", history, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
 	var request model.Call
 	m := summaryModel{input: &request, response: &model.Response{FinishReason: model.FinishReasonStop, Content: model.ResponseContent{model.TextContent{Text: "handoff one"}}}}
-	var anchors []int
-	var final []model.Message
-	compactor := prompt.Compactor{BudgetBytes: before.Bytes / 2, AssembleCompacted: func(candidate []model.Message, at []int) ([]model.Message, error) {
-		final, anchors = candidate, at
-		return candidate, nil
-	}}
+	// Earlier complete exchanges are also kept intact until the whole window
+	// reaches a safe boundary.
+	compactor := prompt.Compactor{ActiveContextTokens: new(int64(200)), TriggerTokens: 200}
 	out, err := compactor.Fit(t.Context(), m, "", history, nil)
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || out != nil || request.Prompt != nil {
+		t.Fatal("compacted before outstanding tools finished", err)
 	}
-	if len(out) != 8 || &final[0] != &out[0] || out[1].Metadata.Kind != "handoff" || !reflect.DeepEqual(out[0], task) ||
-		!reflect.DeepEqual(out[2], steer) || !reflect.DeepEqual(out[3], followup) || !reflect.DeepEqual(out[4:], history[8:]) {
-		t.Fatalf("unexpected retained transcript: %+v", out)
+	history = append(history, result("also-pending", "done"))
+	var anchors []int
+	compactor.AssembleCompacted = func(candidate []model.Message, mapping []int) ([]model.Message, error) {
+		anchors = slices.Clone(mapping)
+		return candidate, nil
 	}
-	if want := []int{0, 1, 1, 1, 2, 3, 3, 3, 4, 5, 6, 7, 8}; !slices.Equal(anchors, want) {
+	out, err = compactor.Fit(t.Context(), m, "", history, nil)
+	if err != nil || len(out) != 4 || !reflect.DeepEqual(out[:3], []model.Message{task, steer, followup}) || out[3].Metadata.Kind != "handoff" {
+		t.Fatal("user input or handoff lost", err)
+	}
+	if want := []int{0, 1, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 3, 4}; !slices.Equal(anchors, want) {
 		t.Fatalf("anchors = %v, want %v", anchors, want)
 	}
-	body := windowText(request.Prompt[1:])
-	if !strings.Contains(body, oldResult) || strings.Contains(body, "also-pending") || strings.Contains(body, "b3JpZ2luYWwtbWVkaWE=") {
-		t.Fatal("summarizer did not receive just the safe prefix and media descriptions")
+	if len(request.Prompt) != len(history)+1 || !reflect.DeepEqual(request.Prompt[1].Content, history[1].Content) ||
+		!reflect.DeepEqual(request.Prompt[2].Content, history[2].Content) {
+		t.Fatal("summarizer did not see matched calls and results")
 	}
-	extended := append(slices.Clone(out), result("also-pending", oldResult), call("final"), result("final", "most recent"))
+	extended := append(slices.Clone(out), call("final"), result("final", "most recent"))
 	m.response.Content = model.ResponseContent{model.TextContent{Text: "handoff two"}}
 	out, err = (prompt.Compactor{Force: true}).Fit(t.Context(), m, "", extended, nil)
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || len(out) != 4 || !reflect.DeepEqual(out[:3], []model.Message{task, steer, followup}) ||
+		!strings.Contains(windowText(out[3:]), "handoff two") || !strings.Contains(windowText(request.Prompt), "handoff one") {
+		t.Fatal("repeated compaction did not fold prior handoff", err)
 	}
-	if len(out) != 6 || !reflect.DeepEqual(out[0], task) || out[1].Metadata.Kind != "handoff" ||
-		!reflect.DeepEqual(out[2], steer) || !reflect.DeepEqual(out[3], followup) || !reflect.DeepEqual(out[4:], extended[len(extended)-2:]) {
-		t.Fatal("repeated compaction lost inputs or accumulated previous handoffs")
+}
+
+func TestCompactionRetainsRecentUserTextWithinBudget(t *testing.T) {
+	const old = "old user prompt"
+	long := "HEAD" + strings.Repeat("火", 40_000) + "TAIL"
+	history := []model.Message{submission(old), submission(long), submission("finish")}
+	m := summaryModel{response: &model.Response{FinishReason: model.FinishReasonStop, Content: model.ResponseContent{model.TextContent{Text: "summary"}}}}
+	out, err := (prompt.Compactor{Force: true}).Fit(t.Context(), m, "", history, nil)
+	if err != nil || len(out) != 3 {
+		t.Fatal("wrong retained user count", err)
 	}
-	if body = windowText(request.Prompt[1:]); !strings.Contains(body, "handoff one") || !strings.Contains(body, oldResult) {
-		t.Fatal("second summary missed prior progress")
+	text := out[0].Content[0].(model.TextPart).Text
+	if !utf8.ValidString(text) || !strings.HasPrefix(text, "HEAD") || !strings.HasSuffix(text, "TAIL") || len(text) > (20_000-2)*4 ||
+		!reflect.DeepEqual(out[1], history[2]) || out[2].Metadata.Kind != "handoff" {
+		t.Fatal("invalid retained boundary or text budget")
 	}
 }

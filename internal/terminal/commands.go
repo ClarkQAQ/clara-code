@@ -118,6 +118,7 @@ func (a *app) handle(input key) bool {
 		if a.run == nil {
 			if a.mode == prompt.Plan {
 				a.mode = prompt.Execute
+				a.resumeSavedGoal()
 			} else {
 				a.mode = prompt.Plan
 			}
@@ -245,6 +246,7 @@ func (a *app) submit(line string) bool {
 		a.mode = prompt.Plan
 	case "/agent":
 		a.mode = prompt.Execute
+		a.resumeSavedGoal()
 	case "/review":
 		a.start(line, true)
 	case "/model":
@@ -279,27 +281,9 @@ func (a *app) submit(line string) bool {
 	case "/fork":
 		a.switchSession("", true, -1, "", "Forked conversation")
 	case "/goal":
-		if a.mode == prompt.Plan {
-			a.notice(errors.New("switch to Agent mode before starting a goal"))
-		} else if err := a.conv.Goal.Start(arg, 0, 0); err != nil {
-			a.notice(fmt.Errorf("cannot start goal: %w", err))
-		} else {
-			a.start("Begin the explicitly requested goal: "+arg, false)
-			if a.run == nil {
-				_ = a.conv.Goal.Pause()
-			}
-		}
+		a.startGoal(arg)
 	case "/continue":
-		if a.mode == prompt.Plan {
-			a.notice(errors.New("switch to Agent mode before continuing a goal"))
-		} else if err := a.conv.Goal.Resume(); err != nil {
-			a.notice(fmt.Errorf("cannot continue goal: %w", err))
-		} else {
-			a.start("Resume the active goal.", false)
-			if a.run == nil {
-				_ = a.conv.Goal.Pause()
-			}
-		}
+		a.continueGoal()
 	case "/mcp":
 		var lines []string
 		for _, status := range a.conv.MCPStatuses() {
@@ -388,26 +372,10 @@ func (a *app) interrupt() {
 	if a.run == nil {
 		return
 	}
-	if a.conv.Goal.State().Status == tool.GoalActive {
-		_ = a.conv.Goal.Pause()
+	if a.mode != prompt.Plan && a.goalState().Status == tool.GoalActive {
+		a.persistGoalPause()
 	}
-	a.question = nil
-	a.run.Cancel()
-}
-
-func (a *app) pauseGoal() {
-	if a.conv.Goal.State().Status != tool.GoalActive {
-		a.notice(errors.New("no active goal"))
-		return
-	}
-	if err := a.conv.Goal.Pause(); err != nil {
-		a.notice(err)
-		return
-	}
-	if a.run != nil {
-		a.interrupt()
-	}
-	a.view.message("notice", "Goal paused")
+	a.cancelTurn()
 }
 
 func (a *app) openResume(startup bool) {
@@ -434,8 +402,8 @@ func (a *app) openResume(startup bool) {
 
 func (a *app) openRewind() {
 	p := &picker{kind: "rewind", title: "Edit a previous message", followSelection: true, selected: len(a.prompts) - 1}
-	for _, text := range a.prompts {
-		p.items = append(p.items, choice{label: text})
+	for _, prompt := range a.prompts {
+		p.items = append(p.items, choice{label: prompt.text})
 	}
 	a.picker = p
 	a.view.clearScreen()

@@ -204,11 +204,11 @@ func TestWindowCompactionSeesHistoricalContextWithoutManagementMetadata(t *testi
 	var request model.Call
 	m := summaryModel{input: &request, response: &model.Response{Content: model.ResponseContent{model.TextContent{Text: "Historical task completed; current work remains."}}, FinishReason: model.FinishReasonStop}}
 	out, err := (prompt.Compactor{Force: true, Transcript: window.Prefix}).Fit(t.Context(), m, "base", history, nil)
-	if err != nil || len(out) != 2 {
+	if err != nil || len(out) != 3 {
 		t.Fatal("historical compaction failed", err)
 	}
-	text := windowText(request.Prompt[1:])
-	if !strings.Contains(text, "old clock") || strings.Contains(text, "current clock") || strings.Contains(text, `\"kind\"`) || strings.Contains(text, `"metadata"`) {
+	text := windowText(request.Prompt)
+	if !strings.Contains(text, "old clock") || !strings.Contains(text, "current clock") || strings.Contains(text, `\"kind\"`) || strings.Contains(text, `"metadata"`) {
 		t.Fatal("summary got wrong clock or internal metadata", text)
 	}
 }

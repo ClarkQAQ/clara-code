@@ -204,13 +204,16 @@ func (s *Store) SetSelection(provider, name, agentEffort, planEffort string) err
 	next.Meta.Effort = agentEffort
 	next.Meta.PlanEffort = planEffort
 	if provider != s.data.Meta.Provider || name != s.data.Meta.Model {
-		next.Meta.LastUsage = nil
+		next.Meta.clearContextUsage()
 	}
 	return s.commit(next)
 }
 func (s *Store) SetPendingSelection(provider, plan string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.data.Meta.Provider != provider {
+		s.data.Meta.clearContextUsage()
+	}
 	s.data.Meta.Provider = provider
 	s.data.Meta.PlanEffort = plan
 }

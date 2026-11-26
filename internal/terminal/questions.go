@@ -50,7 +50,10 @@ func (q *questionForm) editingNotes() bool {
 }
 
 func (q *questionForm) layout(p *painter) layout {
-	height := p.contentHeight()
+	return q.layoutWithin(p, p.contentHeight())
+}
+
+func (q *questionForm) layoutWithin(p *painter, height int) layout {
 	item, draft := q.request.Items[q.index], &q.drafts[q.index]
 	unanswered := 0
 	for _, answer := range q.drafts {

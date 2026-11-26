@@ -105,55 +105,38 @@ capability. None of this journal is included in terminal replay or editable prom
 
 ## Window budgets and compaction
 
-Models with a declared window use their effective window, less configured maximum
-output tokens. Without an output limit, Clara reserves 4096 tokens or one quarter
-of a smaller window. Automatic compaction uses `auto_compact_context_percent`
-(default 90), with a global default and optional model override, against the
-raw window, independently of the effective-window percentage. Values above 90%
-are clamped to 90%, matching the local Codex model metadata calculation
-(`crates/protocol/src/openai_models.rs`, `auto_compact_token_limit`). Clara also
-caps the trigger by its hard input budget after output
-reservation. A valid replacement must fit that hard budget, not necessarily fall
-below the early trigger. The application no longer accepts `context_bytes`.
-An undeclared window uses a 256K-token heuristic for bounded compaction; this is
-not reported as a known provider context window.
+Clara checks the established history before adding a new submission and before a
+model continuation. The trigger is the lower of the effective window and
+`auto_compact_context_percent` of the raw window. The default and maximum
+percentage is 90. A model without a declared window uses a 256K-token heuristic.
+A final answer ends the turn even when the threshold was reached.
 
-`prompt.Measure` reports estimates separately from provider usage. It includes
-policy, current context, history and tool schemas, using a conservative serialized
-text heuristic of roughly one token per two bytes. Each image has an 8192-token
-allowance independent of base64 size. These are heuristics, not exact tokenizer or
-provider image accounting. Text-only models budget their omission projection.
-Recent provider totals calibrate growth within a run; restored usage calibrates
-the previous completed transcript when a new run begins. UI token totals continue
-to represent measured usage, not these estimates.
+An upstream token total covers the response that reported it. Clara adds the cost
+of local messages delivered after that response, including tool results and steering.
+The estimate counts model-visible UTF-8 text at about four bytes per token and a
+standard image at about 1,844 tokens. Text-only models use their text projection.
+If no usage sample matches the history, Clara estimates the established window.
+The status line shows the latest model usage or, just after compaction, an estimate
+for the replacement window. Cumulative usage and cache statistics record provider
+measurements.
 
-`Compactor` accepts token/byte ceilings, an exact request `Assemble` callback, optional modality
-projection, and an explicit force flag. Summarization first considers complete old turns. When more space is needed within
-the active run, it summarizes earlier completed tool exchanges, keeping the original
-submission, steering and follow-ups with their media. The newest complete tool
-exchange and any pending calls stay in the working history.
-Only the summarized prefix projects attachments to descriptions. Parallel calls
-must all have matching results before that prefix can be removed. An unresolved
-call or orphan result prevents unsafe replacement.
+Clara sends the history to the same model with its original message roles, adds a
+final user instruction asking for a handoff, and omits tools. It inherits the model's
+configured output limit. An unset limit lets the provider choose its default.
+A provider-reported input overflow drops the oldest eligible history item from a
+temporary copy and retries. Tool calls and results are removed together. A cancelled
+request, a truncated answer or an empty summary leaves the original history intact.
 
-`Compactor.Transcript` restores context anchored within the summarized prefix as
-historical task data. This lets the summary resolve older dates and scoped rules.
-The summary request starts with its own `developer` instructions and puts the
-serialized historical context and transcript in a `user` message. A successful
-compaction installs the current policy for the next request.
+A successful replacement ends the summarized history with a user-level handoff.
+Up to 20,000 estimated tokens of recent user text are retained in chronological
+order, subject to the host's window budget. Attachments belonging to the active
+submission or its steering remain available. New submissions awaiting dispatch
+follow the handoff. Earlier handoffs inform the next summary. Pending tool calls
+delay automatic compaction until their results arrive.
 
-Summaries are user-level handoffs, not policy. They retain objectives, constraints,
-verified progress, failures, partial effects and remaining work. Empty, interrupted,
-truncated or over-budget summaries do not replace history. Explicit compaction
-requires an old turn or an earlier completed exchange that can be summarized safely.
-
-New optional `Message.Metadata` fields identify user submissions, steering,
-follow-ups and handoffs. Legacy user messages remain conservative submission
-boundaries; legacy handoff prefixes are recognized. No existing session is rewritten
-on load. Original replay records, attachments and pre-submission checkpoints stay
-available for resume and branching after compaction. A successful compaction
-installs a fresh initial context alongside the replacement history; failure keeps
-the old window. Its budget includes the base instructions, journal, tools and media.
+The window and replacement history are checkpointed together. Restored sessions
+can read older handoffs and rebuild missing estimates. Original terminal replay,
+attachments and fork points remain available after compaction.
 
 ## Verification
 

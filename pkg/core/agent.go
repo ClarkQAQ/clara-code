@@ -320,6 +320,15 @@ type AgentStreamCall struct {
 	OnFinish        OnFinishFunc // Called when entire agent completes
 	OnError         OnErrorFunc  // Called when an error occurs
 
+	// OnStreamReset discards the current attempt's published chunks just
+	// before a replacement request starts. If nil, an attempt can be replayed
+	// until a callback receives output. OnChunk still receives error parts,
+	// which alone do not require a reset. A reset failure stops the run.
+	OnStreamReset func() error
+
+	// Session and protocol adapters report the chunks they actually publish.
+	chunkDelivery func(StreamPart) chunkDelivery
+
 	// Stream part callbacks - called for each corresponding stream part type
 	OnChunk          OnChunkFunc          // Called for each stream part (catch-all)
 	OnWarnings       OnWarningsFunc       // Called for warnings
@@ -763,6 +772,9 @@ func (a *agent) run(ctx context.Context, opts AgentStreamCall, generate bool) (f
 				}
 			}
 
+			if prepared.ContextState != nil && (len(prepared.ContextState) > MaxContextStateBytes || !json.Valid(prepared.ContextState)) {
+				return nil, errors.New("invalid or oversized host context state")
+			}
 			if prepared.History != nil {
 				initialPrompt, responseMessages = slices.Clone(prepared.History), nil
 				stepInputMessages = slices.Clone(initialPrompt)
@@ -776,9 +788,6 @@ func (a *agent) run(ctx context.Context, opts AgentStreamCall, generate bool) (f
 				stepInputMessages = prepared.Messages
 			}
 			if prepared.ContextState != nil {
-				if len(prepared.ContextState) > MaxContextStateBytes || !json.Valid(prepared.ContextState) {
-					return nil, errors.New("invalid or oversized host context state")
-				}
 				contextState = slices.Clone(prepared.ContextState)
 				if opts.OnContextState != nil {
 					if err := opts.OnContextState(slices.Clone(contextState)); err != nil {
@@ -852,8 +861,9 @@ func (a *agent) run(ctx context.Context, opts AgentStreamCall, generate bool) (f
 			retryOptions.MaxRetries = min(5, max(0, *call.MaxRetries))
 		}
 		retryOptions.OnRetry, retryOptions.OnAuthRefresh = call.OnRetry, call.OnAuthRefresh
-		retry := RetryWithExponentialBackoffRespectingRetryHeaders[StreamResponse](retryOptions)
-		stream, err := retry(stepCtx, func() (StreamResponse, error) {
+		retry := RetryWithExponentialBackoffRespectingRetryHeaders[*streamAttempt](retryOptions)
+		var needsReset bool
+		attempt, err := retry(stepCtx, func() (*streamAttempt, error) {
 			if err := stepCtx.Err(); err != nil {
 				return nil, err
 			}
@@ -864,6 +874,7 @@ func (a *agent) run(ctx context.Context, opts AgentStreamCall, generate bool) (f
 			if retryModel == nil {
 				return nil, errors.New("agent model is required")
 			}
+			var stream StreamResponse
 			if generate {
 				response, err := retryModel.Generate(stepCtx, streamCall)
 				if err != nil {
@@ -872,17 +883,40 @@ func (a *agent) run(ctx context.Context, opts AgentStreamCall, generate bool) (f
 				if response == nil {
 					return nil, errors.New("model returned no response")
 				}
-				return responseStream(response), nil
+				stream = responseStream(response)
+			} else {
+				if needsReset {
+					if err := opts.OnStreamReset(); err != nil {
+						return &streamAttempt{terminalErr: err}, nil
+					}
+					needsReset = false
+				}
+				var err error
+				stream, err = retryModel.Stream(stepCtx, streamCall)
+				if err != nil {
+					return nil, normalizeStreamError(err)
+				}
 			}
-			return retryModel.Stream(stepCtx, streamCall)
+			if stream == nil {
+				return nil, errors.New("model returned no stream")
+			}
+
+			attempt := &streamAttempt{}
+			err := attempt.read(stepCtx, stream, opts)
+			if attempt.canReplay {
+				needsReset = attempt.published
+				return nil, err
+			}
+			attempt.terminalErr = err
+			return attempt, nil
 		})
 		if err != nil {
 			return nil, err
 		}
-		if stream == nil {
-			return nil, errors.New("model returned no stream")
+		if attempt.terminalErr != nil {
+			return nil, attempt.terminalErr
 		}
-		result, err := a.processStepStream(stepCtx, stream, opts, stepTools, stepExecProviderTools, stepInputMessages, stepSystemPrompt)
+		result, err := a.completeStep(stepCtx, attempt, opts, stepTools, stepExecProviderTools, stepInputMessages, stepSystemPrompt)
 		if err != nil {
 			return nil, err
 		}
@@ -1245,10 +1279,41 @@ func WithOnRetry(callback OnRetryCallback) AgentOption {
 	}
 }
 
-// processStepStream processes a single step's stream and returns the step result.
-func (a *agent) processStepStream(ctx context.Context, stream StreamResponse, opts AgentStreamCall, stepTools []AgentTool, execProviderTools []ExecutableProviderTool, stepInputMessages []Message, system string) (stepExecutionResult, error) {
+// A tool call keeps its stream position until a complete response can be dispatched.
+type rawToolCall struct {
+	contentIndex int
+	toolCall     ToolCallContent
+}
+
+type streamAttempt struct {
+	response     Response
+	rawToolCalls []rawToolCall
+	published    bool
+	committed    bool
+	canReplay    bool
+	terminalErr  error
+}
+
+type chunkDelivery int
+
+const (
+	chunkUnseen chunkDelivery = iota
+	chunkPublished
+	chunkCommitted // Forwarded to an append-only consumer.
+)
+
+func (call AgentStreamCall) deliveredChunk(part StreamPart) chunkDelivery {
+	if call.OnChunk == nil || part.Type == StreamPartTypeError {
+		return chunkUnseen
+	}
+	if call.chunkDelivery != nil {
+		return call.chunkDelivery(part)
+	}
+	return chunkPublished
+}
+
+func (attempt *streamAttempt) read(ctx context.Context, stream StreamResponse, opts AgentStreamCall) error {
 	var stepContent []Content
-	var stepToolCalls []ToolCallContent
 	var stepUsage Usage
 	stepFinishReason := FinishReasonUnknown
 	var stepWarnings []CallWarning
@@ -1262,70 +1327,49 @@ func (a *agent) processStepStream(ctx context.Context, stream StreamResponse, op
 	}
 	activeReasoningContent := make(map[string]reasoningContent)
 
-	// Set up concurrent tool execution
-	type toolExecutionRequest struct {
-		toolCall ToolCallContent
-		parallel bool
-	}
-	var pendingDispatches []toolExecutionRequest
-	// Raw tool calls as emitted by the provider, before validation/repair,
-	// each with the position in stepContent at which it was emitted. They
-	// are processed only after the stream ends and the finish reason is
-	// known (see below); the position preserves stream order in the
-	// recorded step content.
-	type rawToolCall struct {
-		contentIndex int
-		toolCall     ToolCallContent
-	}
-	var rawToolCalls []rawToolCall
-
-	// Create a map for quick tool lookup
-	toolMap := make(map[string]AgentTool)
-	for _, tool := range stepTools {
-		toolMap[tool.Info().Name] = tool
-	}
-
-	execProviderToolMap := make(map[string]ExecutableProviderTool, len(execProviderTools))
-	for _, ept := range execProviderTools {
-		execProviderToolMap[ept.GetName()] = ept
-	}
-
 	// Process stream parts
 	seenFinish := false
 	parts, bytes := 0, 0
 	for part := range stream {
 		if err := ctx.Err(); err != nil {
-			return stepExecutionResult{}, err
+			return err
 		}
 		parts++
 		bytes += len(part.Delta) + len(part.ToolCallInput)
 		if parts > 1<<18 || bytes > 32<<20 {
-			return stepExecutionResult{}, errors.New("model output limit reached")
+			return errors.New("model output limit reached")
+		}
+		if part.ProviderExecuted || part.Type == StreamPartTypeFinish {
+			attempt.committed = true
 		}
 		// Forward all parts to chunk callback
 		if opts.OnChunk != nil {
-			err := opts.OnChunk(part)
-			if err != nil {
-				return stepExecutionResult{}, err
+			if err := opts.OnChunk(part); err != nil {
+				return err
 			}
+			delivery := opts.deliveredChunk(part)
+			attempt.published = attempt.published || delivery >= chunkPublished
+			attempt.committed = attempt.committed || delivery == chunkCommitted
 		}
 
 		switch part.Type {
 		case StreamPartTypeWarnings:
 			stepWarnings = append(stepWarnings, part.Warnings...)
 			if opts.OnWarnings != nil {
+				attempt.published = true
 				err := opts.OnWarnings(part.Warnings)
 				if err != nil {
-					return stepExecutionResult{}, err
+					return err
 				}
 			}
 
 		case StreamPartTypeTextStart:
 			activeTextContent[part.ID] = ""
 			if opts.OnTextStart != nil {
+				attempt.published = true
 				err := opts.OnTextStart(part.ID)
 				if err != nil {
-					return stepExecutionResult{}, err
+					return err
 				}
 			}
 
@@ -1334,9 +1378,10 @@ func (a *agent) processStepStream(ctx context.Context, stream StreamResponse, op
 				activeTextContent[part.ID] += part.Delta
 			}
 			if opts.OnTextDelta != nil {
+				attempt.published = true
 				err := opts.OnTextDelta(part.ID, part.Delta)
 				if err != nil {
-					return stepExecutionResult{}, err
+					return err
 				}
 			}
 
@@ -1349,22 +1394,24 @@ func (a *agent) processStepStream(ctx context.Context, stream StreamResponse, op
 				delete(activeTextContent, part.ID)
 			}
 			if opts.OnTextEnd != nil {
+				attempt.published = true
 				err := opts.OnTextEnd(part.ID)
 				if err != nil {
-					return stepExecutionResult{}, err
+					return err
 				}
 			}
 
 		case StreamPartTypeReasoningStart:
 			activeReasoningContent[part.ID] = reasoningContent{content: part.Delta, options: part.ProviderMetadata}
 			if opts.OnReasoningStart != nil {
+				attempt.published = true
 				content := ReasoningContent{
 					Text:             part.Delta,
 					ProviderMetadata: part.ProviderMetadata,
 				}
 				err := opts.OnReasoningStart(part.ID, content)
 				if err != nil {
-					return stepExecutionResult{}, err
+					return err
 				}
 			}
 
@@ -1377,9 +1424,10 @@ func (a *agent) processStepStream(ctx context.Context, stream StreamResponse, op
 				activeReasoningContent[part.ID] = active
 			}
 			if opts.OnReasoningDelta != nil {
+				attempt.published = true
 				err := opts.OnReasoningDelta(part.ID, part.Delta)
 				if err != nil {
-					return stepExecutionResult{}, err
+					return err
 				}
 			}
 
@@ -1394,9 +1442,10 @@ func (a *agent) processStepStream(ctx context.Context, stream StreamResponse, op
 				}
 				stepContent = append(stepContent, content)
 				if opts.OnReasoningEnd != nil {
+					attempt.published = true
 					err := opts.OnReasoningEnd(part.ID, content)
 					if err != nil {
-						return stepExecutionResult{}, err
+						return err
 					}
 				}
 				delete(activeReasoningContent, part.ID)
@@ -1410,9 +1459,10 @@ func (a *agent) processStepStream(ctx context.Context, stream StreamResponse, op
 				ProviderExecuted: part.ProviderExecuted,
 			}
 			if opts.OnToolInputStart != nil {
+				attempt.published = true
 				err := opts.OnToolInputStart(part.ID, part.ToolCallName)
 				if err != nil {
-					return stepExecutionResult{}, err
+					return err
 				}
 			}
 
@@ -1421,17 +1471,19 @@ func (a *agent) processStepStream(ctx context.Context, stream StreamResponse, op
 				toolCall.Input += part.Delta
 			}
 			if opts.OnToolInputDelta != nil {
+				attempt.published = true
 				err := opts.OnToolInputDelta(part.ID, part.Delta)
 				if err != nil {
-					return stepExecutionResult{}, err
+					return err
 				}
 			}
 
 		case StreamPartTypeToolInputEnd:
 			if opts.OnToolInputEnd != nil {
+				attempt.published = true
 				err := opts.OnToolInputEnd(part.ID)
 				if err != nil {
-					return stepExecutionResult{}, err
+					return err
 				}
 			}
 
@@ -1452,7 +1504,7 @@ func (a *agent) processStepStream(ctx context.Context, stream StreamResponse, op
 			// exposed to consumers — provider-executed calls included; the
 			// provider may run them, but consumers hear about them only for
 			// completed turns (CHARM-2020).
-			rawToolCalls = append(rawToolCalls, rawToolCall{contentIndex: len(stepContent), toolCall: toolCall})
+			attempt.rawToolCalls = append(attempt.rawToolCalls, rawToolCall{contentIndex: len(stepContent), toolCall: toolCall})
 			delete(activeToolCalls, part.ID)
 
 		case StreamPartTypeToolResult:
@@ -1470,7 +1522,7 @@ func (a *agent) processStepStream(ctx context.Context, stream StreamResponse, op
 				if opts.OnToolResult != nil {
 					err := opts.OnToolResult(resultContent)
 					if err != nil {
-						return stepExecutionResult{}, err
+						return err
 					}
 				}
 			}
@@ -1485,14 +1537,21 @@ func (a *agent) processStepStream(ctx context.Context, stream StreamResponse, op
 			}
 			stepContent = append(stepContent, sourceContent)
 			if opts.OnSource != nil {
+				attempt.published = true
 				err := opts.OnSource(sourceContent)
 				if err != nil {
-					return stepExecutionResult{}, err
+					return err
 				}
 			}
 
 		case modelapi.StreamPartTypeContent:
 			if part.Content != nil {
+				if tool, ok := modelapi.AsContentType[ToolCallContent](part.Content); ok && tool.ProviderExecuted {
+					attempt.committed = true
+				}
+				if tool, ok := modelapi.AsContentType[ToolResultContent](part.Content); ok && tool.ProviderExecuted {
+					attempt.committed = true
+				}
 				stepContent = append(stepContent, part.Content)
 			}
 		case StreamPartTypeFinish:
@@ -1503,19 +1562,57 @@ func (a *agent) processStepStream(ctx context.Context, stream StreamResponse, op
 			if opts.OnStreamFinish != nil {
 				err := opts.OnStreamFinish(part.Usage, part.FinishReason, part.ProviderMetadata)
 				if err != nil {
-					return stepExecutionResult{}, err
+					return err
 				}
 			}
 
 		case StreamPartTypeError:
-			return stepExecutionResult{}, part.Error
+			if part.Error == nil {
+				return errors.New("model returned an empty stream error")
+			}
+			return attempt.interrupted(opts, part.Error)
 		}
 	}
 
-	if !seenFinish {
-		return stepExecutionResult{}, modelapi.NewIncompleteStreamError()
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	if len(rawToolCalls) > 128 {
+	if !seenFinish {
+		return attempt.interrupted(opts, modelapi.NewIncompleteStreamError())
+	}
+	attempt.response = Response{
+		Content:          stepContent,
+		FinishReason:     stepFinishReason,
+		Usage:            stepUsage,
+		Warnings:         stepWarnings,
+		ProviderMetadata: stepProviderMetadata,
+	}
+	return nil
+}
+
+func (a *agent) completeStep(ctx context.Context, attempt *streamAttempt, opts AgentStreamCall, stepTools []AgentTool, execProviderTools []ExecutableProviderTool, stepInputMessages []Message, system string) (stepExecutionResult, error) {
+	stepContent := attempt.response.Content
+	stepFinishReason := attempt.response.FinishReason
+	var stepToolCalls []ToolCallContent
+
+	// Set up concurrent tool execution
+	type toolExecutionRequest struct {
+		toolCall ToolCallContent
+		parallel bool
+	}
+	var pendingDispatches []toolExecutionRequest
+	// Create a map for quick tool lookup
+	toolMap := make(map[string]AgentTool)
+	for _, tool := range stepTools {
+		toolMap[tool.Info().Name] = tool
+	}
+
+	execProviderToolMap := make(map[string]ExecutableProviderTool, len(execProviderTools))
+	for _, ept := range execProviderTools {
+		execProviderToolMap[ept.GetName()] = ept
+	}
+
+	if len(attempt.rawToolCalls) > 128 {
 		return stepExecutionResult{}, errors.New("too many tool calls")
 	}
 	// Process buffered tool calls now that the finish reason is known.
@@ -1533,7 +1630,7 @@ func (a *agent) processStepStream(ctx context.Context, stream StreamResponse, op
 		stepContent[at] = c
 	}
 	inserted := 0
-	for _, raw := range rawToolCalls {
+	for _, raw := range attempt.rawToolCalls {
 		at := raw.contentIndex + inserted
 		toolCall := raw.toolCall
 		// Provider-executed tool calls (e.g. web search) were already run by
@@ -1626,14 +1723,9 @@ func (a *agent) processStepStream(ctx context.Context, stream StreamResponse, op
 		return stepExecutionResult{}, err
 	}
 
+	attempt.response.Content = stepContent
 	stepResult := StepResult{
-		Response: Response{
-			Content:          stepContent,
-			FinishReason:     stepFinishReason,
-			Usage:            stepUsage,
-			Warnings:         stepWarnings,
-			ProviderMetadata: stepProviderMetadata,
-		},
+		Response: attempt.response,
 		Messages: toResponseMessages(stepContent),
 	}
 

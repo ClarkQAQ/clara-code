@@ -4,6 +4,7 @@ import (
 	"clara-code/pkg/model"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
@@ -102,9 +103,39 @@ type RetryOptions struct {
 // the retry (nil if the failure was not a *ProviderError) and delay is how
 // long the middleware will wait before the next attempt.
 //
-// The Agent retries only the model request, before it starts consuming the
-// stream or dispatching tools.
+// A model attempt can be retried while reading its response. See
+// AgentStreamCall.OnStreamReset for the handling of published output.
 type OnRetryCallback = func(err *ProviderError, delay time.Duration)
+
+func (s *streamAttempt) interrupted(call AgentStreamCall, err error) error {
+	s.canReplay = !s.committed && (!s.published || call.OnStreamReset != nil)
+	return normalizeStreamError(err)
+}
+
+func normalizeStreamError(err error) error {
+	if isAbortError(err) || (!errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF)) {
+		return err
+	}
+	var provider *ProviderError
+	if errors.As(err, &provider) {
+		if provider.StatusCode != 0 || provider.AuthError || provider.IsContextTooLarge() {
+			return err
+		}
+		if err == provider { //nolint:errorlint // Only the outermost error's diagnostic fields are safe to publish.
+			if provider.IsRetryable() {
+				return err
+			}
+			normalized := *provider
+			normalized.Cause = errors.Join(io.ErrUnexpectedEOF, provider.Cause)
+			return &normalized
+		}
+	}
+	// Wrappers may redact provider diagnostics. Keep their chain available to
+	// errors.Is without copying any underlying message or response headers.
+	incomplete := model.NewIncompleteStreamError()
+	incomplete.Cause = errors.Join(io.ErrUnexpectedEOF, err)
+	return incomplete
+}
 
 // DefaultRetryOptions returns the default retry options.
 func DefaultRetryOptions() RetryOptions {

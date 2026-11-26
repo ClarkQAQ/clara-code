@@ -66,6 +66,9 @@ type MessageMetadata struct {
 	TurnID string `json:"turn_id,omitempty"`
 }
 
+// MessageKindInternalTurn identifies a turn started by the host.
+const MessageKindInternalTurn = "internal_turn"
+
 // AsContentType converts a Content interface to a specific content type.
 func AsContentType[T Content](content Content) (T, bool) {
 	var zero T

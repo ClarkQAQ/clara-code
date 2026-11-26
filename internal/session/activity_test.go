@@ -75,3 +75,32 @@ func TestTextBoundariesDoNotDuplicateAtCheckpoint(t *testing.T) {
 		t.Fatalf("message boundaries %+v", turn)
 	}
 }
+
+func TestStreamResetReplacesOnlySupersededText(t *testing.T) {
+	turn := Turn{ID: "run"}
+	emit := func(kind, data string) {
+		turn.collect([]core.Event{{Sequence: turn.Cursor + 1, RunID: turn.ID, Kind: kind, Data: json.RawMessage(data)}})
+	}
+	emit("text_delta", `{"Delta":"Completed step."}`)
+	emit("text_end", "")
+	emit("step.completed", "")
+	emit("text_delta", `{"Delta":"Closed text block."}`)
+	emit("text_end", "")
+	emit("input.steering", `"Keep this instruction."`)
+	emit("text_delta", `{"Delta":"Unfinished block."}`)
+	emit("model.retry", "")
+	if turn.Partial != "Unfinished block." || len(turn.Cells) != 3 {
+		t.Fatalf("backoff discarded output: %+v", turn)
+	}
+	emit("model.stream_reset", "")
+	if turn.Partial != "" || turn.StreamedText != "" || len(turn.StreamedCells) != 0 || len(turn.Cells) != 2 ||
+		turn.Cells[0].Text != "Completed step." || turn.Cells[1].Kind != "user" || turn.Bytes != len("Completed step.Keep this instruction.") {
+		t.Fatalf("reset failed to isolate the interrupted attempt: %+v", turn)
+	}
+	emit("text_delta", `{"Delta":"Final partial."}`)
+	emit("model.error", `{"Kind":"stream","Message":"unexpected EOF"}`)
+	emit("run.failed", `{"Error":"unexpected EOF"}`)
+	if len(turn.Cells) != 4 || turn.Cells[2].Kind != "assistant" || turn.Cells[2].Text != "Final partial." || turn.Cells[3].Kind != "error" {
+		t.Fatalf("missing final attempt or failure: %+v", turn)
+	}
+}

@@ -21,12 +21,12 @@ func (DemoModel) Generate(ctx context.Context, call model.Call) (*model.Response
 	var last string
 	for _, message := range call.Prompt {
 		text := session.Text(message)
-		if message.Role == model.MessageRoleDeveloper && text == prompt.Default("compact") {
-			return demoText("Earlier conversation summarized."), nil
-		}
 		if message.Role == model.MessageRoleUser && (message.Metadata == nil || message.Metadata.Kind != "context") && !strings.HasPrefix(text, "# Current workspace state") {
 			last = text
 		}
+	}
+	if last == prompt.Default("compact") {
+		return demoText("Earlier conversation summarized."), nil
 	}
 	if strings.Contains(last, "CANCEL_SLOW_TURN") {
 		timer := time.NewTimer(10 * time.Second)

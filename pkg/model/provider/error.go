@@ -24,14 +24,15 @@ func toProviderErr(err error) error {
 	if errors.As(err, &apiErr) {
 		message := toProviderErrMessage(apiErr)
 		providerErr := &yuzu.ProviderError{
-			Title:           cmp.Or(yuzu.ErrorTitleForStatusCode(apiErr.StatusCode), "provider request failed"),
-			Message:         message,
-			Cause:           apiErr,
-			URL:             apiErr.Request.URL.String(),
-			StatusCode:      apiErr.StatusCode,
-			RequestBody:     apiErr.DumpRequest(true),
-			ResponseHeaders: toHeaderMap(apiErr.Response.Header),
-			ResponseBody:    apiErr.DumpResponse(true),
+			Title:              cmp.Or(yuzu.ErrorTitleForStatusCode(apiErr.StatusCode), "provider request failed"),
+			Message:            message,
+			Cause:              apiErr,
+			URL:                apiErr.Request.URL.String(),
+			StatusCode:         apiErr.StatusCode,
+			ContextTooLargeErr: apiErr.Code == "context_length_exceeded" || apiErr.Type == "context_length_exceeded",
+			RequestBody:        apiErr.DumpRequest(true),
+			ResponseHeaders:    toHeaderMap(apiErr.Response.Header),
+			ResponseBody:       apiErr.DumpResponse(true),
 		}
 
 		parseContextTooLargeError(message, providerErr)
@@ -67,13 +68,16 @@ func toProviderErrFromStreamError(streamErr *openai.StreamError) *yuzu.ProviderE
 
 	errType := cmp.Or(envelope.Error.Type, envelope.Error.Code)
 
-	return &yuzu.ProviderError{
-		Title:          "stream error",
-		Message:        cmp.Or(envelope.Error.Message, streamErr.Message),
-		Cause:          streamErr,
-		ResponseBody:   streamErr.Event.Data,
-		TransientError: yuzu.TransientStreamErrorTypes[errType],
+	err := &yuzu.ProviderError{
+		Title:              "stream error",
+		Message:            cmp.Or(envelope.Error.Message, streamErr.Message),
+		Cause:              streamErr,
+		ResponseBody:       streamErr.Event.Data,
+		TransientError:     yuzu.TransientStreamErrorTypes[errType],
+		ContextTooLargeErr: envelope.Error.Code == "context_length_exceeded" || envelope.Error.Type == "context_length_exceeded",
 	}
+	parseContextTooLargeError(err.Message, err)
+	return err
 }
 
 func parseContextTooLargeError(message string, providerErr *yuzu.ProviderError) {

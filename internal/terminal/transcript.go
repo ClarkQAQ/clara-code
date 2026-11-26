@@ -54,7 +54,7 @@ func transcriptCellText(cell session.Cell) string {
 	return label
 }
 
-func transcriptBoundaries(meta session.Meta, compactions []session.CompactionMarker) func(int) []session.Cell {
+func transcriptBoundaries(meta session.Meta, compactions []session.CompactionMarker, goals []session.GoalMarker) func(int) []session.Cell {
 	forkAt, source := 0, singleLine(meta.Parent)
 	if source != "" && meta.ForkPoint != nil {
 		forkAt = meta.ForkPoint.AfterTurn
@@ -64,18 +64,20 @@ func transcriptBoundaries(meta session.Meta, compactions []session.CompactionMar
 	}
 	return func(afterTurn int) []session.Cell {
 		var cells []session.Cell
-		for len(compactions) > 0 && compactions[0].AfterTurn == afterTurn {
-			marker := compactions[0]
-			if marker.AfterFork && source != "" && forkAt == afterTurn {
+		for _, afterFork := range [...]bool{false, true} {
+			for len(compactions) > 0 && compactions[0].AfterTurn == afterTurn && compactions[0].AfterFork == afterFork {
+				marker := compactions[0]
+				cells = append(cells, compactionCell(&marker.Compaction))
+				compactions = compactions[1:]
+			}
+			for len(goals) > 0 && goals[0].AfterTurn == afterTurn && goals[0].AfterFork == afterFork {
+				cells = append(cells, goals[0].Cell)
+				goals = goals[1:]
+			}
+			if !afterFork && source != "" && forkAt == afterTurn {
 				cells = append(cells, session.Cell{Kind: threadForkedKind, Text: source})
 				source = ""
 			}
-			cells = append(cells, compactionCell(&marker.Compaction))
-			compactions = compactions[1:]
-		}
-		if source != "" && forkAt == afterTurn {
-			cells = append(cells, session.Cell{Kind: threadForkedKind, Text: source})
-			source = ""
 		}
 		return cells
 	}

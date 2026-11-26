@@ -60,7 +60,7 @@ func Assemble(history []model.Message, fragments []Fragment, policies ...model.M
 	return append(out, history[cut:]...)
 }
 
-// ActiveTurn finds the most recent genuine submission, excluding steering,
+// ActiveTurn finds the most recent user submission or host-started turn, excluding steering,
 // contextual messages and compaction handoffs. Unannotated user messages are
 // treated conservatively as legacy submissions.
 func ActiveTurn(history []model.Message) int {
@@ -70,7 +70,7 @@ func ActiveTurn(history []model.Message) int {
 			continue
 		}
 		if message.Metadata != nil {
-			if message.Metadata.Kind == "user" || message.Metadata.Kind == "followup" {
+			if message.Metadata.Kind == "user" || message.Metadata.Kind == "followup" || message.Metadata.Kind == model.MessageKindInternalTurn {
 				return i
 			}
 			continue

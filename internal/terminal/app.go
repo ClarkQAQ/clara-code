@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -32,7 +33,11 @@ type Options struct {
 
 type app struct {
 	runHistoryStart      int
+	stepHistoryStart     int
 	resyncNeeded         bool
+	resumeGoalOnAgent    bool
+	goalMarkerSequence   uint64
+	runGoalMarkers       []string
 	ctx                  context.Context
 	options              Options
 	view                 painter
@@ -61,7 +66,8 @@ type app struct {
 	pendingDraft         editor
 	attachmentResults    <-chan attachmentResult
 
-	prompts        []string
+	prompts        []rewindPrompt
+	loadedTurns    int
 	historyAt      int
 	historyDraft   editor
 	inputHistory   []session.InputHistoryEntry
@@ -96,9 +102,15 @@ type runEvent struct {
 	plan     string
 }
 
+type rewindPrompt struct {
+	turn int
+	text string
+}
+
 type operationResult struct {
 	picker      *picker
 	conv        *coding.Conversation
+	resumeGoal  bool
 	compaction  *session.Compaction
 	draft       string
 	label       string
@@ -371,7 +383,7 @@ func (a *app) open(ctx context.Context, id string, fork bool, at int, draft, lab
 	if ctx.Err() != nil {
 		return operationResult{err: errors.Join(ctx.Err(), next.Close())}
 	}
-	return operationResult{conv: next, draft: draft, label: label}
+	return operationResult{conv: next, draft: draft, label: label, resumeGoal: id != ""}
 }
 
 func (a *app) install(result operationResult) error {
@@ -403,11 +415,17 @@ func (a *app) install(result operationResult) error {
 	a.loadInputHistory()
 	seedHistory := len(a.inputHistory) == 0
 	a.prompts = nil
+	a.goalMarkerSequence = 0
 	if meta.LegacyPathContext {
 		a.view.message("notice", "Paths now refer to the real filesystem. Older /foo paths referred to the project root; read the intended target again before editing.")
 	}
-	boundary := transcriptBoundaries(meta, a.conv.Store.Compactions())
+	goalMarkers := a.conv.Store.GoalMarkers()
+	if len(goalMarkers) > 0 {
+		a.goalMarkerSequence = goalMarkers[len(goalMarkers)-1].Sequence
+	}
+	boundary := transcriptBoundaries(meta, a.conv.Store.Compactions(), goalMarkers)
 	count := a.conv.Store.TurnCount()
+	a.loadedTurns = count
 	for i := 0; i <= count; i++ {
 		if err := a.ctx.Err(); err != nil {
 			return err
@@ -421,13 +439,14 @@ func (a *app) install(result operationResult) error {
 		turn, err := a.conv.Store.ReadTurn(i)
 		if err != nil {
 			a.notice(err)
-			a.prompts = append(a.prompts, "[unavailable turn]")
 		} else {
-			a.prompts = append(a.prompts, turn.Prompt)
-			if seedHistory && i >= count-1000 {
-				a.inputHistory = append(a.inputHistory, session.InputHistoryEntry{SessionID: a.conv.Session.ID(), Text: turn.Prompt, Attachments: turn.Attachments})
+			if !turn.Internal {
+				a.prompts = append(a.prompts, rewindPrompt{turn: i, text: turn.Prompt})
+				if seedHistory && i >= count-1000 {
+					a.inputHistory = append(a.inputHistory, session.InputHistoryEntry{SessionID: a.conv.Session.ID(), Text: turn.Prompt, Attachments: turn.Attachments})
+				}
+				a.view.message("user", turn.Prompt)
 			}
-			a.view.message("user", turn.Prompt)
 			a.replayAttachments(turn.Attachments)
 			for _, cell := range turn.Cells {
 				if a.view.cell(cell) {
@@ -451,6 +470,8 @@ func (a *app) install(result operationResult) error {
 	a.syncBackground()
 	a.editor.insert(a.operationDraft.text)
 	a.operationDraft.replace("")
+	a.resumeGoalOnAgent = result.resumeGoal
+	a.resumeSavedGoal()
 	return nil
 }
 
@@ -492,6 +513,12 @@ func (a *app) switchSession(id string, fork bool, at int, draft, label string, a
 }
 
 func (a *app) start(text string, review bool) {
+	a.startTurn(text, text, a.attachments, func(ctx context.Context, files []model.FilePart) (*core.Run, error) {
+		return a.conv.StartWithFiles(ctx, a.mode, text, review, files)
+	})
+}
+
+func (a *app) startTurn(input, visiblePrompt string, attachments []session.Attachment, start func(context.Context, []model.FilePart) (*core.Run, error)) {
 	state, err := a.conv.Store.Load(a.ctx, a.conv.Session.ID())
 	if err != nil {
 		a.notice(err)
@@ -502,11 +529,14 @@ func (a *app) start(text string, review bool) {
 		cursor = state.Events[n-1].Sequence
 	}
 	ctx, cancel := context.WithCancel(a.ctx)
-	files, fileErr := coding.AttachmentFiles(a.host.Config.Home, a.attachments, a.host.Config.Images)
+	userInput := input != "" || len(attachments) > 0
+	files, fileErr := coding.AttachmentFiles(a.host.Config.Home, attachments, a.host.Config.Images)
 	if fileErr != nil {
 		cancel()
 		a.notice(fileErr)
-		a.setDraft(text, a.attachments)
+		if userInput {
+			a.setDraft(input, attachments)
+		}
 		return
 	}
 	planning := a.mode == prompt.Plan
@@ -514,25 +544,34 @@ func (a *app) start(text string, review bool) {
 		ctx = session.WithPlanning(ctx)
 	}
 	compactions := a.conv.Store.CompactionCount()
-	run, err := a.conv.StartWithFiles(ctx, a.mode, text, review, files)
+	run, err := start(ctx, files)
 	if compaction := compactionSince(a.conv.Store, compactions); compaction != nil {
 		a.view.cell(compactionCell(compaction))
 	}
+	a.syncGoalMarkers()
 	if err != nil {
 		cancel()
 		a.notice(err)
-		a.setDraft(text, a.attachments)
+		if userInput {
+			a.setDraft(input, attachments)
+		}
 		return
 	}
+	if !planning {
+		a.resumeGoalOnAgent = false
+	}
 	a.run, a.stopRun = run, cancel
-	a.submitted = text
-	a.submittedAttachments = append([]session.Attachment(nil), a.attachments...)
-	a.attachments = nil
+	a.submitted = input
+	a.submittedAttachments = slices.Clone(attachments)
+	if userInput {
+		a.attachments = nil
+	}
 	a.activity.start(time.Now())
 	a.toolGroup = nil
+	a.runGoalMarkers = nil
 	a.streamID = ""
 	a.runHistoryStart = a.view.droppedCells + len(a.view.history)
-	a.view.message("user", text)
+	a.view.message("user", visiblePrompt)
 	a.replayAttachments(a.submittedAttachments)
 	events := make(chan runEvent, 128)
 	a.events = events
@@ -582,7 +621,7 @@ func watch(ctx context.Context, conversation *core.Session, store *session.Store
 			}
 			send(update)
 			return
-		case "text_start", "text_delta", "text_end", "reasoning_delta", "reasoning_end", "tool.activity", "tool.result", "step.completed", "plan.updated", "goal.updated", "task.updated", "model.started", "model.responding", "model.retry", "model.error", session.ContextCompactedKind:
+		case "text_start", "text_delta", "text_end", "reasoning_delta", "reasoning_end", "tool.activity", "tool.result", "step.completed", "plan.updated", "task.updated", "model.started", "model.responding", "model.retry", "model.stream_reset", "model.error", session.ContextCompactedKind, session.GoalUpdatedKind:
 			if !send(runEvent{event: event}) {
 				return
 			}
@@ -617,30 +656,42 @@ func (a *app) onRunEvent(update runEvent) {
 		a.activity.retry = nil
 		a.stopRun()
 		a.events, a.stopRun, a.run, a.question = nil, nil, nil, nil
+		var completion string
+		for ; a.loadedTurns < a.conv.Store.TurnCount(); a.loadedTurns++ {
+			turn, err := a.conv.Store.ReadTurn(a.loadedTurns)
+			if err != nil {
+				a.notice(err)
+				continue
+			}
+			if !turn.Internal {
+				a.prompts = append(a.prompts, rewindPrompt{turn: a.loadedTurns, text: turn.Prompt})
+			}
+			if turn.ID != runID {
+				continue
+			}
+			for _, cell := range turn.Cells {
+				if cell.Kind == session.GoalUpdatedKind {
+					a.showRunGoalMarker(cell)
+				}
+			}
+			if update.event.Kind == "run.completed" && update.err == nil {
+				completion = turnCompletion(turn)
+			}
+		}
 		switch {
 		case cancelled:
 			a.view.message("notice", "Interrupted")
 		case update.err != nil:
 			a.runError(update.err)
-			if a.editor.text == "" && len(a.pendingInput) == 0 {
+			if a.editor.text == "" && len(a.pendingInput) == 0 && (a.submitted != "" || len(a.submittedAttachments) > 0) {
 				a.restoreDraft(a.submitted, a.submittedAttachments)
 			}
 		}
 		a.submitted = ""
 		a.submittedAttachments = nil
 		a.activity = activityState{}
-		for i := len(a.prompts); i < a.conv.Store.TurnCount(); i++ {
-			turn, err := a.conv.Store.ReadTurn(i)
-			if err != nil {
-				a.notice(err)
-				a.prompts = append(a.prompts, "[unavailable turn]")
-			} else {
-				a.prompts = append(a.prompts, turn.Prompt)
-				if update.event.Kind == "run.completed" && update.err == nil && turn.ID == runID {
-					a.view.message(turnCompletedKind, turnCompletion(turn))
-				}
-			}
-		}
+		a.view.message(turnCompletedKind, completion)
+		a.syncGoalMarkers()
 		a.branch = a.space.Branch(a.ctx)
 		if len(a.pendingInput) > 0 {
 			draft := a.editor
@@ -672,6 +723,7 @@ func (a *app) onRunEvent(update runEvent) {
 	case "model.responding":
 		a.activity.retry = nil
 	case "model.started":
+		a.stepHistoryStart = a.view.droppedCells + len(a.view.history)
 		a.activity.quiet = false
 		a.streamID = ""
 		a.activity.header = workingVerbs[rand.IntN(len(workingVerbs))]
@@ -726,6 +778,8 @@ func (a *app) onRunEvent(update runEvent) {
 			a.activity.retry = &retry
 			a.activity.retryUntil = time.Now().Add(time.Duration(retry.DelayMS) * time.Millisecond)
 		}
+	case "model.stream_reset":
+		a.discardStream()
 	case "model.error":
 		var failure session.Failure
 		if json.Unmarshal(event.Data, &failure) == nil {
@@ -770,12 +824,34 @@ func (a *app) onRunEvent(update runEvent) {
 			}
 			a.view.message("activity", "Updated plan\n"+strings.Join(lines, "\n"))
 		}
-	case "goal.updated", "task.updated":
+	case session.GoalUpdatedKind:
+		var cell session.Cell
+		if json.Unmarshal(event.Data, &cell) == nil && cell.Kind == session.GoalUpdatedKind {
+			a.showRunGoalMarker(cell)
+		}
+	case "task.updated":
 		var state struct{ Status, Name string }
 		if json.Unmarshal(event.Data, &state) == nil && state.Status != "" {
 			a.view.message("activity", strings.TrimSpace(state.Name+" "+state.Status))
 		}
 	}
+}
+
+func (a *app) discardStream() {
+	history := a.view.history
+	start := min(len(history), max(0, a.stepHistoryStart-a.view.droppedCells))
+	retained := slices.DeleteFunc(history[start:], func(cell session.Cell) bool {
+		if cell.Kind != "assistant" && cell.Kind != session.ProposedPlanKind {
+			return false
+		}
+		a.view.sourceBytes -= len(cell.Text)
+		return true
+	})
+	a.view.history = history[:start+len(retained)]
+	a.reflow = a.reflow || a.continued || len(a.view.history) != len(history)
+	a.stream, a.streamID, a.sawText = "", "", false
+	a.streamRows, a.continued = 0, false
+	a.activity.quiet, a.activity.header = false, ""
 }
 
 func (a *app) flushStream() {
@@ -866,6 +942,11 @@ func (a *app) pane() layout {
 		return layout{rows: a.picker.rows(p, help)}
 	}
 	if a.question != nil {
+		if p.contentHeight() > 3 && a.goalState().Status != "" {
+			view := a.question.layoutWithin(p, p.contentHeight()-1)
+			view.rows = append(view.rows, a.statusLine())
+			return view
+		}
 		return a.question.layout(p)
 	}
 	if a.conv == nil && a.op != nil && !a.options.PickSession {
@@ -888,7 +969,7 @@ func (a *app) pane() layout {
 	}
 	var lines []string
 	hasActivity := false
-	if a.stream == "" {
+	if a.stream == "" || a.activity.retry != nil {
 		for _, tool := range a.toolGroup {
 			lines = append(lines, p.toolRows(tool, time.Now())...)
 		}

@@ -3,13 +3,53 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"clara-code/pkg/model"
 	"clara-code/pkg/util/errs"
 )
+
+type interruptedTaskModel struct {
+	model.LanguageModel
+	requests int
+}
+
+func (m *interruptedTaskModel) Stream(context.Context, model.Call) (model.StreamResponse, error) {
+	m.requests++
+	parts := []model.StreamPart{{Type: model.StreamPartTypeTextStart, ID: "reply"}}
+	if m.requests == 1 {
+		parts = append(parts, model.StreamPart{Type: model.StreamPartTypeTextDelta, ID: "reply", Delta: "Partial reply"})
+	} else {
+		parts = append(parts,
+			model.StreamPart{Type: model.StreamPartTypeTextDelta, ID: "reply", Delta: "Complete reply"},
+			model.StreamPart{Type: model.StreamPartTypeTextEnd, ID: "reply"},
+			model.StreamPart{Type: model.StreamPartTypeFinish, FinishReason: model.FinishReasonStop})
+	}
+	return slices.Values(parts), nil
+}
+
+func TestLocalTaskRetriesInterruptedStream(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		language := &interruptedTaskModel{}
+		manager := NewTaskManager(func(context.Context, TaskSpec, *TaskScope) (TaskSetup, error) {
+			return TaskSetup{Model: language, MaxRetries: new(1)}, nil
+		}, 1, 1)
+		scope := manager.Scope(t.Context(), "parent", ScopeOptions{})
+		defer scope.Close(t.Context())
+		info, err := scope.Spawn(t.Context(), TaskSpec{Name: "research", Role: "researcher", Message: "Summarize the results."})
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err = scope.Wait(t.Context(), info.ID, time.Minute)
+		if err != nil || language.requests != 2 || info.Status != "completed" || info.Result != "Complete reply" {
+			t.Fatalf("child made %d requests, result %+v, wait error %v", language.requests, info, err)
+		}
+	})
+}
 
 type taskProbe struct {
 	TaskBackend

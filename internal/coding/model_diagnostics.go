@@ -3,7 +3,6 @@ package coding
 import (
 	"context"
 	"errors"
-	"iter"
 	"strings"
 
 	"clara-code/pkg/model"
@@ -61,36 +60,8 @@ func (m diagnosticModel) Stream(ctx context.Context, call model.Call) (model.Str
 	if stream == nil {
 		return nil, nil
 	}
-	next, stop := iter.Pull(stream)
-	var prefix []model.StreamPart
-	for {
-		part, ok := next()
-		if !ok {
-			stop()
-			return nil, m.safeError(model.NewIncompleteStreamError())
-		}
-		part.Error = m.safeError(part.Error)
-		if part.Type == model.StreamPartTypeError {
-			stop()
-			return nil, part.Error
-		}
-		prefix = append(prefix, part)
-		if part.Type != model.StreamPartTypeWarnings {
-			break
-		}
-	}
 	return func(yield func(model.StreamPart) bool) {
-		defer stop()
-		for _, part := range prefix {
-			if !yield(part) {
-				return
-			}
-		}
-		for {
-			part, ok := next()
-			if !ok {
-				return
-			}
+		for part := range stream {
 			part.Error = m.safeError(part.Error)
 			if !yield(part) {
 				return

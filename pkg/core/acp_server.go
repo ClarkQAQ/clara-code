@@ -321,6 +321,9 @@ func (s *ACPServer) LoadSession(ctx context.Context, req sdk.LoadSessionRequest)
 		return sdk.LoadSessionResponse{}, err
 	}
 	for _, msg := range binding.Session.Messages() {
+		if msg.Role == model.MessageRoleUser && msg.Metadata != nil && msg.Metadata.Kind == model.MessageKindInternalTurn {
+			continue
+		}
 		for _, part := range msg.Content {
 			text, ok := model.AsMessagePart[model.TextPart](part)
 			if !ok || text.Text == "" {
@@ -379,7 +382,18 @@ func (s *ACPServer) Prompt(ctx context.Context, req sdk.PromptRequest) (sdk.Prom
 		return sdk.PromptResponse{}, sdk.NewInvalidParams(err.Error())
 	}
 	call.Messages = append(call.Messages, messages...)
-	chunk, start, finish := call.OnChunk, call.OnToolCall, call.OnToolResult
+	// ACP chunks are append-only. An unopened message can still be retried
+	// when the host has either no stream observers or its own reset hook.
+	if call.OnStreamReset == nil && !call.hasStreamObservers() {
+		call.OnStreamReset = func() error { return nil }
+	}
+	chunk, hostDelivery := call.OnChunk, call.deliveredChunk
+	call.chunkDelivery = func(part model.StreamPart) chunkDelivery {
+		if part.Delta != "" && (part.Type == model.StreamPartTypeTextDelta || part.Type == model.StreamPartTypeReasoningDelta) {
+			return chunkCommitted
+		}
+		return hostDelivery(part)
+	}
 	call.OnChunk = func(part model.StreamPart) error {
 		var err error
 		switch part.Type {
@@ -393,6 +407,7 @@ func (s *ACPServer) Prompt(ctx context.Context, req sdk.PromptRequest) (sdk.Prom
 		}
 		return err
 	}
+	start, finish := call.OnToolCall, call.OnToolResult
 	call.OnToolCall = func(item model.ToolCallContent) error {
 		update := sdk.StartToolCall(sdk.ToolCallId(item.ToolCallID), item.ToolName,
 			sdk.WithStartKind(toolKind(item.ToolName)), sdk.WithStartStatus(sdk.ToolCallStatusInProgress),
@@ -452,6 +467,13 @@ func (s *ACPServer) Prompt(ctx context.Context, req sdk.PromptRequest) (sdk.Prom
 	default:
 		return sdk.PromptResponse{Meta: meta, StopReason: sdk.StopReasonEndTurn}, nil
 	}
+}
+
+func (call AgentStreamCall) hasStreamObservers() bool {
+	return call.OnChunk != nil || call.OnWarnings != nil || call.OnSource != nil ||
+		call.OnTextStart != nil || call.OnTextDelta != nil || call.OnTextEnd != nil ||
+		call.OnReasoningStart != nil || call.OnReasoningDelta != nil || call.OnReasoningEnd != nil ||
+		call.OnToolInputStart != nil || call.OnToolInputDelta != nil || call.OnToolInputEnd != nil
 }
 
 func (s *ACPServer) Cancel(_ context.Context, req sdk.CancelNotification) error {

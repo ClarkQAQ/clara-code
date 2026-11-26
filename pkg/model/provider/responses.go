@@ -918,10 +918,7 @@ func (o responsesLanguageModel) Generate(ctx context.Context, call yuzu.Call) (*
 	}
 
 	if response.Error.Message != "" {
-		return nil, &yuzu.Error{
-			Title:   "provider error",
-			Message: fmt.Sprintf("%s (code: %s)", response.Error.Message, response.Error.Code),
-		}
+		return nil, responsesFailureError("provider error", response.Error.Message, string(response.Error.Code))
 	}
 
 	var content []yuzu.Content
@@ -1029,6 +1026,9 @@ func (o responsesLanguageModel) Generate(ctx context.Context, call yuzu.Call) (*
 
 	usage := responsesUsage(*response)
 	finishReason := mapResponsesFinishReason(response.IncompleteDetails.Reason, hasFunctionCall)
+	if response.Status == "incomplete" && response.IncompleteDetails.Reason == "" {
+		finishReason = yuzu.FinishReasonOther
+	}
 	truncatedWithToolCalls := hasFunctionCall && finishReason == yuzu.FinishReasonLength
 	if truncatedWithToolCalls {
 		warnings = append(warnings, yuzu.CallWarning{
@@ -1054,18 +1054,17 @@ func (o responsesLanguageModel) Generate(ctx context.Context, call yuzu.Call) (*
 }
 
 func mapResponsesFinishReason(reason string, hasFunctionCall bool) yuzu.FinishReason {
-	if hasFunctionCall && reason != "max_tokens" && reason != "max_output_tokens" {
+	switch reason {
+	case "length", "max_tokens", "max_output_tokens":
+		return yuzu.FinishReasonLength
+	}
+	if hasFunctionCall {
 		return yuzu.FinishReasonToolCalls
 	}
 
 	switch reason {
 	case "":
-		if hasFunctionCall {
-			return yuzu.FinishReasonToolCalls
-		}
 		return yuzu.FinishReasonStop
-	case "max_tokens", "max_output_tokens":
-		return yuzu.FinishReasonLength
 	case "content_filter":
 		return yuzu.FinishReasonContentFilter
 	default:
@@ -1359,6 +1358,9 @@ func (o responsesLanguageModel) Stream(ctx context.Context, call yuzu.Call) (yuz
 				incomplete := event.AsResponseIncomplete()
 				responseID = incomplete.Response.ID
 				finishReason = mapResponsesFinishReason(incomplete.Response.IncompleteDetails.Reason, hasFunctionCall)
+				if incomplete.Response.IncompleteDetails.Reason == "" {
+					finishReason = yuzu.FinishReasonOther
+				}
 				usage = responsesUsage(incomplete.Response)
 
 			case "response.failed":
@@ -1429,16 +1431,21 @@ func (o responsesLanguageModel) Stream(ctx context.Context, call yuzu.Call) (yuz
 // instead of a retryable transport error. Only synthetic stream truncation
 // errors are wrapped with io.ErrUnexpectedEOF.
 func responsesFailedStreamError(message, code string) error {
-	return responsesStreamFailureError("response failed", message, code)
+	return responsesFailureError("response failed", message, code)
 }
 
 func responsesErrorStreamError(message, code string) error {
-	return responsesStreamFailureError("response error", message, code)
+	return responsesFailureError("response error", message, code)
 }
 
-func responsesStreamFailureError(title, message, code string) error {
+func responsesFailureError(title, message, code string) error {
 	if code != "" {
 		message = fmt.Sprintf("%s (code: %s)", message, code)
+	}
+	failure := &yuzu.ProviderError{Title: title, Message: message, ContextTooLargeErr: code == "context_length_exceeded"}
+	parseContextTooLargeError(message, failure)
+	if failure.IsContextTooLarge() {
+		return failure
 	}
 	return &yuzu.Error{Title: title, Message: message}
 }

@@ -58,8 +58,9 @@ func (a *app) rewindRows() []string {
 	p, v := a.picker, &a.view
 	var lines []string
 	selectedStart, selectedEnd := 0, 0
+	selectedTurn := a.prompts[p.selected].turn
 	count := a.conv.Store.TurnCount()
-	boundary := transcriptBoundaries(a.conv.Store.Meta(), a.conv.Store.Compactions())
+	boundary := transcriptBoundaries(a.conv.Store.Meta(), a.conv.Store.Compactions(), a.conv.Store.GoalMarkers())
 	for i := 0; i <= count; i++ {
 		if p.detail {
 			for _, cell := range boundary(i) {
@@ -75,9 +76,11 @@ func (a *app) rewindRows() []string {
 			continue
 		}
 		start := len(lines)
-		lines = append(lines, v.messageRows("user", turn.Prompt)...)
+		if !turn.Internal {
+			lines = append(lines, v.messageRows("user", turn.Prompt)...)
+		}
 		lines = append(lines, v.attachmentHistory(turn.Attachments)...)
-		if i == p.selected {
+		if i == selectedTurn {
 			selectedStart = start
 			for j := start; j < len(lines); j++ {
 				lines[j] = v.style(accent+bold, stripStyles(lines[j]))
@@ -91,7 +94,7 @@ func (a *app) rewindRows() []string {
 		if p.detail {
 			lines = append(lines, v.messageRows(turnCompletedKind, turnCompletion(turn))...)
 		}
-		if i == p.selected {
+		if i == selectedTurn {
 			selectedEnd = len(lines)
 		}
 	}
@@ -122,13 +125,24 @@ func (a *app) reloadRunDisplay(turn *session.Turn) {
 			}
 		}
 	}
-	a.view.remember("user", turn.Prompt)
+	if !turn.Internal {
+		a.view.remember("user", turn.Prompt)
+	}
 	a.replayAttachments(turn.Attachments)
-	for _, cell := range turn.Cells {
+	a.runGoalMarkers = nil
+	a.stepHistoryStart = a.view.droppedCells + len(a.view.history)
+	for i, cell := range turn.Cells {
 		a.view.cell(cell)
+		if cell.Kind == session.GoalUpdatedKind {
+			a.runGoalMarkers = append(a.runGoalMarkers, cell.Text)
+		}
+		if len(turn.StreamedCells) == 0 || i < turn.StreamedCells[0] {
+			a.stepHistoryStart = a.view.droppedCells + len(a.view.history)
+		}
 	}
 	a.stream, a.streamRows, a.continued = turn.Partial, 0, false
-	a.sawText = turn.Staged || turn.Partial != ""
+	a.streamID = ""
+	a.sawText = turn.Staged || turn.Partial != "" || len(turn.StreamedCells) > 0
 	a.view.rebuild()
 }
 
@@ -187,12 +201,13 @@ func (a *app) handleTranscriptPicker(input key) bool {
 		}
 	case "enter":
 		if p.kind == "rewind" {
-			turn, err := a.conv.Store.ReadTurn(p.selected)
+			index := a.prompts[p.selected].turn
+			turn, err := a.conv.Store.ReadTurn(index)
 			if err != nil {
 				a.notice(err)
 				return false
 			}
-			a.switchSession("", true, p.selected, turn.Prompt, "Rewound conversation", turn.Attachments...)
+			a.switchSession("", true, index, turn.Prompt, "Rewound conversation", turn.Attachments...)
 		}
 	}
 	return false

@@ -1,12 +1,14 @@
 package terminal
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
 	"clara-code/pkg/core"
+	"clara-code/pkg/core/prompt"
 	"clara-code/pkg/model"
 
 	"clara-code/internal/session"
@@ -256,6 +258,70 @@ func TestModelMessageBoundariesAndInterruptedText(t *testing.T) {
 	a.runError(errTest("unexpected EOF"))
 	if len(a.view.history) != 4 || a.view.history[2].Text != "Received before the stream disconnected." || !strings.Contains(a.view.history[3].Text, "stream") {
 		t.Fatalf("interrupted text or error lost: %+v", a.view.history)
+	}
+}
+
+func TestStreamResetRebuildsOnlyTheCurrentAttempt(t *testing.T) {
+	for _, mode := range []prompt.Mode{prompt.Execute, prompt.Plan} {
+		t.Run(string(mode), func(t *testing.T) {
+			a := testApp(t)
+			a.mode = mode
+			a.run = &core.Run{ID: "run"}
+			var screen bytes.Buffer
+			a.view.output = &screen
+			emit := func(kind string, data any) {
+				body, err := json.Marshal(data)
+				if err != nil {
+					t.Fatal(err)
+				}
+				a.onRunEvent(runEvent{event: core.Event{Kind: kind, Data: body}})
+			}
+			a.view.message("assistant", "Completed step.")
+			emit("model.started", nil)
+			emit("text_delta", model.StreamPart{ID: "first", Delta: "<proposed_plan>\nObsolete plan.\n</proposed_plan>"})
+			a.flushStream()
+			a.view.message("notice", "Background work completed.")
+			emit("text_delta", model.StreamPart{ID: "last", Delta: strings.Repeat("Obsolete row.\n", 20)})
+			emit("reasoning_delta", model.StreamPart{ProviderMetadata: model.ProviderMetadata{ReasoningSummary: []string{"Old title"}}})
+			emit("model.retry", session.RetryStatus{Attempt: 1, Limit: 3})
+			if err := a.draw(); err != nil {
+				t.Fatal(err)
+			}
+			if !a.continued || !strings.Contains(screen.String(), "Obsolete row.") || !strings.Contains(screen.String(), "Reconnecting") {
+				t.Fatalf("partial output and retry were not displayed: %q", screen.String())
+			}
+			screen.Reset()
+			emit("model.stream_reset", nil)
+			if err := a.draw(); err != nil {
+				t.Fatal(err)
+			}
+			if a.stream != "" || a.streamID != "" || a.sawText || a.streamRows != 0 || a.continued || a.activity.quiet || a.activity.header == "Old title" {
+				t.Fatalf("old attempt state remained: %q %+v", a.stream, a.activity)
+			}
+			if len(a.view.history) != 2 || !strings.Contains(screen.String(), "Completed step.") ||
+				!strings.Contains(screen.String(), "Background work completed.") || strings.Contains(screen.String(), "Obsolete") {
+				t.Fatalf("scrollback after reset: %q", screen.String())
+			}
+			emit("model.responding", nil)
+			emit("text_delta", model.StreamPart{ID: "first", Delta: "Replacement answer."})
+			emit("text_end", model.StreamPart{ID: "first"})
+			emit("step.completed", model.Response{Content: model.ResponseContent{model.TextContent{Text: "Replacement answer."}}})
+			if len(a.view.history) != 3 || a.view.history[2].Kind != "assistant" || a.view.history[2].Text != "Replacement answer." {
+				t.Fatalf("replacement response: %+v", a.view.history)
+			}
+		})
+	}
+}
+
+func TestStreamResetAfterTranscriptGap(t *testing.T) {
+	a := testApp(t)
+	a.onRunEvent(runEvent{snapshot: &session.Turn{Prompt: "Prompt", Cells: []session.Cell{
+		{Kind: "assistant", Text: "Completed step."}, {Kind: "assistant", Text: "Superseded block."},
+		{Kind: "user", Text: "Steering."},
+	}, StreamedCells: []int{1}, Partial: "Superseded partial."}})
+	a.onRunEvent(runEvent{event: core.Event{Kind: "model.stream_reset"}})
+	if len(a.view.history) != 3 || a.view.history[1].Text != "Completed step." || a.view.history[2].Text != "Steering." || a.stream != "" {
+		t.Fatalf("reset after gap damaged restored transcript: %+v, partial %q", a.view.history, a.stream)
 	}
 }
 

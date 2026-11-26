@@ -457,7 +457,7 @@ func (o languageModel) Stream(ctx context.Context, call yuzu.Call) (yuzu.StreamR
 		for stream.Next() {
 			chunk := stream.Current()
 			acc.AddChunk(chunk)
-			usage, providerMetadata = o.streamUsageFunc(chunk, extraContext, providerMetadata)
+			usage, providerMetadata = o.updateStreamUsage(chunk, extraContext, usage, providerMetadata)
 			if len(chunk.Choices) == 0 {
 				continue
 			}
@@ -1020,6 +1020,7 @@ func (o languageModel) streamObjectWithJSONMode(ctx context.Context, call yuzu.O
 		}
 
 		var object objectStream
+		extraContext := make(map[string]any)
 		var usage yuzu.Usage
 		var finishReason yuzu.FinishReason
 		var sawFinishReason bool
@@ -1029,7 +1030,7 @@ func (o languageModel) streamObjectWithJSONMode(ctx context.Context, call yuzu.O
 			chunk := stream.Current()
 
 			// Update usage
-			usage, providerMetadata = o.streamUsageFunc(chunk, make(map[string]any), providerMetadata)
+			usage, providerMetadata = o.updateStreamUsage(chunk, extraContext, usage, providerMetadata)
 
 			if len(chunk.Choices) == 0 {
 				continue
@@ -1059,6 +1060,16 @@ func (o languageModel) streamObjectWithJSONMode(ctx context.Context, call yuzu.O
 			Usage: usage, FinishReason: finishReason, ProviderMetadata: providerMetadata,
 		}, yield)
 	}, nil
+}
+
+// Usage is a stream snapshot. A later delta or finish chunk can carry only
+// metadata, including metadata produced by a provider-specific usage hook.
+func (o languageModel) updateStreamUsage(chunk openai.ChatCompletionChunk, extraContext map[string]any, previous yuzu.Usage, metadata yuzu.ProviderMetadata) (yuzu.Usage, yuzu.ProviderMetadata) {
+	usage, metadata := o.streamUsageFunc(chunk, extraContext, metadata)
+	if usage == (yuzu.Usage{}) {
+		usage = previous
+	}
+	return usage, metadata
 }
 
 // addAdditionalPropertiesFalse recursively adds "additionalProperties": false to all object schemas.

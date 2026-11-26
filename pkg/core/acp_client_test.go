@@ -7,10 +7,12 @@ import (
 	"net"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	sdk "github.com/coder/acp-go-sdk"
 
+	"clara-code/pkg/model"
 	"clara-code/pkg/util/errs"
 )
 
@@ -75,4 +77,60 @@ func TestACPClientSkipsUnadvertisedMethods(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestACPLoadOmitsInternalTurnInput(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx := t.Context()
+		const id = "session_fixture"
+		continuation := model.NewUserMessage("Continue the active goal.")
+		continuation.Metadata = &model.MessageMetadata{Kind: model.MessageKindInternalTurn}
+		store := NewMemoryStore()
+		state := State{ID: id, Revision: 1, Messages: []model.Message{
+			model.NewUserMessage("Verify the goal"),
+			continuation,
+			{Role: model.MessageRoleAssistant, Content: []model.MessagePart{model.TextPart{Text: "Verified."}}},
+		}}
+		if err := store.Save(ctx, state); err != nil {
+			t.Fatal(err)
+		}
+		server, err := NewACPServer(ACPServerConfig{LoadSession: true,
+			Open: func(ctx context.Context, id, _ string, _ []sdk.McpServer) (ACPBinding, error) {
+				restored, err := OpenSession(ctx, NewAgent(nil), store, id)
+				return ACPBinding{Session: restored}, err
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		agent, peer := net.Pipe()
+		done := make(chan error, 1)
+		go func() { done <- server.Serve(context.Background(), agent, agent) }()
+		defer func() {
+			_ = peer.Close()
+			_ = agent.Close()
+			if err := <-done; err != nil {
+				t.Error(err)
+			}
+		}()
+		callbacks := &clientCallbacks{updates: make(map[sdk.SessionId]*sessionBuffer)}
+		conn := sdk.NewClientSideConnection(callbacks, peer, peer)
+		if _, err := conn.Initialize(ctx, sdk.InitializeRequest{ProtocolVersion: sdk.ProtocolVersionNumber}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.LoadSession(ctx, sdk.LoadSessionRequest{SessionId: id, Cwd: "/workspace", McpServers: []sdk.McpServer{}}); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		updates := callbacks.ensure(id).updates
+		if len(updates) != 2 {
+			t.Fatalf("got %d history updates, want 2", len(updates))
+		}
+		user := (<-updates).UserMessageChunk
+		reply := (<-updates).AgentMessageChunk
+		if user == nil || user.Content.Text == nil || user.Content.Text.Text != "Verify the goal" ||
+			reply == nil || reply.Content.Text == nil || reply.Content.Text.Text != "Verified." {
+			t.Fatalf("unexpected replay: %+v, %+v", user, reply)
+		}
+	})
 }

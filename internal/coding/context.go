@@ -1,11 +1,18 @@
 package coding
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"math"
 	"runtime"
+	"slices"
 	"time"
 
+	"clara-code/internal/session"
 	"clara-code/internal/setting"
+	"clara-code/pkg/core"
 	"clara-code/pkg/core/prompt"
 	"clara-code/pkg/model"
 	"clara-code/pkg/tool"
@@ -117,16 +124,101 @@ func (c *Conversation) compactor(profile setting.Model) prompt.Compactor {
 		// Unknown windows retain a bounded heuristic in tokens, not a byte ceiling.
 		rawWindow, window = 256<<10, 256<<10
 	}
-	reserve := profile.MaxOutputTokens
-	if reserve <= 0 {
-		reserve = min(int64(4096), max(int64(1), window/4))
-	}
-	budget := max(int64(1), window-reserve)
 	percent := int64(c.Host.Config.CompactionPercent(profile))
-	trigger := max(int64(1), min(budget, rawWindow/100*percent+rawWindow%100*percent/100))
-	compactor := prompt.Compactor{BudgetTokens: budget, TriggerTokens: trigger}
+	trigger := max(int64(1), min(window, rawWindow/100*percent+rawWindow%100*percent/100))
+	compactor := prompt.Compactor{BudgetTokens: window, TriggerTokens: trigger}
 	if !profile.Images() {
 		compactor.Project = withoutImages
 	}
+	if c.Host.Models == nil {
+		images := compactor.Project
+		completions := c.CurrentConfig().Connection().WireAPI == "completions"
+		compactor.Project = func(messages []model.Message) []model.Message {
+			if images != nil {
+				messages = images(messages)
+			}
+			return projectedReasoning(messages, completions)
+		}
+	}
 	return compactor
+}
+
+// The built-in Responses provider replays encrypted reasoning with an item ID.
+// Chat Completions sends the plaintext reasoning_content field instead.
+func projectedReasoning(messages []model.Message, completions bool) []model.Message {
+	out := slices.Clone(messages)
+	for i, msg := range messages {
+		if msg.Role != model.MessageRoleAssistant {
+			continue
+		}
+		out[i].Content = make([]model.MessagePart, 0, len(msg.Content))
+		for _, part := range msg.Content {
+			if reasoning, ok := model.AsMessagePart[model.ReasoningPart](part); ok {
+				if completions {
+					reasoning.ItemID, reasoning.Encrypted = "", nil
+					part = reasoning
+				} else if reasoning.ItemID == "" || reasoning.Encrypted == nil {
+					continue
+				}
+			}
+			out[i].Content = append(out[i].Content, part)
+		}
+	}
+	return out
+}
+
+func requestSignature(model model.LanguageModel, wireAPI string, images bool, base string, definitions []model.ToolInfo) (string, error) {
+	hash := sha256.New()
+	if err := json.NewEncoder(hash).Encode([]any{model.Provider(), model.Model(), wireAPI, images, base, definitions}); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// The provider's total includes its last assistant output. Only later local
+// messages (tool results, steering and host updates) belong on top of it.
+func activeContextTokens(step core.PrepareStepFunctionOptions, meta session.Meta, window prompt.Window, signature string, history, request []model.Message, definitions []model.ToolInfo, project func([]model.Message) []model.Message) (int64, error) {
+	var covered int
+	var baseline int64
+	if len(step.Steps) > 0 {
+		last := step.Steps[len(step.Steps)-1]
+		baseline = session.ReportedTokens(last.Usage)
+		covered = window.MessageCount
+		if len(last.Messages) > 0 && last.Messages[0].Role == model.MessageRoleAssistant {
+			covered++
+		}
+	} else {
+		covered = meta.ContextMessageCount
+		if meta.LastUsage != nil {
+			baseline = meta.LastUsage.TotalTokens
+		} else if meta.ContextTokens != nil {
+			baseline = *meta.ContextTokens
+		}
+	}
+	accountedTokens := int64(0)
+	if baseline > 0 && covered > 0 && covered <= len(history) && window.MessageCount <= covered && window.RequestSignature == signature && window.Matches(history) {
+		position := 0
+		for i, message := range request {
+			// Window assembly passes durable messages through and gives each
+			// inserted context message its own metadata.
+			if message.Role != history[position].Role || message.Metadata != history[position].Metadata {
+				continue
+			}
+			position++
+			if position == covered {
+				accountedTokens = baseline
+				request = request[i+1:]
+				definitions = nil
+				break
+			}
+		}
+	}
+	if project != nil {
+		request = project(request)
+	}
+	estimate, err := prompt.Measure("", request, definitions)
+	if err != nil {
+		return 0, err
+	}
+	return accountedTokens + min(estimate.Tokens, math.MaxInt64-accountedTokens), nil
 }

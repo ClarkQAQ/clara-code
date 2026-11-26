@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -183,21 +184,13 @@ func (s *Session) Start(ctx context.Context, call AgentStreamCall) (*Run, error)
 	}
 	call.Messages = append(slices.Clone(s.state.Messages), input...)
 	previous := s.state
-	sequence, eventBytes := s.sequence, s.eventBytes
-	s.state.Events = slices.Clone(s.state.Events)
 	s.state.Messages = slices.Clone(call.Messages)
 	runCtx, cancel := context.WithCancel(ctx)
 	run := &Run{ID: id.New("run"), cancel: cancel, done: make(chan struct{})}
 	s.state.ActiveRun = run.ID
-	if err := s.emitLocked("run.started", input); err != nil {
+	if err := s.checkpointEventLocked(ctx, "run.started", input); err != nil {
 		cancel()
 		s.state = previous
-		return nil, err
-	}
-	if err := s.saveLocked(ctx); err != nil {
-		cancel()
-		s.state = previous
-		s.sequence, s.eventBytes = sequence, eventBytes
 		return nil, err
 	}
 	s.active = run
@@ -208,24 +201,20 @@ func (s *Session) Start(ctx context.Context, call AgentStreamCall) (*Run, error)
 func (s *Session) execute(ctx context.Context, run *Run, call AgentStreamCall) {
 	defer run.cancel()
 	prepare, onContext := call.PrepareStep, call.OnContextState
+	var replacementContext json.RawMessage
 	if prepare != nil {
 		call.PrepareStep = func(ctx context.Context, step PrepareStepFunctionOptions) (context.Context, PrepareStepResult, error) {
 			step.ContextState = s.ContextState()
-			return prepare(ctx, step)
+			next, result, err := prepare(ctx, step)
+			replacementContext = nil
+			if err == nil && result.History != nil {
+				replacementContext = slices.Clone(result.ContextState)
+			}
+			return next, result, err
 		}
 	}
 	call.OnContextState = func(state json.RawMessage) error {
-		s.mu.Lock()
-		previous := s.state.ContextState
-		s.state.ContextState = slices.Clone(state)
-		persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-		err := s.saveLocked(persist)
-		cancel()
-		if err != nil {
-			s.state.ContextState = previous
-		}
-		s.mu.Unlock()
-		if err != nil {
+		if err := s.checkpointPrompt(ctx, nil, state); err != nil {
 			return err
 		}
 		if onContext != nil {
@@ -233,8 +222,21 @@ func (s *Session) execute(ctx context.Context, run *Run, call AgentStreamCall) {
 		}
 		return nil
 	}
-	hostChunk, hostCall, hostResult, hostStep := call.OnChunk, call.OnToolCall, call.OnToolResult, call.OnStepFinish
+	hostCall, hostResult, hostStep := call.OnToolCall, call.OnToolResult, call.OnStepFinish
 	hostModel, hostHistory := call.OnModelMessages, call.OnHistory
+	if reset := call.OnStreamReset; reset != nil {
+		call.OnStreamReset = func() error {
+			if err := reset(); err != nil {
+				return err
+			}
+			// Save the reset before replacement deltas can evict it from the replay queue.
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			persist, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			return s.checkpointEventLocked(persist, "model.stream_reset", nil)
+		}
+	}
 	hostStepStart := call.OnStepStart
 	call.OnStepStart = func(step int) error {
 		s.mu.Lock()
@@ -267,9 +269,16 @@ func (s *Session) execute(ctx context.Context, run *Run, call AgentStreamCall) {
 	}
 	call.Steer = func() []model.Message { return drain(false) }
 	call.FollowUp = func() []model.Message { return drain(true) }
+	hostChunk, hostDelivery := call.OnChunk, call.deliveredChunk
+	call.chunkDelivery = func(part model.StreamPart) chunkDelivery {
+		delivery := hostDelivery(part)
+		if sessionDelta(part) {
+			return max(delivery, chunkPublished)
+		}
+		return delivery
+	}
 	call.OnChunk = func(part model.StreamPart) error {
-		switch part.Type {
-		case model.StreamPartTypeTextDelta, model.StreamPartTypeReasoningDelta, model.StreamPartTypeToolInputDelta:
+		if sessionDelta(part) {
 			if err := s.Emit(ctx, string(part.Type), part); err != nil {
 				return err
 			}
@@ -280,9 +289,10 @@ func (s *Session) execute(ctx context.Context, run *Run, call AgentStreamCall) {
 		return nil
 	}
 	call.OnHistory = func(history []model.Message) error {
-		if err := s.commit(ctx, func() { s.state.Messages = slices.Clone(history); s.state.ContextState = nil }); err != nil {
+		if err := s.checkpointPrompt(ctx, history, replacementContext); err != nil {
 			return err
 		}
+		replacementContext = nil
 		if hostHistory != nil {
 			return hostHistory(history)
 		}
@@ -409,6 +419,47 @@ func (s *Session) resolvePending() {
 	}
 	s.state.Messages = append(s.state.Messages, results)
 	s.state.Pending = nil
+}
+
+func sessionDelta(part model.StreamPart) bool {
+	return part.Type == model.StreamPartTypeTextDelta || part.Type == model.StreamPartTypeReasoningDelta || part.Type == model.StreamPartTypeToolInputDelta
+}
+
+func (s *Session) checkpointEventLocked(ctx context.Context, kind string, payload any) error {
+	events, sequence, eventBytes := s.state.Events, s.sequence, s.eventBytes
+	s.state.Events = slices.Clone(events)
+	err := s.emitLocked(kind, payload)
+	if err == nil {
+		err = s.saveLocked(ctx)
+	}
+	if err != nil {
+		s.state.Events, s.sequence, s.eventBytes = events, sequence, eventBytes
+	}
+	return err
+}
+
+// checkpointPrompt installs a replacement and its window in a single store revision.
+func (s *Session) checkpointPrompt(ctx context.Context, history []model.Message, window json.RawMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if history == nil && bytes.Equal(window, s.state.ContextState) {
+		return nil
+	}
+	previousHistory, previousWindow := s.state.Messages, s.state.ContextState
+	if history != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		s.state.Messages = slices.Clone(history)
+	}
+	s.state.ContextState = slices.Clone(window)
+	persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	if err := s.saveLocked(persist); err != nil {
+		s.state.Messages, s.state.ContextState = previousHistory, previousWindow
+		return err
+	}
+	return nil
 }
 
 func (s *Session) commit(ctx context.Context, update func()) error {

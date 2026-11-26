@@ -37,6 +37,7 @@ type Conversation struct {
 	Goal      *toolapi.Goal
 	Questions *Questions
 	sessionMu sync.RWMutex
+	startMu   sync.Mutex
 
 	model             modelapi.LanguageModel
 	plan              *toolapi.MemoryPlan
@@ -89,7 +90,8 @@ func (h Host) open(ctx context.Context, workspace Workspace, store *session.Stor
 	}
 	lifetime, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	c := &Conversation{Host: h, Workspace: workspace, Store: store, Questions: ask,
-		Goal: &toolapi.Goal{}, plan: &toolapi.MemoryPlan{}, cancel: cancel}
+		plan: &toolapi.MemoryPlan{}, cancel: cancel}
+	c.Goal = toolapi.NewGoal(store.GoalState(), c.saveGoal)
 	cleanup := func(err error) (*Conversation, error) {
 		return nil, errors.Join(err, c.Close())
 	}
@@ -268,13 +270,21 @@ func (c *Conversation) Call(mode prompt.Mode, review bool) core.AgentStreamCall 
 	}
 	attempt := 0
 	responseStarted := false
+	var continuationErr error
+	prepare := call.PrepareStep
+	call.PrepareStep = func(ctx context.Context, step core.PrepareStepFunctionOptions) (context.Context, core.PrepareStepResult, error) {
+		if continuationErr != nil {
+			return ctx, core.PrepareStepResult{}, continuationErr
+		}
+		return prepare(ctx, step)
+	}
 	call.OnStepStart = func(step int) error {
 		attempt = 0
 		responseStarted = false
 		return c.Session.Emit(context.Background(), "model.started", map[string]int{"step": step})
 	}
 	call.OnChunk = func(part modelapi.StreamPart) error {
-		if !responseStarted && part.Type != modelapi.StreamPartTypeWarnings {
+		if !responseStarted && part.Type != modelapi.StreamPartTypeWarnings && part.Type != modelapi.StreamPartTypeError {
 			responseStarted = true
 			if err := c.Session.Emit(context.Background(), "model.responding", nil); err != nil {
 				return err
@@ -284,6 +294,10 @@ func (c *Conversation) Call(mode prompt.Mode, review bool) core.AgentStreamCall 
 		case modelapi.StreamPartTypeTextStart, modelapi.StreamPartTypeTextEnd, modelapi.StreamPartTypeReasoningStart, modelapi.StreamPartTypeReasoningEnd:
 			return c.Session.Emit(context.Background(), string(part.Type), part)
 		}
+		return nil
+	}
+	call.OnStreamReset = func() error {
+		responseStarted = false
 		return nil
 	}
 	call.OnRetry = func(err *core.ProviderError, delay time.Duration) {
@@ -308,25 +322,40 @@ func (c *Conversation) Call(mode prompt.Mode, review bool) core.AgentStreamCall 
 			failure.Kind = "stream"
 		}
 		failure.Message = c.Host.Config.Redact(failure.Message)
+		if mode == prompt.Execute && !errors.Is(err, context.Canceled) && !errors.Is(err, errSaveGoal) {
+			if saveErr := c.Goal.Block(failure.Message); saveErr != nil {
+				failure.Message += " · " + c.Host.Config.Redact(saveErr.Error())
+			}
+		}
 		_ = c.Session.Emit(context.Background(), "model.error", failure)
 	}
 	call.OnAgentFinish = func(*core.AgentResult) error {
-		c.activities.finish(nil)
-		return nil
+		if continuationErr == nil {
+			c.activities.finish(nil)
+		}
+		return continuationErr
 	}
 	call.OnHistory = func([]modelapi.Message) error {
-		if err := c.Store.InvalidateContext(); err != nil {
-			return err
-		}
 		return c.Session.Emit(context.Background(), session.ContextCompactedKind, compaction)
 	}
 	if mode == prompt.Plan {
 		call.AuthorizeTool = planToolAuthorizer(planShellEnabled(role, true))
 	} else {
-		call.FollowUp = c.Goal.NextTurn
+		call.FollowUp = func() []modelapi.Message {
+			_, ok, err := c.Goal.Advance()
+			continuationErr = err
+			if !ok {
+				return nil
+			}
+			return []modelapi.Message{goalContinuation("Continue the active goal.", nil)}
+		}
+		var reportedUsage modelapi.Usage
 		call.OnStreamFinish = func(usage modelapi.Usage, _ modelapi.FinishReason, _ modelapi.ProviderMetadata) error {
-			c.Goal.Charge(usage)
+			reportedUsage = usage
 			return nil
+		}
+		call.OnModelMessages = func([]modelapi.Message) error {
+			return c.Goal.RecordUsage(reportedUsage)
 		}
 	}
 	call.OnToolResult = func(result modelapi.ToolResultContent) error {
@@ -343,10 +372,11 @@ func (c *Conversation) Call(mode prompt.Mode, review bool) core.AgentStreamCall 
 			}
 			return c.Session.Emit(context.Background(), "plan.updated", plan)
 		case "update_goal":
-			return c.Session.Emit(context.Background(), "goal.updated", c.Goal.State())
-		default:
-			return nil
+			if failure, ok := modelapi.AsToolResultOutputType[modelapi.ToolResultOutputContentError](result.Result); ok && errors.Is(failure.Error, errSaveGoal) {
+				return failure.Error
+			}
 		}
+		return nil
 	}
 	return call
 }
@@ -355,22 +385,37 @@ func (c *Conversation) Start(ctx context.Context, mode prompt.Mode, text string,
 	return c.StartWithFiles(ctx, mode, text, review, nil)
 }
 func (c *Conversation) StartWithFiles(ctx context.Context, mode prompt.Mode, text string, review bool, files []modelapi.FilePart) (*core.Run, error) {
-	files, err := c.prepareFiles(ctx, files)
+	c.startMu.Lock()
+	defer c.startMu.Unlock()
+	files, err := c.prepareRunFiles(ctx, mode, review, files)
 	if err != nil {
 		return nil, err
-	}
-	if session.MediaBytes(c.Session.Messages()) > 16<<20 {
-		if err := c.Compact(ctx, mode); err != nil {
-			return nil, err
-		}
-	}
-	if review && !c.Workspace.Git {
-		return nil, errors.New("/review requires a Git working tree")
 	}
 	call := c.Call(mode, review)
 	call.Prompt = text
 	call.Files = files
 	return c.Session.Start(ctx, call)
+}
+
+func (c *Conversation) prepareRunFiles(ctx context.Context, mode prompt.Mode, review bool, files []modelapi.FilePart) ([]modelapi.FilePart, error) {
+	files, err := c.prepareFiles(ctx, files)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.compactRunHistory(ctx, mode); err != nil {
+		return nil, err
+	}
+	if review && !c.Workspace.Git {
+		return nil, errors.New("/review requires a Git working tree")
+	}
+	return files, nil
+}
+
+func (c *Conversation) compactRunHistory(ctx context.Context, mode prompt.Mode) error {
+	if session.MediaBytes(c.Session.Messages()) > 16<<20 {
+		return c.Compact(ctx, mode)
+	}
+	return nil
 }
 
 type preparation struct {
@@ -398,7 +443,6 @@ func planToolAuthorizer(allowShell bool) core.ToolAuthorizer {
 func (c *Conversation) prepare(mode prompt.Mode, role string, model modelapi.LanguageModel, registered []modelapi.AgentTool, plan *toolapi.MemoryPlan, foreground bool, options preparation) core.PrepareStepFunction {
 	allowPlanShell := mode == prompt.Plan && planShellEnabled(role, foreground)
 	base := prompt.Default("base")
-	var previousEstimate int64
 	return func(ctx context.Context, step core.PrepareStepFunctionOptions) (context.Context, core.PrepareStepResult, error) {
 		if options.compaction != nil {
 			*options.compaction = session.Compaction{}
@@ -506,36 +550,69 @@ func (c *Conversation) prepare(mode prompt.Mode, role string, model modelapi.Lan
 			return ctx, core.PrepareStepResult{}, err
 		}
 		compactor.Transcript = nextWindow.Prefix
-		compactor.Assemble = func([]modelapi.Message) ([]modelapi.Message, error) { return request, nil }
-		compactor.AssembleCompacted = func(messages []modelapi.Message, _ []int) ([]modelapi.Message, error) {
-			request, nextWindow, err = (prompt.Window{}).PrepareWithBase(messages, fragments, base)
-			return request, err
+		compactor.Assemble = func(messages []modelapi.Message) ([]modelapi.Message, error) {
+			assembled, _, err := window.Prepare(messages, current)
+			return assembled, err
 		}
-		if len(step.Steps) > 0 {
-			compactor.UsageTokens = step.Steps[len(step.Steps)-1].Usage.TotalTokens
-			compactor.UsageEstimate = previousEstimate
-		} else if usage := c.Store.Meta().LastUsage; foreground && !compactor.Force && usage != nil {
-			baselineRequest, _, err := window.PrepareWithBase(history[:prompt.ActiveTurn(history)], fragments, base)
-			if err != nil {
-				return ctx, core.PrepareStepResult{}, err
+		compactor.AssembleCompacted = func(messages []modelapi.Message, _ []int) ([]modelapi.Message, error) {
+			assembled, _, err := (prompt.Window{}).Prepare(messages, fragments)
+			return assembled, err
+		}
+		definitions := toolDefinitions(items)
+		wireAPI := c.CurrentConfig().Connection().WireAPI
+		signature, err := requestSignature(model, wireAPI, profile.Images(), base, definitions)
+		if err != nil {
+			return ctx, core.PrepareStepResult{}, err
+		}
+		if !compactor.Force {
+			activeHistory, activeRequest := history, request
+			if len(step.Steps) == 0 {
+				pending := prompt.ActiveTurn(history)
+				compactor.PendingFrom = &pending
+				activeHistory = history[:pending]
+				activeRequest, err = compactor.Transcript(activeHistory)
+				if err != nil {
+					return ctx, core.PrepareStepResult{}, err
+				}
+				baseMessage := modelapi.NewDeveloperMessage(base)
+				baseMessage.Metadata = &modelapi.MessageMetadata{Kind: "context"}
+				activeRequest = append([]modelapi.Message{baseMessage}, activeRequest...)
 			}
-			baseline, err := prompt.Measure("", baselineRequest, toolDefinitions(items))
-			if err != nil {
-				return ctx, core.PrepareStepResult{}, err
+			tokens := int64(0)
+			if len(activeHistory) > 0 {
+				var meta session.Meta
+				if foreground && len(step.Steps) == 0 {
+					meta = c.Store.Meta()
+				}
+				tokens, err = activeContextTokens(step, meta, window, signature, activeHistory, activeRequest, definitions, compactor.Project)
+				if err != nil {
+					return ctx, core.PrepareStepResult{}, err
+				}
 			}
-			compactor.UsageTokens, compactor.UsageEstimate = usage.TotalTokens, baseline.Tokens
+			compactor.ActiveContextTokens = &tokens
 		}
 		started := time.Now()
-		compacted, err := compactor.Fit(ctx, model, "", history, items)
+		compacted, err := compactor.Fit(ctx, model, base, history, items)
 		elapsed := time.Since(started)
 		if err != nil {
 			return ctx, core.PrepareStepResult{}, err
 		}
-		estimate, err := prompt.Measure("", request, toolDefinitions(items))
-		if err != nil {
-			return ctx, core.PrepareStepResult{}, err
+		if compacted != nil {
+			request, nextWindow, err = (prompt.Window{}).PrepareWithBase(compacted, fragments, base)
+			if err != nil {
+				return ctx, core.PrepareStepResult{}, err
+			}
+			projected := request
+			if compactor.Project != nil {
+				projected = compactor.Project(request)
+			}
+			estimate, err := prompt.Measure("", projected, definitions)
+			if err != nil {
+				return ctx, core.PrepareStepResult{}, err
+			}
+			nextWindow.CompactedTokens = new(estimate.Tokens)
 		}
-		previousEstimate = estimate.Tokens
+		nextWindow.RequestSignature = signature
 		checkpoint, err := nextWindow.Marshal()
 		if err != nil {
 			return ctx, core.PrepareStepResult{}, err

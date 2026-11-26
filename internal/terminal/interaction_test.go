@@ -319,6 +319,32 @@ func TestCommandMenuAndClearKeepSavedSession(t *testing.T) {
 	}
 }
 
+func TestContextLabelUsesCompactedEstimateUntilNextResponse(t *testing.T) {
+	a := testApp(t)
+	run := func(input string) {
+		t.Helper()
+		active, err := a.conv.Start(t.Context(), prompt.Execute, input, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := active.Wait(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run("first")
+	run("second")
+	if err := a.conv.Compact(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if label := a.contextLabel(); !strings.HasPrefix(label, "≈") || !strings.Contains(label, "/996K (") {
+		t.Fatalf("compacted context label %q", label)
+	}
+	run("third")
+	if label := a.contextLabel(); label != "15/996K (0%)" {
+		t.Fatalf("provider context label %q", label)
+	}
+}
+
 func TestContextAndRightAlignedMode(t *testing.T) {
 	if got := (setting.Model{ContextWindow: 1_048_576}).EffectiveWindow(); got != 996147 {
 		t.Fatalf("window %d", got)

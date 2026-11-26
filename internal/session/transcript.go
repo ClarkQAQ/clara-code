@@ -61,11 +61,15 @@ func (t *Turn) collect(events []core.Event) {
 			}
 		case "text_end":
 			if !t.Planning && !t.Staged && partial.Len() > 0 {
-				t.StreamedCells = append(t.StreamedCells, len(t.Cells))
-				t.append("assistant", partial.String())
+				if t.append("assistant", partial.String()) != nil {
+					t.StreamedCells = append(t.StreamedCells, len(t.Cells)-1)
+				}
 				t.StreamedText += partial.String()
 				partial.Reset()
 			}
+		case "model.stream_reset":
+			partial.Reset()
+			t.discardStreamedCells()
 		case "step.completed":
 			partial.Reset()
 			t.StreamedText = ""
@@ -118,6 +122,24 @@ func (t *Turn) collect(events []core.Event) {
 		}
 	}
 	t.Partial = partial.String()
+}
+
+func (t *Turn) discardStreamedCells() {
+	kept := t.Cells[:0]
+	for i, cell := range t.Cells {
+		if len(t.StreamedCells) > 0 && i == t.StreamedCells[0] {
+			t.StreamedCells = t.StreamedCells[1:]
+			if cell.Kind == "assistant" {
+				t.Bytes -= len(cell.Text)
+				continue
+			}
+		}
+		kept = append(kept, cell)
+	}
+	clear(t.Cells[len(kept):])
+	t.Cells = kept
+	t.StreamedCells = nil
+	t.StreamedText = ""
 }
 
 func ToolLabel(call model.ToolCallContent) string {

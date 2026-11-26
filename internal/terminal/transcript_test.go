@@ -118,17 +118,20 @@ func TestCompactionActivitySurvivesHistoryRebuild(t *testing.T) {
 	}
 }
 
-func TestForkBoundarySeparatesInheritedAndNewCompactions(t *testing.T) {
+func TestForkBoundarySeparatesInheritedAndNewMarkers(t *testing.T) {
 	marker := func(afterTurn int, afterFork bool, millis int64) session.CompactionMarker {
 		return session.CompactionMarker{AfterTurn: afterTurn, AfterFork: afterFork, Compaction: session.Compaction{DurationMS: &millis}}
 	}
 	boundaries := transcriptBoundaries(session.Meta{
 		Parent: "session_parent", ForkPoint: &session.ForkPoint{AfterTurn: 2, Title: " parent\n会话\x00  "},
-	}, []session.CompactionMarker{marker(1, false, 1300), marker(2, false, 2300), marker(2, true, 3300), marker(3, false, 4300)})
+	}, []session.CompactionMarker{marker(1, false, 1300), marker(2, false, 2300), marker(2, true, 3300), marker(3, false, 4300)}, []session.GoalMarker{
+		{AfterTurn: 2, Cell: session.Cell{Kind: session.GoalUpdatedKind, Text: "Goal completed"}},
+		{AfterTurn: 2, AfterFork: true, Cell: session.Cell{Kind: session.GoalUpdatedKind, Text: "Goal started"}},
+	})
 	for i, want := range [][]string{
 		nil,
 		{"Context compacted · 1s"},
-		{"Context compacted · 2s", "parent 会话", "Context compacted · 3s"},
+		{"Context compacted · 2s", "Goal completed", "parent 会话", "Context compacted · 3s", "Goal started"},
 		{"Context compacted · 4s"},
 		nil,
 	} {
@@ -140,7 +143,7 @@ func TestForkBoundarySeparatesInheritedAndNewCompactions(t *testing.T) {
 			t.Fatalf("boundary %d = %v, want %v", i, labels, want)
 		}
 	}
-	legacy := transcriptBoundaries(session.Meta{Parent: "session_legacy"}, nil)
+	legacy := transcriptBoundaries(session.Meta{Parent: "session_legacy"}, nil, nil)
 	if got := legacy(0); len(got) != 1 || got[0].Kind != threadForkedKind || got[0].Text != "session_legacy" {
 		t.Fatalf("legacy branch lost source: %+v", got)
 	}

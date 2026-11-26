@@ -126,13 +126,20 @@ func sendSearchCall(w http.ResponseWriter, protocol, args string, step int32) {
 }
 
 func sendResponseText(w http.ResponseWriter) {
+	sendResponseTextSSE(w, "Search corrected and verified.", true)
+}
+
+func sendResponseTextSSE(w http.ResponseWriter, text string, finish bool) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	item := map[string]any{"id": "message", "type": "message", "role": "assistant", "status": "in_progress", "content": []any{}}
 	responseEvent(w, "response.created", map[string]any{"response": map[string]any{"id": "final", "status": "in_progress", "output": []any{}}})
 	responseEvent(w, "response.output_item.added", map[string]any{"output_index": 0, "item": item})
-	responseEvent(w, "response.output_text.delta", map[string]any{"item_id": "message", "output_index": 0, "content_index": 0, "delta": "Search corrected and verified."})
+	responseEvent(w, "response.output_text.delta", map[string]any{"item_id": "message", "output_index": 0, "content_index": 0, "delta": text})
+	if !finish {
+		return
+	}
 	item["status"] = "completed"
-	item["content"] = []any{map[string]any{"type": "output_text", "text": "Search corrected and verified.", "annotations": []any{}}}
+	item["content"] = []any{map[string]any{"type": "output_text", "text": text, "annotations": []any{}}}
 	responseEvent(w, "response.output_item.done", map[string]any{"output_index": 0, "item": item})
 	responseEvent(w, "response.completed", map[string]any{"response": map[string]any{"id": "final", "status": "completed", "output": []any{item}, "usage": map[string]int{"input_tokens": 10, "output_tokens": 10, "total_tokens": 20}}})
 }

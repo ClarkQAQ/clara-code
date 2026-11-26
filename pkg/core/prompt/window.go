@@ -19,8 +19,12 @@ type Window struct {
 	Version      int
 	MessageCount int
 	Fingerprint  string
-	Snapshot     []Fragment
-	Entries      []ContextEntry
+	// RequestSignature identifies the model, base instructions and tools used for this request.
+	RequestSignature string `json:",omitempty"`
+	// CompactedTokens records the estimated footprint of a newly replaced history.
+	CompactedTokens *int64 `json:",omitempty"`
+	Snapshot        []Fragment
+	Entries         []ContextEntry
 }
 
 type ContextEntry struct {
@@ -120,6 +124,7 @@ func (w Window) PrepareWithBase(history []model.Message, current []Fragment, bas
 	if w.Version != 0 && !w.Matches(history) {
 		w = Window{}
 	}
+	w.CompactedTokens = nil
 	var snapshot []Fragment
 	seen := map[fragmentKey]bool{}
 	for _, fragment := range current {

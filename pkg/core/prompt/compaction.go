@@ -2,26 +2,24 @@ package prompt
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"slices"
-	"strings"
 
 	"clara-code/pkg/core"
 	modelapi "clara-code/pkg/model"
 )
 
-// Compactor summarizes old turns or completed tool exchanges within a long active turn.
+// Compactor summarizes the completed model-visible history and installs a handoff.
 // BudgetTokens excludes output reservation. Context contains request-only messages.
 type Compactor struct {
 	Model        modelapi.LanguageModel
 	BudgetBytes  int
 	BudgetTokens int64
 	// TriggerTokens optionally starts automatic compaction before BudgetTokens.
-	// Zero retains the BudgetTokens trigger. The final replacement must fit BudgetTokens.
+	// Zero uses BudgetTokens as the trigger. The final replacement must fit BudgetTokens.
 	TriggerTokens int64
 	Context       []modelapi.Message
-	// Project applies the model's request-only modality filtering for budgeting.
+	// Project applies the model's modality filtering to both budgeting and the summary request.
 	Project func([]modelapi.Message) []modelapi.Message
 	// Assemble measures the exact request layout, including anchored context.
 	Assemble func([]modelapi.Message) ([]modelapi.Message, error)
@@ -29,20 +27,28 @@ type Compactor struct {
 	// original message boundary (including the end) maps to a replacement index.
 	// Budgeting may inspect a provisional replacement before the final one.
 	AssembleCompacted func(history []modelapi.Message, anchors []int) ([]modelapi.Message, error)
-	// Transcript restores historical host context for summarization as task data.
-	Transcript    func([]modelapi.Message) ([]modelapi.Message, error)
-	Instructions  string
-	Force         bool
+	// ActiveContextTokens supplies the current window usage, including a known zero.
+	ActiveContextTokens *int64
+	// PendingFrom marks the first item of an unsent submission. It stays after the handoff.
+	PendingFrom *int
+	// Transcript restores historical host context for the supplied prefix.
+	Transcript   func([]modelapi.Message) ([]modelapi.Message, error)
+	Instructions string
+	Force        bool
+	// UsageTokens and UsageEstimate calibrate estimates for callers without ActiveContextTokens.
 	UsageTokens   int64
 	UsageEstimate int64
 }
 
 func (c Compactor) Fit(ctx context.Context, model modelapi.LanguageModel, system string, history []modelapi.Message, items []core.AgentTool) ([]modelapi.Message, error) {
-	definitions := make([]modelapi.ToolInfo, 0, len(items))
-	for _, tool := range items {
-		definitions = append(definitions, tool.Info())
-	}
+	var definitions []modelapi.ToolInfo
 	measure := func(messages []modelapi.Message, anchors []int) (Estimate, error) {
+		if definitions == nil {
+			definitions = make([]modelapi.ToolInfo, 0, len(items))
+			for _, tool := range items {
+				definitions = append(definitions, tool.Info())
+			}
+		}
 		var err error
 		if anchors != nil && c.AssembleCompacted != nil {
 			messages, err = c.AssembleCompacted(messages, anchors)
@@ -57,77 +63,46 @@ func (c Compactor) Fit(ctx context.Context, model modelapi.LanguageModel, system
 		}
 		return Measure(system, append(slices.Clone(c.Context), messages...), definitions)
 	}
-	before, err := measure(history, nil)
-	if err != nil {
-		return nil, err
-	}
-	tokens := before.Tokens
-	if c.UsageEstimate > 0 && c.UsageTokens > 0 {
-		tokens = max(tokens, c.UsageTokens+before.Tokens-c.UsageEstimate)
-	}
-	over := func(estimate Estimate) bool {
-		return c.BudgetBytes > 0 && estimate.Bytes > c.BudgetBytes || c.BudgetTokens > 0 && estimate.Tokens > c.BudgetTokens
-	}
-	trigger := c.TriggerTokens
-	if trigger <= 0 || c.BudgetTokens > 0 && trigger > c.BudgetTokens {
-		trigger = c.BudgetTokens
-	}
-	triggered := c.BudgetBytes > 0 && before.Bytes > c.BudgetBytes || trigger > 0 && tokens > trigger
-	if !c.Force && !triggered {
-		return nil, nil
-	}
-	calibrated := func(estimate Estimate) Estimate {
-		if c.UsageEstimate > 0 && c.UsageTokens > c.UsageEstimate {
-			estimate.Tokens = max(estimate.Tokens, estimate.Tokens*c.UsageTokens/c.UsageEstimate)
+	end := len(history)
+	if c.PendingFrom != nil {
+		end = *c.PendingFrom
+		if end < 0 || end > len(history) {
+			return nil, errors.New("compaction pending message index is outside history")
 		}
-		return estimate
 	}
-	start := 0
-	for start < len(history) && (history[start].Role == modelapi.MessageRoleSystem || history[start].Role == modelapi.MessageRoleDeveloper) {
-		start++
-	}
-	active := activeSubmission(history)
-	if !completeTools(history[start:max(start, active)]) {
-		return nil, errors.New("prompt cannot be compacted safely: unmatched historical tool calls")
-	}
-	cut := active
-	old := cut > start && slices.ContainsFunc(history[start:cut], func(m modelapi.Message) bool { return !handoffMessage(m) })
-	recent := completedExchangeBoundary(history, max(start, active))
-	if recent > active {
-		useActive := !old
-		if old {
-			candidate, anchors := compactedHistory(history, start, active, cut, "")
-			remaining, err := measure(candidate, anchors)
+	if !c.Force {
+		trigger := c.TriggerTokens
+		if trigger <= 0 || c.BudgetTokens > 0 && trigger > c.BudgetTokens {
+			trigger = c.BudgetTokens
+		}
+		var before Estimate
+		if c.BudgetBytes > 0 || trigger > 0 && c.ActiveContextTokens == nil {
+			var err error
+			before, err = measure(history[:end], nil)
 			if err != nil {
 				return nil, err
 			}
-			remaining = calibrated(remaining)
-			useActive = over(remaining) || trigger > 0 && remaining.Tokens > trigger
 		}
-		if useActive {
-			cut = recent
+		tokens := before.Tokens
+		if c.ActiveContextTokens != nil {
+			tokens = *c.ActiveContextTokens
+		} else if c.UsageEstimate > 0 && c.UsageTokens > 0 {
+			tokens = max(0, c.UsageTokens+before.Tokens-c.UsageEstimate)
 		}
-	}
-	if cut <= start || !old && cut == active && !c.Force {
-		if !c.Force && !over(Estimate{Bytes: before.Bytes, Tokens: tokens}) {
+		reachedBytes := c.BudgetBytes > 0 && before.Bytes > c.BudgetBytes
+		reachedTokens := trigger > 0 && tokens >= trigger
+		if !reachedBytes && !reachedTokens {
 			return nil, nil
 		}
-		return nil, errors.New("prompt cannot be compacted safely: no completed history to summarize")
 	}
-	prefix := history[start:cut]
-	if c.Transcript != nil {
-		prefix, err = c.Transcript(history[:cut])
-		if err != nil {
-			return nil, err
-		}
-	}
-	transcript, _ := summaryMessages(prefix)
-	for i := range transcript {
-		transcript[i].Metadata = nil
-	}
-	body, err := json.Marshal(transcript)
-	if err != nil {
+	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if end == 0 || !completeTools(history[:end]) {
+		if !c.Force {
+			return nil, nil
+		}
+		return nil, errors.New("prompt cannot be compacted safely: empty history or unmatched tool calls")
 	}
 	if c.Model != nil {
 		model = c.Model
@@ -135,32 +110,45 @@ func (c Compactor) Fit(ctx context.Context, model modelapi.LanguageModel, system
 	if model == nil {
 		return nil, errors.New("compaction model is required")
 	}
-	instructions := c.Instructions
-	if instructions == "" {
-		instructions = Default("compact")
+	transcript := history[:end]
+	if c.Transcript != nil {
+		var err error
+		transcript, err = c.Transcript(transcript)
+		if err != nil {
+			return nil, err
+		}
 	}
-	limit := int64(2048)
-	response, err := model.Generate(ctx, modelapi.Call{Prompt: []modelapi.Message{
-		modelapi.NewDeveloperMessage(instructions), modelapi.NewUserMessage(string(body)),
-	}, MaxOutputTokens: &limit})
+	summary, err := c.summarize(ctx, model, system, transcript)
 	if err != nil {
 		return nil, err
 	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
+	active := end
+	if c.PendingFrom == nil {
+		active = activeSubmission(history[:end])
 	}
-	if response == nil || strings.TrimSpace(response.Content.Text()) == "" || response.FinishReason != modelapi.FinishReasonStop {
-		return nil, errors.New("compaction did not return a complete summary")
+	// Generic hosts may set a small hard budget. Keep recent user text alongside
+	// the summary, active attachments and pending input.
+	remaining := retainedUserTokens
+	for {
+		out, anchors, historicalUsed := compactedHistory(history, active, end, remaining, summary)
+		after, err := measure(out, anchors)
+		if err != nil {
+			return nil, err
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		overBytes := c.BudgetBytes > 0 && after.Bytes > c.BudgetBytes
+		overTokens := c.BudgetTokens > 0 && after.Tokens > c.BudgetTokens
+		if !overBytes && !overTokens {
+			return out, nil
+		}
+		if historicalUsed == 0 {
+			return nil, errors.New("prompt exceeds budget after compaction")
+		}
+		// Only historical user text is optional under a hard budget.
+		remaining = historicalUsed / 2
 	}
-	out, anchors := compactedHistory(history, start, active, cut, response.Content.Text())
-	after, err := measure(out, anchors)
-	if err != nil {
-		return nil, err
-	}
-	if over(calibrated(after)) {
-		return nil, errors.New("prompt exceeds budget after compaction")
-	}
-	return out, nil
 }
 
 // Follow-ups can extend a live run. Keep its original submission and later steering.
@@ -182,86 +170,23 @@ func handoffMessage(message modelapi.Message) bool {
 	return isLegacyHandoff(message)
 }
 
-// completedExchangeBoundary keeps the most recent complete tool exchange and
-// everything following it, including any outstanding parallel calls.
-func completedExchangeBoundary(history []modelapi.Message, active int) int {
-	pending := make(map[string]bool)
-	start, complete, recent := 0, 0, 0
-	for i := active + 1; i < len(history); i++ {
-		if len(pending) == 0 {
-			start = i
-		}
-		closed, valid := advanceToolCalls(history[i], pending)
-		if !valid {
-			return 0
-		}
-		if closed && len(pending) == 0 {
-			complete++
-			recent = start
-		}
-	}
-	if complete < 2 {
-		return 0
-	}
-	return recent
-}
-
-// The handoff replaces the first removed message. Retained user instructions
-// and the verbatim suffix stay in order, along with their attachment data.
-func compactedHistory(history []modelapi.Message, start, active, cut int, summary string) ([]modelapi.Message, []int) {
-	handoff := modelapi.NewUserMessage("Prior conversation handoff:\n" + summary)
-	handoff.Metadata = &modelapi.MessageMetadata{Kind: "handoff"}
-	out := make([]modelapi.Message, 0, len(history)-cut+start+1)
-	anchors := make([]int, len(history)+1)
-	inserted, removing, boundary := false, false, 0
-	for i, message := range history {
-		protected := message.Role == modelapi.MessageRoleSystem || message.Role == modelapi.MessageRoleDeveloper ||
-			message.Role == modelapi.MessageRoleUser && !handoffMessage(message)
-		if i < start || i >= cut || i >= active && protected {
-			anchors[i] = len(out)
-			out = append(out, message)
-			removing = false
-			continue
-		}
-		if !removing {
-			boundary = len(out)
-			removing = true
-		}
-		anchors[i] = boundary
-		if !inserted {
-			out = append(out, handoff)
-			inserted = true
-		}
-	}
-	anchors[len(history)] = len(out)
-	return out, anchors
-}
-
 func completeTools(messages []modelapi.Message) bool {
 	pending := make(map[string]bool)
 	for _, message := range messages {
-		if _, valid := advanceToolCalls(message, pending); !valid {
-			return false
+		for _, part := range message.Content {
+			if call, ok := modelapi.AsMessagePart[modelapi.ToolCallPart](part); ok && !call.ProviderExecuted {
+				if call.ToolCallID == "" || pending[call.ToolCallID] {
+					return false
+				}
+				pending[call.ToolCallID] = true
+			}
+			if result, ok := modelapi.AsMessagePart[modelapi.ToolResultPart](part); ok && !result.ProviderExecuted {
+				if !pending[result.ToolCallID] {
+					return false
+				}
+				delete(pending, result.ToolCallID)
+			}
 		}
 	}
 	return len(pending) == 0
-}
-
-func advanceToolCalls(message modelapi.Message, pending map[string]bool) (closed, valid bool) {
-	for _, part := range message.Content {
-		if call, ok := modelapi.AsMessagePart[modelapi.ToolCallPart](part); ok && !call.ProviderExecuted {
-			if call.ToolCallID == "" || pending[call.ToolCallID] {
-				return false, false
-			}
-			pending[call.ToolCallID] = true
-		}
-		if result, ok := modelapi.AsMessagePart[modelapi.ToolResultPart](part); ok && !result.ProviderExecuted {
-			if !pending[result.ToolCallID] {
-				return false, false
-			}
-			delete(pending, result.ToolCallID)
-			closed = true
-		}
-	}
-	return closed, true
 }

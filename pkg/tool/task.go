@@ -211,6 +211,8 @@ func (s *TaskScope) Spawn(ctx context.Context, spec TaskSpec) (TaskInfo, error) 
 		}
 		return stepCtx, prepared, err
 	}}
+	// Local tasks publish only their final result, so a retry can discard partial output.
+	call.OnStreamReset = func() error { return nil }
 	if spec.Reasoning != "" {
 		effort := model.ReasoningEffort(spec.Reasoning)
 		call.ProviderOptions.ReasoningEffort = &effort

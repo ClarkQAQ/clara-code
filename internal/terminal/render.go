@@ -257,7 +257,7 @@ func (p *painter) messageRows(kind, text string) []string {
 	switch kind {
 	case session.ProposedPlanKind:
 		return p.proposedPlanRows(text)
-	case session.ContextCompactedKind:
+	case session.ContextCompactedKind, session.GoalUpdatedKind:
 		return p.transcriptNoteRows("· ", text)
 	case turnCompletedKind:
 		return p.transcriptNoteRows("  ", text)

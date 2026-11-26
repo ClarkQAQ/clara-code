@@ -244,15 +244,52 @@ func TestPlanToolsAndProjectInstructions(t *testing.T) {
 	finish(t, c, prompt.Plan, "Plan this.")
 }
 
+type overflowSummaryModel struct {
+	DemoModel
+	requests []modelapi.Call
+}
+
+func (m *overflowSummaryModel) Generate(ctx context.Context, call modelapi.Call) (*modelapi.Response, error) {
+	m.requests = append(m.requests, call)
+	if len(m.requests) == 1 {
+		return nil, &modelapi.ProviderError{ContextTooLargeErr: true}
+	}
+	return m.DemoModel.Generate(ctx, call)
+}
+
+func TestSummaryInputOverflowKeepsBaseInstructions(t *testing.T) {
+	model := new(overflowSummaryModel)
+	c, _ := testHost(t, t.TempDir(), model)
+	finish(t, c, prompt.Execute, "completed task")
+	if err := c.Compact(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(model.requests) != 2 || len(model.requests[1].Prompt) >= len(model.requests[0].Prompt) {
+		t.Fatal("input overflow did not remove old history before retrying")
+	}
+	base := prompt.Default("base")
+	for _, request := range model.requests {
+		found := 0
+		for _, message := range request.Prompt {
+			if strings.Contains(session.Text(message), base) {
+				found++
+			}
+		}
+		if request.Prompt[0].Role != modelapi.MessageRoleDeveloper || session.Text(request.Prompt[0]) != base || found != 1 {
+			t.Fatal("each summary attempt must contain the stable base instructions exactly once")
+		}
+	}
+}
+
 func TestResumeLockAndForkAfterCompaction(t *testing.T) {
 	c, host := testHost(t, t.TempDir(), DemoModel{})
-	finish(t, c, prompt.Execute, "first prompt")
 	if err := c.Compact(t.Context()); err == nil {
-		t.Fatal("compacted without a complete old turn")
+		t.Fatal("compacted an empty conversation")
 	}
 	if markers := c.Store.Compactions(); len(markers) != 0 {
 		t.Fatalf("failed compaction left markers: %+v", markers)
 	}
+	finish(t, c, prompt.Execute, "first prompt")
 	finish(t, c, prompt.Execute, "second prompt")
 	parent := c.Store.Meta()
 	if _, err := session.Open(host.Config.Home, parent.ID, parent.Project); err == nil {
@@ -267,7 +304,7 @@ func TestResumeLockAndForkAfterCompaction(t *testing.T) {
 	if markers := c.Store.Compactions(); len(markers) != 1 || markers[0].AfterTurn != 2 || markers[0].Compaction.DurationMS == nil {
 		t.Fatalf("manual compaction timing: %+v", markers)
 	}
-	if history := c.Session.Messages(); len(history) != 3 || !strings.Contains(session.Text(history[0]), "summarized") || session.Text(history[1]) != "second prompt" {
+	if history := c.Session.Messages(); len(history) != 3 || session.Text(history[0]) != "first prompt" || session.Text(history[1]) != "second prompt" || !strings.Contains(session.Text(history[2]), "summarized") {
 		t.Fatalf("unexpected compacted history: %v", history)
 	}
 	child, err := c.Store.Fork(t.Context(), 1)
@@ -365,8 +402,11 @@ func writeTestFile(t *testing.T, root, name, text string) {
 }
 
 func TestAutomaticCompactionKeepsVisibleTurns(t *testing.T) {
+	var reported int64
 	model := fixtureModel{reply: func(modelapi.Call) (*modelapi.Response, error) {
-		return demoText("Short response."), nil
+		response := demoText("Short response.")
+		response.Usage = modelapi.Usage{InputTokens: reported, TotalTokens: reported}
+		return response, nil
 	}}
 	c, _ := testHost(t, t.TempDir(), model)
 	prepare := c.Call(prompt.Execute, false).PrepareStep
@@ -384,6 +424,7 @@ func TestAutomaticCompactionKeepsVisibleTurns(t *testing.T) {
 	}
 	profile := c.Host.Config.Models["fixture"]
 	profile.ContextWindow = 2 * (estimate.Tokens + 4500)
+	reported = profile.ContextWindow / 2
 	profile.EffectiveContextWindowPercent = 100
 	profile.MaxOutputTokens = 1
 	profile.AutoCompactContextPercent = new(50)
@@ -394,8 +435,9 @@ func TestAutomaticCompactionKeepsVisibleTurns(t *testing.T) {
 	first, second := strings.Repeat("a", 7000), strings.Repeat("b", 6000)
 	finish(t, c, prompt.Execute, first)
 	finish(t, c, prompt.Execute, second)
-	if got := session.Text(c.Session.Messages()[0]); !strings.Contains(got, "Earlier conversation summarized.") {
-		t.Fatalf("automatic compaction did not replace the old context, first message has %d bytes", len(got))
+	messages := c.Session.Messages()
+	if len(messages) < 3 || session.Text(messages[len(messages)-3]) != "Prior conversation handoff:\nEarlier conversation summarized." || session.Text(messages[len(messages)-2]) != second {
+		t.Fatal("expected the handoff immediately before the new submission")
 	}
 	turns, err := c.Store.Turns()
 	if err != nil || len(turns) != 2 || turns[0].Prompt != first || turns[1].Prompt != second {
@@ -425,6 +467,82 @@ func TestAutomaticCompactionKeepsVisibleTurns(t *testing.T) {
 	checkpoint, err := fork.Load(t.Context(), fork.Meta().ID)
 	if err != nil || len(checkpoint.Messages) != 2 || session.Text(checkpoint.Messages[0]) != first {
 		t.Fatalf("original context missing from fork: %d messages, %v", len(checkpoint.Messages), err)
+	}
+}
+
+func TestPreTurnCompactionUsesPriorReportWithoutPendingInput(t *testing.T) {
+	model := fixtureModel{reply: func(modelapi.Call) (*modelapi.Response, error) {
+		response := demoText("ok")
+		// On a 95,000-token usable window this shows exactly 30% in the TUI.
+		response.Usage = modelapi.Usage{InputTokens: 36_899, OutputTokens: 1, TotalTokens: 36_900}
+		return response, nil
+	}}
+	c, _ := testHost(t, t.TempDir(), model)
+	profile := c.Host.Config.Models["fixture"]
+	profile.ContextWindow = 100_000
+	profile.MaxOutputTokens = 40_000
+	c.Host.Config.Models["fixture"] = profile
+	if err := c.ChangeModel(t.Context(), "fixture", ""); err != nil {
+		t.Fatal(err)
+	}
+	// The old history alone estimates above the 90k trigger. Including the new
+	// submission on top of the report would also incorrectly trigger compaction.
+	first := strings.Repeat("a", 370_000)
+	second := strings.Repeat("b", 250_000)
+	finish(t, c, prompt.Execute, first)
+	finish(t, c, prompt.Execute, second)
+	messages := c.Session.Messages()
+	if len(messages) != 4 || session.Text(messages[0]) != first || session.Text(messages[2]) != second {
+		t.Fatal("last real usage was overridden by the estimated history or the pending submission")
+	}
+}
+
+func TestLocalToolOutputCrossesThresholdBeforeFollowUp(t *testing.T) {
+	const threshold = 50_000
+	steps := 0
+	model := fixtureModel{reply: func(call modelapi.Call) (*modelapi.Response, error) {
+		steps++
+		switch steps {
+		case 1:
+			response := toolReply("get_plan", struct{}{}, steps)
+			response.Usage = modelapi.Usage{TotalTokens: threshold - 1}
+			return response, nil
+		case 2:
+			if !slices.ContainsFunc(call.Prompt, func(message modelapi.Message) bool {
+				return message.Metadata != nil && message.Metadata.Kind == "handoff"
+			}) {
+				return nil, errors.New("the local tool result should have triggered compaction")
+			}
+			response := demoText("done")
+			response.Usage = modelapi.Usage{TotalTokens: threshold}
+			return response, nil
+		default:
+			return nil, errors.New("unexpected model step after a final answer")
+		}
+	}}
+	c, _ := testHost(t, t.TempDir(), model)
+	profile := c.Host.Config.Models["fixture"]
+	profile.ContextWindow = 2 * threshold
+	profile.AutoCompactContextPercent = new(50)
+	c.Host.Config.Models["fixture"] = profile
+	if err := c.ChangeModel(t.Context(), "fixture", ""); err != nil {
+		t.Fatal(err)
+	}
+	if response := finish(t, c, prompt.Execute, "Check the plan."); response.Response.Content.Text() != "done" || steps != 2 {
+		t.Fatal("unexpected final response or number of steps", steps)
+	}
+	turns, err := c.Store.Turns()
+	if err != nil || len(turns) != 1 {
+		t.Fatal(err, turns)
+	}
+	compactions := 0
+	for _, cell := range turns[0].Cells {
+		if cell.Kind == session.ContextCompactedKind {
+			compactions++
+		}
+	}
+	if compactions != 1 {
+		t.Fatalf("expected one mid-turn compaction, got %d", compactions)
 	}
 }
 
@@ -530,8 +648,8 @@ func TestActiveTurnCompactionContinuesWithoutReplayingTools(t *testing.T) {
 				}
 			}
 		}
-		if !hasTask || steps > 1 && !hasLatest {
-			return nil, errors.New("original task or most recent tool result is missing")
+		if !hasTask || steps > 1 && !hasLatest && !hasHandoff {
+			return nil, errors.New("original task, latest tool result, or its summary is missing")
 		}
 		compacted = compacted || hasHandoff
 		if steps == 5 {

@@ -235,22 +235,20 @@ func DefaultUsageFunc(response openai.ChatCompletion) (yuzu.Usage, yuzu.Provider
 
 // DefaultStreamUsageFunc is the default implementation for calculating stream usage.
 func DefaultStreamUsageFunc(chunk openai.ChatCompletionChunk, _ map[string]any, metadata yuzu.ProviderMetadata) (yuzu.Usage, yuzu.ProviderMetadata) {
-	if chunk.Usage.TotalTokens == 0 {
-		return yuzu.Usage{}, metadata
-	}
 	streamProviderMetadata := metadata
 	// we do this here because the acc does not add prompt details
 	completionTokenDetails := chunk.Usage.CompletionTokensDetails
 	promptTokenDetails := chunk.Usage.PromptTokensDetails
 	// OpenAI reports prompt_tokens INCLUDING cached tokens. Subtract to avoid double-counting.
 	inputTokens := max(chunk.Usage.PromptTokens-promptTokenDetails.CachedTokens, 0)
+	rawUsage := chunk.Usage.RawJSON()
 	usage := yuzu.Usage{
 		InputTokens:       inputTokens,
 		OutputTokens:      chunk.Usage.CompletionTokens,
 		TotalTokens:       chunk.Usage.TotalTokens,
 		ReasoningTokens:   completionTokenDetails.ReasoningTokens,
 		CacheReadTokens:   promptTokenDetails.CachedTokens,
-		CacheReadReported: cacheReadReported(chunk.Usage.RawJSON()),
+		CacheReadReported: rawUsage != "" && rawUsage != "null" && cacheReadReported(rawUsage),
 	}
 
 	// Add prediction tokens if available
@@ -263,7 +261,9 @@ func DefaultStreamUsageFunc(chunk openai.ChatCompletionChunk, _ map[string]any, 
 		}
 	}
 
-	streamProviderMetadata.ExtraFields = ExtractExtraFields(chunk.Usage.ExtraFields)
+	if extra := ExtractExtraFields(chunk.Usage.ExtraFields); len(extra) > 0 {
+		streamProviderMetadata.ExtraFields = extra
+	}
 
 	return usage, streamProviderMetadata
 }

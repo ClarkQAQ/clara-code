@@ -68,8 +68,8 @@ func TestModelWindowBudgetAndCompactionPercent(t *testing.T) {
 	c, _ := testHost(t, t.TempDir(), DemoModel{})
 	profile := setting.Model{ContextWindow: 100000, MaxOutputTokens: 1000}
 	budget := c.compactor(profile)
-	if budget.BudgetBytes != 0 || budget.BudgetTokens != 94000 || budget.TriggerTokens != 90000 {
-		t.Fatal("window/output cap", budget)
+	if budget.BudgetBytes != 0 || budget.BudgetTokens != 95000 || budget.TriggerTokens != 90000 {
+		t.Fatal("effective window/automatic trigger", budget)
 	}
 	c.Host.Config.AutoCompactContextPercent = 80
 	if c.compactor(profile).TriggerTokens != 80000 {
@@ -87,13 +87,106 @@ func TestModelWindowBudgetAndCompactionPercent(t *testing.T) {
 		t.Fatal("trigger exceeded Codex's 90% raw-window ceiling")
 	}
 	profile.MaxOutputTokens = 10000
-	if c.compactor(profile).TriggerTokens != 85000 {
-		t.Fatal("trigger ignored output reservation")
+	if c.compactor(profile).TriggerTokens != 90000 {
+		t.Fatal("output allowance lowered the compaction threshold")
+	}
+	profile.EffectiveContextWindowPercent = 70
+	if c.compactor(profile).TriggerTokens != 70000 {
+		t.Fatal("trigger exceeded the effective model window")
 	}
 	profile.MaxOutputTokens = 1000
 	profile.EffectiveContextWindowPercent = 99
 	if c.compactor(profile).TriggerTokens != 90000 {
 		t.Fatal("effective window ratio changed the raw-window compaction threshold")
+	}
+}
+
+func TestActiveContextTokensCountsOnlyLocalGrowthAfterSample(t *testing.T) {
+	history := []model.Message{model.NewUserMessage(strings.Repeat("old", 3000))}
+	_, previous, err := (prompt.Window{}).Prepare(history, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous.RequestSignature = "model-and-tools"
+	assistant := model.Message{Role: model.MessageRoleAssistant, Content: []model.MessagePart{
+		model.TextPart{Text: strings.Repeat("response", 5000)},
+		model.ToolCallPart{ToolCallID: "id", ToolName: "read", Input: "{}"},
+	}}
+	result := model.Message{Role: model.MessageRoleTool, Content: []model.MessagePart{model.ToolResultPart{
+		ToolCallID: "id", Output: model.ToolResultOutputContentText{Text: "result"},
+	}}}
+	history = append(history, assistant, result)
+	change := prompt.Fragment{Kind: "plan", Source: "host", Role: model.MessageRoleUser, Text: "new plan"}
+	request, _, err := previous.Prepare(history, []prompt.Fragment{change})
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := core.PrepareStepFunctionOptions{Steps: []core.StepResult{{Response: model.Response{Usage: model.Usage{TotalTokens: 3000}}, Messages: []model.Message{assistant, result}}}}
+	local, err := prompt.Measure("", request[2:], nil)
+	if err != nil || len(request) != 4 || local.Tokens < 3 {
+		t.Fatal("unexpected fixture layout", len(request), local, err)
+	}
+	got, err := activeContextTokens(step, session.Meta{}, previous, "model-and-tools", history, request, nil, nil)
+	if err != nil || got != 3000+local.Tokens {
+		t.Fatalf("active footprint = %d, want %d: %v", got, 3000+local.Tokens, err)
+	}
+	step.Steps[0].Usage = model.Usage{InputTokens: 700, CacheReadTokens: 2200, OutputTokens: 100, ReasoningTokens: 40}
+	got, err = activeContextTokens(step, session.Meta{}, previous, "model-and-tools", history, request, nil, nil)
+	if err != nil || got != 3000+local.Tokens {
+		t.Fatalf("usage with separate cache/input/output = %d: %v", got, err)
+	}
+	full, err := prompt.Measure("", request, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		signature string
+		tokens    int64
+	}{
+		{"different-tools", 3000},
+		{"model-and-tools", 0},
+	} {
+		step.Steps[0].Usage = model.Usage{TotalTokens: tc.tokens}
+		got, err := activeContextTokens(step, session.Meta{}, previous, tc.signature, history, request, nil, nil)
+		if err != nil || got != full.Tokens {
+			t.Fatalf("mismatched/missing report produced %d tokens, want %d: %v", got, full.Tokens, err)
+		}
+	}
+}
+
+func TestContextEstimateProjectsProviderReasoning(t *testing.T) {
+	encrypted := strings.Repeat("z", 1200)
+	history := []model.Message{{Role: model.MessageRoleAssistant, Content: []model.MessagePart{
+		model.ReasoningPart{ItemID: "plaintext-id", Text: "12345678"},
+		model.ReasoningPart{ItemID: "encrypted-id", Encrypted: &encrypted, Text: "abcd"},
+	}}}
+	for _, tc := range []struct {
+		completions bool
+		tokens      int64
+	}{
+		{true, 3},
+		{false, 63}, // (1200*3/4 - 650) visible bytes.
+	} {
+		got, err := prompt.Measure("", projectedReasoning(history, tc.completions), nil)
+		if err != nil || got.Tokens != tc.tokens {
+			t.Fatalf("completions=%t: got %+v, want %d: %v", tc.completions, got, tc.tokens, err)
+		}
+	}
+	if len(history[0].Content) != 2 || history[0].Content[1].(model.ReasoningPart).Encrypted == nil {
+		t.Fatal("projection changed durable reasoning")
+	}
+}
+
+func TestUsageSignatureChangesWithProjection(t *testing.T) {
+	signatures := make(map[string]bool)
+	for _, wire := range []string{"responses", "completions"} {
+		for _, images := range []bool{false, true} {
+			signature, err := requestSignature(DemoModel{}, wire, images, "base", nil)
+			if err != nil || signatures[signature] {
+				t.Fatalf("usage sample was shared across wire APIs or image modalities: %v", err)
+			}
+			signatures[signature] = true
+		}
 	}
 }
 

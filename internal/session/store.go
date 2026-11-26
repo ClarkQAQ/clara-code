@@ -2,11 +2,13 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -18,7 +20,9 @@ import (
 	"clara-code/internal/filelock"
 	"clara-code/internal/session/internal/sessiondb"
 	"clara-code/pkg/core"
+	"clara-code/pkg/core/prompt"
 	modelapi "clara-code/pkg/model"
+	"clara-code/pkg/tool"
 	"clara-code/pkg/util/errs"
 	"clara-code/pkg/util/id"
 )
@@ -43,6 +47,8 @@ type Meta struct {
 	ForkPoint                             *ForkPoint `json:",omitempty"`
 	Updated                               time.Time
 	LastUsage                             *modelapi.Usage `json:",omitempty"`
+	ContextTokens                         *int64          `json:",omitempty"`
+	ContextMessageCount                   int             `json:",omitempty"`
 	TotalUsage                            modelapi.Usage
 	UsageIncomplete                       bool
 	UsageCursor                           uint64
@@ -80,6 +86,7 @@ type Turn struct {
 	Cursor        uint64
 	Staged        bool
 	Planning      bool `json:",omitempty"`
+	Internal      bool `json:",omitempty"`
 	Partial       string
 	Bytes         int
 	StreamedText  string   `json:",omitempty"`
@@ -93,6 +100,8 @@ type checkpoint struct {
 	Active      *Turn
 	Commands    map[string]ToolActivity `json:",omitempty"`
 	Compactions []CompactionMarker      `json:",omitempty"`
+	Goal        tool.GoalState          `json:",omitzero"`
+	GoalMarkers []GoalMarker            `json:",omitempty"`
 }
 
 type sessionData struct {
@@ -118,7 +127,7 @@ func New(home string, meta Meta) *Store {
 	return &Store{home: home, data: sessionData{Meta: meta}}
 }
 
-// NewDraft keeps the initial checkpoint in memory until the first run starts.
+// NewDraft keeps the initial checkpoint in memory until a run or goal starts.
 func NewDraft(home string, meta Meta) *Store {
 	store := New(home, meta)
 	store.draft = true
@@ -186,6 +195,12 @@ func (s *Store) restore(ctx context.Context, sessionID, project string) error {
 		return err
 	}
 	collectUsage(&data.Meta, data.State.Events)
+	if data.Meta.ContextMessageCount > 0 || data.Meta.ContextTokens != nil {
+		window, err := prompt.LoadWindow(data.State.ContextState)
+		if err != nil || !window.Matches(data.State.Messages) || data.Meta.ContextMessageCount > len(data.State.Messages) {
+			data.Meta.clearContextUsage()
+		}
+	}
 	s.data = data
 	return nil
 }
@@ -210,6 +225,18 @@ func (s *Store) acquire(sessionID string) error {
 		return err
 	}
 	s.lock = lock
+	return nil
+}
+
+func (s *Store) openWriter(ctx context.Context, sessionID string) error {
+	if err := s.acquire(sessionID); err != nil {
+		return err
+	}
+	db, err := openDatabase(ctx, s.home, true)
+	if err != nil {
+		return errors.Join(err, s.closeLocked())
+	}
+	s.db = db
 	return nil
 }
 
@@ -239,6 +266,12 @@ func (s *Store) Meta() Meta {
 	meta := s.data.Meta
 	if meta.ForkPoint != nil {
 		meta.ForkPoint = new(*meta.ForkPoint)
+	}
+	if meta.LastUsage != nil {
+		meta.LastUsage = new(*meta.LastUsage)
+	}
+	if meta.ContextTokens != nil {
+		meta.ContextTokens = new(*meta.ContextTokens)
 	}
 	return meta
 }
@@ -280,7 +313,7 @@ func (s *Store) Save(ctx context.Context, state core.State) (err error) {
 		return nil
 	}
 	if first {
-		if err := s.acquire(state.ID); err != nil {
+		if err := s.openWriter(ctx, state.ID); err != nil {
 			return err
 		}
 		defer func() {
@@ -288,10 +321,6 @@ func (s *Store) Save(ctx context.Context, state core.State) (err error) {
 				err = errors.Join(err, s.closeLocked())
 			}
 		}()
-		s.db, err = openDatabase(ctx, s.home, true)
-		if err != nil {
-			return err
-		}
 	}
 	var changes turnChanges
 	if state.ActiveRun != "" && next.Active != nil && next.Active.ID != state.ActiveRun {
@@ -333,14 +362,18 @@ func (s *Store) Save(ctx context.Context, state core.State) (err error) {
 		next.Active = &Turn{ID: state.ActiveRun, started: started}
 		next.Active.Planning, _ = ctx.Value(planningKey{}).(bool)
 		if at := len(before); at < len(state.Messages) {
-			next.Active.Prompt = excerpt(Text(state.Messages[at]), 256<<10)
-			attachments, err := attachmentsFrom(s.home, state.Messages[at])
+			input := state.Messages[at]
+			next.Active.Internal = input.Metadata != nil && input.Metadata.Kind == GoalContinuationKind
+			attachments, err := attachmentsFrom(s.home, input)
 			if err != nil {
 				return err
 			}
 			next.Active.Attachments = attachments
-			if next.Active.Prompt == "" {
-				next.Active.Prompt = "[attachment]"
+			if !next.Active.Internal {
+				next.Active.Prompt = excerpt(Text(input), 256<<10)
+				if next.Active.Prompt == "" {
+					next.Active.Prompt = "[attachment]"
+				}
 			}
 		}
 	}
@@ -362,12 +395,7 @@ func (s *Store) Save(ctx context.Context, state core.State) (err error) {
 			} else if strings.HasPrefix(full, turn.StreamedText) {
 				turn.append("assistant", strings.TrimPrefix(full, turn.StreamedText))
 			} else {
-				for _, index := range turn.StreamedCells {
-					if index < len(turn.Cells) {
-						turn.Bytes -= len(turn.Cells[index].Text)
-						turn.Cells[index].Text = ""
-					}
-				}
+				turn.discardStreamedCells()
 				turn.append("assistant", full)
 			}
 			turn.Partial = ""
@@ -387,8 +415,55 @@ func (s *Store) Save(ctx context.Context, state core.State) (err error) {
 		}
 	}
 	next.State = cloneState(state)
+	hasWindow := len(state.ContextState) > 0 && !bytes.Equal(bytes.TrimSpace(state.ContextState), []byte("null"))
+	if !bytes.Equal(s.data.State.ContextState, state.ContextState) {
+		if !hasWindow {
+			next.Meta.clearContextUsage()
+		} else {
+			next.Meta.recordCompactedUsage(state)
+		}
+	}
+	previousUsage := next.Meta.LastUsage
 	collectUsage(&next.Meta, state.Events)
+	if usage := next.Meta.LastUsage; usage != nil && usage != previousUsage && hasWindow {
+		// Core appends the response and then local tool output in the same step checkpoint.
+		count := len(state.Messages)
+		if count > len(s.data.State.Messages) && state.Messages[count-1].Role == modelapi.MessageRoleTool {
+			count--
+		}
+		next.Meta.ContextMessageCount = count
+	}
 	return s.saveCheckpoint(ctx, next, first, changes)
+}
+
+func (m *Meta) clearContextUsage() {
+	m.LastUsage = nil
+	m.ContextTokens = nil
+	m.ContextMessageCount = 0
+}
+
+func (m *Meta) recordCompactedUsage(state core.State) {
+	window, err := prompt.LoadWindow(state.ContextState)
+	if err != nil || window.CompactedTokens == nil {
+		return
+	}
+	m.clearContextUsage()
+	if *window.CompactedTokens >= 0 && window.MessageCount == len(state.Messages) && window.Matches(state.Messages) {
+		m.ContextTokens = window.CompactedTokens
+		m.ContextMessageCount = window.MessageCount
+	}
+}
+
+// ReportedTokens uses the provider total or reconstructs it from disjoint usage counters.
+func ReportedTokens(usage modelapi.Usage) int64 {
+	if usage.TotalTokens > 0 {
+		return usage.TotalTokens
+	}
+	var total int64
+	for _, tokens := range [...]int64{usage.InputTokens, usage.OutputTokens, usage.CacheReadTokens} {
+		total += min(max(0, tokens), math.MaxInt64-total)
+	}
+	return total
 }
 
 func collectUsage(meta *Meta, events []core.Event) {
@@ -420,14 +495,12 @@ func collectUsage(meta *Meta, events []core.Event) {
 				meta.SessionCache.add(usage)
 				meta.RoundCache.add(usage)
 				meta.TotalUsage.CacheReadReported = !meta.SessionCache.Incomplete
-				if usage.TotalTokens == 0 {
-					usage.TotalTokens = max(0, usage.InputTokens) + max(0, usage.OutputTokens) + max(0, usage.CacheReadTokens)
-				}
-				meta.LastUsage = nil
+				usage.TotalTokens = ReportedTokens(usage)
 				if usage.TotalTokens == 0 {
 					meta.UsageIncomplete = true
 				}
 				if usage.TotalTokens > 0 {
+					meta.clearContextUsage()
 					meta.LastUsage = &usage
 					meta.TotalUsage.InputTokens += usage.InputTokens
 					meta.TotalUsage.OutputTokens += usage.OutputTokens
@@ -436,7 +509,6 @@ func collectUsage(meta *Meta, events []core.Event) {
 					meta.TotalUsage.CacheReadTokens += usage.CacheReadTokens
 				}
 			} else {
-				meta.LastUsage = nil
 				meta.UsageIncomplete = true
 				meta.SessionCache.Incomplete, meta.RoundCache.Incomplete = true, true
 				meta.TotalUsage.CacheReadReported = false
@@ -560,7 +632,7 @@ func (s *Store) SetModel(model, effort string) error {
 	next := s.data
 	next.Meta.Model, next.Meta.Effort = model, effort
 	if model != s.data.Meta.Model || effort != s.data.Meta.Effort {
-		next.Meta.LastUsage = nil
+		next.Meta.clearContextUsage()
 	}
 	return s.commit(next)
 }
@@ -569,7 +641,7 @@ func (s *Store) InvalidateContext() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	next := s.data
-	next.Meta.LastUsage = nil
+	next.Meta.clearContextUsage()
 	return s.commit(next)
 }
 
@@ -590,7 +662,8 @@ func (s *Store) ReplaceHistory(ctx context.Context, messages []modelapi.Message,
 	state.ContextState = slices.Clone(contextState)
 	state.Revision++
 	next.State = state
-	next.Meta.LastUsage = nil
+	next.Meta.clearContextUsage()
+	next.Meta.recordCompactedUsage(state)
 	after := len(next.Turns)
 	markers := next.Compactions[max(0, len(next.Compactions)-maxCompactionMarkers+1):]
 	next.Compactions = append(slices.Clone(markers), CompactionMarker{
@@ -699,7 +772,8 @@ func (s *Store) Fork(ctx context.Context, index int) (*Store, error) {
 	if s.draft {
 		meta.Parent = ""
 	}
-	meta.LastUsage, meta.TotalUsage, meta.UsageCursor, meta.UsageIncomplete = nil, modelapi.Usage{}, 0, false
+	meta.clearContextUsage()
+	meta.TotalUsage, meta.UsageCursor, meta.UsageIncomplete = modelapi.Usage{}, 0, false
 	meta.SessionCache, meta.RoundCache, meta.CacheRunID = CacheUsage{}, CacheUsage{}, ""
 	messages, turns := s.data.State.Messages, s.data.Turns
 	if index >= 0 {
@@ -731,6 +805,12 @@ func (s *Store) Fork(ctx context.Context, index int) (*Store, error) {
 		if marker.AfterTurn <= len(turns) {
 			marker.AfterFork = false
 			child.data.Compactions = append(child.data.Compactions, marker)
+		}
+	}
+	for _, marker := range s.data.GoalMarkers {
+		if marker.AfterTurn <= len(turns) {
+			marker.AfterFork = false
+			child.data.GoalMarkers = append(child.data.GoalMarkers, marker)
 		}
 	}
 	child.data.Commands = map[string]ToolActivity{}

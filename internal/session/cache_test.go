@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"math"
 	"testing"
 
 	"clara-code/pkg/core"
@@ -12,6 +13,23 @@ import (
 func usageEvent(sequence uint64, run string, usage model.Usage) core.Event {
 	body, _ := json.Marshal(model.Response{Usage: usage})
 	return core.Event{Sequence: sequence, RunID: run, Kind: "step.completed", Data: body}
+}
+
+func TestReportedTokensUsesDisjointCountersWhenTotalMissing(t *testing.T) {
+	for _, tc := range []struct {
+		usage model.Usage
+		want  int64
+	}{
+		{model.Usage{TotalTokens: 15, InputTokens: 4, CacheReadTokens: 7, OutputTokens: 6}, 15},
+		{model.Usage{InputTokens: 4, CacheReadTokens: 7, OutputTokens: 6, ReasoningTokens: 5}, 17},
+		{model.Usage{TotalTokens: -1, InputTokens: -1, OutputTokens: 6}, 6},
+		{model.Usage{InputTokens: math.MaxInt64 - 1, OutputTokens: 5}, math.MaxInt64},
+		{model.Usage{ReasoningTokens: 5}, 0},
+	} {
+		if got := ReportedTokens(tc.usage); got != tc.want {
+			t.Fatalf("reported tokens for %+v = %d, want %d", tc.usage, got, tc.want)
+		}
+	}
 }
 
 func TestCacheUsageAggregatesWeightedRoundsAndResumes(t *testing.T) {

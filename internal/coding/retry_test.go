@@ -3,26 +3,41 @@ package coding
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
 	"clara-code/pkg/core/prompt"
 
 	"clara-code/internal/session"
+	"clara-code/internal/setting"
 )
 
 func remoteFixture(t *testing.T, handler http.HandlerFunc) (*Conversation, string) {
+	t.Helper()
+	return remoteProtocolFixture(t, "completions", nil, handler)
+}
+
+func remoteProtocolFixture(t *testing.T, protocol string, retries *int, handler http.HandlerFunc) (*Conversation, string) {
 	t.Helper()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	c, _ := testHost(t, t.TempDir(), DemoModel{})
 	c.Host.Config.Endpoint = server.URL + "/v1"
-	c.Host.Config.Protocol = "completions"
+	c.Host.Config.Protocol = protocol
 	key := "fixture-api-key-should-never-appear"
 	c.Host.Config.APIKey = key
+	if retries != nil {
+		connection := c.Host.Config.Connection()
+		connection.RequestMaxRetries = retries
+		c.Host.Config.ModelProvider = "fixture"
+		c.Host.Config.Providers = map[string]setting.Provider{"fixture": connection}
+	}
 	factory, err := c.Host.Config.Factory()
 	if err != nil {
 		t.Fatal(err)
@@ -83,20 +98,27 @@ func TestRetryEventsRetainReasonAndRecover(t *testing.T) {
 }
 
 func TestAuthenticationFailureAndInterruptedStream(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
-		name string
-		auth bool
-		kind string
-	}{{"authentication", true, "authentication"}, {"stream", false, "stream"}} {
+		name     string
+		kind     string
+		retries  int
+		requests int32
+	}{
+		{"authentication", "authentication", 3, 1},
+		{"stream retries disabled", "stream", 0, 1},
+		{"stream retries exhausted", "stream", 1, 2},
+	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			var requests atomic.Int32
-			c, key := remoteFixture(t, func(w http.ResponseWriter, r *http.Request) {
-				requests.Add(1)
-				if test.auth {
+			c, key := remoteProtocolFixture(t, "completions", &test.retries, func(w http.ResponseWriter, r *http.Request) {
+				attempt := requests.Add(1)
+				if test.kind == "authentication" {
 					w.WriteHeader(http.StatusUnauthorized)
 					fmt.Fprint(w, `{"error":{"message":"invalid fixture-api-key-should-never-appear","type":"authentication_error"}}`)
 				} else {
-					sendTextSSE(w, "Keep this partial reply.", false)
+					sendTextSSE(w, fmt.Sprintf("Partial reply from attempt %d.", attempt), false)
 				}
 			})
 			run, err := c.Start(t.Context(), prompt.Execute, "failure probe", false)
@@ -106,8 +128,8 @@ func TestAuthenticationFailureAndInterruptedStream(t *testing.T) {
 			if _, err := run.Wait(t.Context()); err == nil {
 				t.Fatal("expected request failure")
 			}
-			if requests.Load() != 1 {
-				t.Fatalf("unexpected re-execution after failure: %d", requests.Load())
+			if requests.Load() != test.requests {
+				t.Fatalf("got %d requests, want %d", requests.Load(), test.requests)
 			}
 			turns, err := c.Store.Turns()
 			if err != nil || len(turns) != 1 {
@@ -125,16 +147,115 @@ func TestAuthenticationFailureAndInterruptedStream(t *testing.T) {
 					t.Fatal("credential leaked into failure records")
 				}
 			}
-			if !test.auth {
-				found := false
-				for _, cell := range turns[0].Cells {
-					if cell.Kind == "assistant" && strings.Contains(cell.Text, "Keep this partial reply.") {
-						found = true
+			if test.kind == "stream" {
+				want := fmt.Sprintf("Partial reply from attempt %d.", test.requests)
+				if got := assistantReplies(turns[0]); !slices.Equal(got, []string{want}) {
+					t.Fatalf("transcript assistant replies %q, want only %q", got, want)
+				}
+			}
+		})
+	}
+}
+
+func assistantReplies(turn session.Turn) []string {
+	var replies []string
+	for _, cell := range turn.Cells {
+		if cell.Kind == "assistant" {
+			replies = append(replies, cell.Text)
+		}
+	}
+	return replies
+}
+
+func TestInterruptedStreamRetriesSameStep(t *testing.T) {
+	t.Parallel()
+	const partial = "Discard this interrupted reply."
+	const recovered = "The retried reply is complete."
+	for _, protocol := range []struct {
+		name string
+		send func(http.ResponseWriter, string, bool)
+	}{
+		{"completions", sendTextSSE},
+		{"responses", sendResponseTextSSE},
+	} {
+		t.Run(protocol.name, func(t *testing.T) {
+			t.Parallel()
+			var mu sync.Mutex
+			var bodies []string
+			c, _ := remoteProtocolFixture(t, protocol.name, nil, func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Error(err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				mu.Lock()
+				bodies = append(bodies, string(body))
+				attempt := len(bodies)
+				mu.Unlock()
+				switch attempt {
+				case 1:
+					protocol.send(w, partial, false)
+				case 2:
+					protocol.send(w, recovered, true)
+				case 3:
+					protocol.send(w, "Follow-up complete.", true)
+				default:
+					t.Errorf("unexpected request %d", attempt)
+					w.WriteHeader(http.StatusBadRequest)
+				}
+			})
+
+			run, err := c.Start(t.Context(), prompt.Execute, "Recover the interrupted stream.", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := run.Wait(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Steps) != 1 || result.Response.Content.Text() != recovered {
+				t.Fatalf("got %d steps and final reply %q", len(result.Steps), result.Response.Content.Text())
+			}
+			turns, err := c.Store.Turns()
+			if err != nil || len(turns) != 1 {
+				t.Fatalf("turns %d, error %v", len(turns), err)
+			}
+			if got := assistantReplies(turns[0]); turns[0].Failure != nil || !slices.Equal(got, []string{recovered}) {
+				t.Fatalf("transcript assistant replies %q, failure %+v", got, turns[0].Failure)
+			}
+			state, err := c.Store.Load(t.Context(), c.Session.ID())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var retries []session.RetryStatus
+			for _, event := range state.Events {
+				switch event.Kind {
+				case "model.error":
+					t.Fatalf("recovered turn recorded an error: %s", event.Data)
+				case "model.retry":
+					var retry session.RetryStatus
+					if err := json.Unmarshal(event.Data, &retry); err != nil {
+						t.Fatal(err)
 					}
+					retries = append(retries, retry)
 				}
-				if !found {
-					t.Fatal("partial stream was discarded")
-				}
+			}
+			if len(retries) != 1 || retries[0].Attempt != 1 || retries[0].Kind != "stream" || retries[0].Limit != 3 {
+				t.Fatalf("unexpected retries %+v", retries)
+			}
+
+			finish(t, c, prompt.Execute, "Continue from the completed reply.")
+			mu.Lock()
+			defer mu.Unlock()
+			if len(bodies) != 3 {
+				t.Fatalf("got %d requests, want two attempts and one follow-up", len(bodies))
+			}
+			if bodies[0] != bodies[1] {
+				t.Error("retry changed the original request")
+			}
+			if strings.Contains(bodies[2], partial) || strings.Count(bodies[2], recovered) != 1 {
+				t.Error("follow-up history must contain only the successful assistant reply")
 			}
 		})
 	}

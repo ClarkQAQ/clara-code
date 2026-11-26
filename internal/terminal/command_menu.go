@@ -29,7 +29,7 @@ var commands = []commandSpec{
 	{name: "/mcp", description: "list MCP servers and connection status", busy: true},
 	{name: "/goal", description: "set a goal for a long-running task", args: true, required: true},
 	{name: "/pause", description: "pause the active goal", busy: true},
-	{name: "/continue", description: "continue the paused goal"},
+	{name: "/continue", description: "continue the current goal"},
 	{name: "/follow", description: "queue a follow-up instruction", args: true, required: true, busy: true},
 	{name: "/cancel", description: "interrupt the active turn", busy: true},
 	{name: "/help", description: "show commands and keyboard shortcuts", busy: true},

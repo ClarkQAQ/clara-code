@@ -11,25 +11,27 @@ import (
 	modelapi "clara-code/pkg/model"
 )
 
-func TestCompactionRetainsLatestToolPair(t *testing.T) {
-	latest := []modelapi.Message{
-		modelapi.NewUserMessage("Fix the current issue."),
+func TestCompactionCarriesToolFindingsIntoNextTurn(t *testing.T) {
+	history := []modelapi.Message{
+		modelapi.NewUserMessage("Investigate the issue."),
 		{Role: modelapi.MessageRoleAssistant, Content: []modelapi.MessagePart{modelapi.ToolCallPart{ToolCallID: "current", ToolName: "read", Input: "{}"}}},
-		{Role: modelapi.MessageRoleTool, Content: []modelapi.MessagePart{modelapi.ToolResultPart{ToolCallID: "current", Output: modelapi.ToolResultOutputContentText{Text: "current result"}}}},
+		{Role: modelapi.MessageRoleTool, Content: []modelapi.MessagePart{modelapi.ToolResultPart{ToolCallID: "current", Output: modelapi.ToolResultOutputContentText{Text: strings.Repeat("observation ", 300)}}}},
+		modelapi.NewUserMessage("Apply the fix."),
 	}
-	history := append([]modelapi.Message{modelapi.NewUserMessage(strings.Repeat("old history ", 300))}, latest...)
-	model := Model{Reply: Static("Prior decisions and checks.")}
-	replacement, err := (prompt.Compactor{BudgetBytes: 2000}).Fit(t.Context(), model, "system", history, nil)
+	model := Model{Reply: func(_ context.Context, call modelapi.Call) (modelapi.Response, error) {
+		if len(call.Prompt) != 5 || call.Prompt[2].Role != modelapi.MessageRoleAssistant || call.Prompt[3].Role != modelapi.MessageRoleTool {
+			t.Fatal("completed tool exchange missing from summary request", call.Prompt)
+		}
+		return Text("The logs confirm the cause."), nil
+	}}
+	compactor := prompt.Compactor{BudgetBytes: 2000, PendingFrom: new(3)}
+	replacement, err := compactor.Fit(t.Context(), model, "system", history, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(replacement) != len(latest)+1 {
-		t.Fatalf("wrong compacted transcript length: %d", len(replacement))
-	}
-	call, callOK := modelapi.AsMessagePart[modelapi.ToolCallPart](replacement[2].Content[0])
-	result, resultOK := modelapi.AsMessagePart[modelapi.ToolResultPart](replacement[3].Content[0])
-	if !callOK || !resultOK || call.ToolCallID != result.ToolCallID {
-		t.Fatal("compaction separated a tool call from its result")
+	if len(replacement) != 3 || replacement[1].Metadata == nil || replacement[1].Metadata.Kind != "handoff" ||
+		replacement[2].Content[0].(modelapi.TextPart).Text != "Apply the fix." {
+		t.Fatal("handoff must precede the new submission", replacement)
 	}
 }
 
